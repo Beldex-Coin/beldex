@@ -52,6 +52,7 @@ add_library(version ${CMAKE_BINARY_DIR}/version.cpp)
 add_dependencies(version genversion)
 
 add_subdirectory(common)
+add_subdirectory(vrf-simulation)
 add_subdirectory(crypto)
 add_subdirectory(ringct)
 add_subdirectory(checkpoints)
