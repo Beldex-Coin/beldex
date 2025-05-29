@@ -44,7 +44,7 @@ void compute_fraction(unsigned char beta[64], mpf_t fraction) {
     // Compute (2^512 - 1)
     mpz_ui_pow_ui(denominator, 2, 512);
     mpz_sub_ui(denominator, denominator, 1);
-	gmp_printf("The value of denominator: %Zd\n", denominator);
+	// gmp_printf("The value of denominator: %Zd\n", denominator);
 
 	// Convert to floating point
     mpf_set_z(fraction, y);
@@ -52,9 +52,6 @@ void compute_fraction(unsigned char beta[64], mpf_t fraction) {
 
     // Compute fraction
     mpf_div(fraction, fraction, denom_float);
-
-    // Print result
-    gmp_printf("Fraction: %.50Ff\n", fraction);
 
 	// Free unused memory
     mpz_clear(y);
@@ -170,7 +167,6 @@ vrf_expand_sk(unsigned char pk[32], unsigned char x_scalar[32],
 	memmove(x_scalar, h, 32);
 	memmove(truncated_hashed_sk_string, h + 32, 32);
 	sodium_memzero(h, 64);
-	printf("skpk------- %s", skpk);
 	memmove(pk, skpk+32, 32);
 	return crypto_core_ed25519_is_valid_point(pk) - 1;
 }
@@ -446,6 +442,40 @@ vrf_verify(unsigned char output[64],
 	}
 }
 
+// verify the outout of other master node with threshold
+int verify_with_threshold(unsigned char output[64],
+								double tau,
+								double W
+								)
+{
+	// Define an mpf_t variable for the fraction result
+	mpf_t fraction;
+	mpf_init(fraction);
+
+	// Compute fraction
+	compute_fraction(output, fraction);
+
+	// Print result
+	gmp_printf("Fraction: %.50Ff\n", fraction);
+
+	double p = tau / W;
+	
+	// Define an mpf_t variable for threshold and set it to `p`
+	mpf_t threshold;
+	mpf_init(threshold);
+	mpf_set_d(threshold, p);  // Convert double p to GMP floating-point
+
+	gmp_printf("Threshold: %.50Ff\n", threshold);
+
+	// Compare fraction with threshold
+	if (mpf_cmp(fraction, threshold) > 0) {
+		printf("Fraction is greater than %.12f\n", p);
+		return 1;
+	} 
+
+	return 0;
+}
+
 int 
 cryptographic_sortition(unsigned char output[64],
 					unsigned char proof[80], 
@@ -485,9 +515,11 @@ cryptographic_sortition(unsigned char output[64],
     mpf_init(threshold);
     mpf_set_d(threshold, p);  // Convert double p to GMP floating-point
 
+	gmp_printf("threshold: %.50Ff\n", threshold);
+
 	// Compare fraction with threshold
-    if (mpf_cmp(fraction, threshold) >= 0) {
-		printf("Fraction is greater than or equal to %.12f\n", p);
+    if (mpf_cmp(fraction, threshold) > 0) {
+		printf("Fraction is greater than %.12f\n", p);
         return -1;
     } 
 
