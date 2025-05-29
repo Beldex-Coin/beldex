@@ -12,5 +12,5 @@ int cryptographic_sortition(unsigned char output[64], unsigned char proof[80],
 					double W
 					);
                     
-int sortition_verify(const unsigned char pk[32], const unsigned char proof[32], const unsigned char *msg, const unsigned long long msglen);
+int sortition_verify(const unsigned char pk[32], const unsigned char proof[80], const unsigned char *msg, const unsigned long long msglen);
 void bytesToHexString(const unsigned char *bytes, char *hex_str, size_t size);            

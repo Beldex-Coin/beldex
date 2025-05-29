@@ -2,10 +2,14 @@
 extern "C" {
 #include <sodium.h>
 }
+
+#include <optional>
 #include <iostream>
 #include <array>
 #include <oxenc/hex.h>
 #include <oxenc/base32z.h>
+#include <cstring>  // for memcpy
+
 
 using ustring = std::basic_string<unsigned char>;
 using ustring_view = std::basic_string_view<unsigned char>;
@@ -21,14 +25,18 @@ std::array<unsigned char, crypto_core_ed25519_BYTES> pubkey_from_privkey(const s
     return pubkey_from_privkey(ustring_view{privkey.data(), 32});
 }
 
-void generateKeyPairs(){
+struct keypair {
     std::array<unsigned char, crypto_sign_PUBLICKEYBYTES> pubkey;
     std::array<unsigned char, crypto_sign_SECRETKEYBYTES> seckey;
-    crypto_sign_keypair(pubkey.data(), seckey.data());
+};
+
+keypair generateKeyPairs(){
+    keypair mn_keypair;
+    crypto_sign_keypair(mn_keypair.pubkey.data(), mn_keypair.seckey.data());
     
-    std::cout << "seckey.size: " << seckey.size() << std::endl;
+    std::cout << "seckey.size: " << mn_keypair.seckey.size() << std::endl;
     std::array<unsigned char, crypto_hash_sha512_BYTES> privkey_signhash;
-    crypto_hash_sha512(privkey_signhash.data(), seckey.data(), 32);
+    crypto_hash_sha512(privkey_signhash.data(), mn_keypair.seckey.data(), 32);
     
     // Clamp it to prevent small subgroups:
     privkey_signhash[0] &= 248;
@@ -38,13 +46,14 @@ void generateKeyPairs(){
     ustring_view privkey{privkey_signhash.data(), 32};
 
     // Double-check that we did it properly:
-    if (pubkey_from_privkey(privkey) != pubkey)
+    if (pubkey_from_privkey(privkey) != mn_keypair.pubkey)
         std::cerr << "Internal error: pubkey check failed";
 
-    std::cout << " (legacy MN keypair)" << "\n==========" <<
-            "\nPrivate key: " << oxenc::to_hex(seckey.begin(), seckey.begin() + 32) <<
-            "\nPublic key:  " << oxenc::to_hex(pubkey.begin(), pubkey.end()) << "\n\n";
+    // std::cout << " (legacy MN keypair)" << "\n==========" <<
+    //         "\nPrivate key: " << oxenc::to_hex(mn_keypair.seckey.begin(), mn_keypair.seckey.begin() + 32) <<
+    //         "\nPublic key:  " << oxenc::to_hex(mn_keypair.pubkey.begin(), mn_keypair.pubkey.end()) << "\n\n";
 
+    return mn_keypair;
 }
 
 void restoreKeyPairs() {
@@ -78,6 +87,7 @@ void restoreKeyPairs() {
 }
 
 int main(){
+    keypair mn_keypair;
     std::cout << "Enter the type of Key generation"<< std::endl;
     std::cout <<"Generate new:0 and restore:1"<< std::endl;
     
@@ -93,7 +103,19 @@ int main(){
     if(type)
         restoreKeyPairs();
     else
-        generateKeyPairs();
+        mn_keypair = generateKeyPairs();
+
+    unsigned char sk[32], pk[32], skpk[64];
+
+    memcpy(sk, mn_keypair.seckey.data(), 32);
+    memcpy(pk, mn_keypair.seckey.data(), 32);
+
+    
+
+    std::cout << " (legacy MN keypair)" << "\n==========" <<
+            "\nPrivate key: " << oxenc::to_hex(mn_keypair.seckey.begin(), mn_keypair.seckey.begin() + 32) <<
+            "\nPublic key:  " << oxenc::to_hex(mn_keypair.pubkey.begin(), mn_keypair.pubkey.end()) << "\n\n";
+
 
     return 0;
 }

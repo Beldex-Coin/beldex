@@ -223,10 +223,21 @@ static void prove_helper(unsigned char pi[80], const unsigned char Y_point[32], 
 	// expand_sk already checked that Y was a valid point
 	hash_to_curve(H_point, Y_point, alpha, alphalen);
 
-	crypto_scalarmult_ed25519_noclamp(Gamma_point, x_scalar, H_point); /* Gamma = x*H */
+	// crypto_scalarmult_ed25519_noclamp(Gamma_point, x_scalar, H_point); 
+	/* Gamma = x*H */
+	if (crypto_scalarmult_ed25519_noclamp(Gamma_point, x_scalar, H_point) != 0) {
+    	fprintf(stderr, "crypto_scalarmult_ed25519_noclamp failed (Gamma_point)\n");
+    	return;  // or handle appropriately
+		}
 	nonce_generation(k_scalar, truncated_hashed_sk_string, H_point);
 	crypto_scalarmult_ed25519_base_noclamp(kB_point, k_scalar); /* compute k*B */
-	crypto_scalarmult_ed25519_noclamp(kH_point, k_scalar, H_point); /* compute k*H */
+	
+	// crypto_scalarmult_ed25519_noclamp(kH_point, k_scalar, H_point); 
+	/* compute k*H */
+	if (crypto_scalarmult_ed25519_noclamp(kH_point, k_scalar, H_point) != 0) {
+    	fprintf(stderr, "crypto_scalarmult_ed25519_noclamp failed (kH_point)\n");
+    	return;  // or handle appropriately
+		}
 	
 	/* c = hash_points(h, gamma, k*B, k*H)
 	 * (writes only to first 16 bytes of c_scalar */
@@ -376,15 +387,34 @@ verify_helper(const unsigned char Y_point[32], const unsigned char pi[80],
 	 * Fortunately, it appears that as of libsodium 1.0.18 the functions do
 	 * correctly give the identity if 0 is passed in for the scalar.
 	 */
-	crypto_scalarmult_ed25519_noclamp(tmp_point, c_scalar, Y_point); /* tmp_point = c*Y */
+	// crypto_scalarmult_ed25519_noclamp(tmp_point, c_scalar, Y_point); 
+	/* tmp_point = c*Y */
+	if (crypto_scalarmult_ed25519_noclamp(tmp_point, c_scalar, Y_point) != 0) {
+    	fprintf(stderr, "crypto_scalarmult_ed25519_noclamp failed (cY_point)\n");
+    	return -1;  // or handle appropriately
+		}
+	
 	crypto_scalarmult_ed25519_base_noclamp(tmp2_point, s_scalar_reduced); /* tmp2_point = s*B */
 	crypto_core_ed25519_sub(U_point, tmp2_point, tmp_point); /* U = tmp2_point - tmp_point = s*B - c*Y */
 
 	/* calculate V = s*H -  c*Gamma */
 	/* See the comment above for an explanation of the special handling
 	 * when c and s are 0 */
-	crypto_scalarmult_ed25519_noclamp(tmp_point, c_scalar, Gamma_point); /* tmp_point = c*Gamma */
-	crypto_scalarmult_ed25519_noclamp(tmp2_point, s_scalar_reduced, H_point); /* tmp2_point = s*H */
+	
+	 // crypto_scalarmult_ed25519_noclamp(tmp_point, c_scalar, Gamma_point); 
+	/* tmp_point = c*Gamma */
+	if (crypto_scalarmult_ed25519_noclamp(tmp_point, c_scalar, Gamma_point) != 0) {
+    	fprintf(stderr, "crypto_scalarmult_ed25519_noclamp failed (cGamma_point)\n");
+    	return -1;  // or handle appropriately
+		}
+
+	// crypto_scalarmult_ed25519_noclamp(tmp2_point, s_scalar_reduced, H_point); 
+	/* tmp2_point = s*H */
+	if (crypto_scalarmult_ed25519_noclamp(tmp2_point, s_scalar_reduced, H_point) != 0) {
+    	fprintf(stderr, "crypto_scalarmult_ed25519_noclamp failed (sH_point)\n");
+    	return -1;  // or handle appropriately
+		}
+
 	crypto_core_ed25519_sub(V_point, tmp2_point, tmp_point); /* V = tmp2_point - tmp_point = s*H - c*Gamma */
 
 	hash_points(cprime, H_point, Gamma_point, U_point, V_point);
@@ -456,7 +486,7 @@ cryptographic_sortition(unsigned char output[64],
     mpf_set_d(threshold, p);  // Convert double p to GMP floating-point
 
 	// Compare fraction with threshold
-    if (mpf_cmp(fraction, threshold) > 0) {
+    if (mpf_cmp(fraction, threshold) >= 0) {
 		printf("Fraction is greater than or equal to %.12f\n", p);
         return -1;
     } 
@@ -467,7 +497,7 @@ cryptographic_sortition(unsigned char output[64],
 
 int
 sortition_verify(const unsigned char pk[32],
-	   const unsigned char proof[32],
+	   const unsigned char proof[80],
 	   const unsigned char *msg, const unsigned long long msglen)
 {
 	if ((vrf_validate_key(pk) != 0) || (verify_helper(pk, proof, msg, msglen) != 0)) {
@@ -477,5 +507,4 @@ sortition_verify(const unsigned char pk[32],
 
 	return 0;
 	}
-
 
