@@ -1,197 +1,199 @@
-#include <algorithm>
-#include <string_view>
-extern "C" {
-    #include <sodium.h>
-}
-#include <optional>
 #include <iostream>
-#include <array>
-#include <oxenc/hex.h>
-#include <oxenc/base32z.h>
-#include <cstring>  // for memcpy
+#include <random>
+#include <vector>
+#include <tuple>
+#include <string>
+#include <optional>
+#include <algorithm>
+#include <cstring>
 
+#include "block.h"
+#include "common/hex.h"
+#include <oxenc/hex.h>
 #include "vrf.h"
+
+// Your utility for pubkey from privkey (unchanged, or you can inline)
 
 using ustring = std::basic_string<unsigned char>;
 using ustring_view = std::basic_string_view<unsigned char>;
 
-constexpr size_t PUBKEY_SIZE = crypto_sign_PUBLICKEYBYTES;
-constexpr size_t SECKEY_SIZE = crypto_sign_SECRETKEYBYTES;
-constexpr size_t SEED_SIZE = crypto_sign_SEEDBYTES;
 
-double tau = 30;
-double W = 100;
-    
-std::array<unsigned char, crypto_core_ed25519_BYTES> pubkey_from_privkey(ustring_view privkey) {
-    std::array<unsigned char, crypto_core_ed25519_BYTES> pubkey;
-    // noclamp because Monero keys are not clamped at all, and because sodium keys are pre-clamped.
+std::array<unsigned char, PUBKEY_SIZE> pubkey_from_privkey(ustring_view privkey) {
+    std::array<unsigned char, PUBKEY_SIZE> pubkey{};
     crypto_scalarmult_ed25519_base_noclamp(pubkey.data(), privkey.data());
     return pubkey;
 }
+
 template <size_t N, std::enable_if_t<(N >= 32), int> = 0>
-std::array<unsigned char, crypto_core_ed25519_BYTES> pubkey_from_privkey(const std::array<unsigned char, N>& privkey) {
+std::array<unsigned char, PUBKEY_SIZE> pubkey_from_privkey(const std::array<unsigned char, N>& privkey) {
     return pubkey_from_privkey(ustring_view{privkey.data(), 32});
 }
 
 std::pair<std::array<unsigned char, PUBKEY_SIZE>, std::array<unsigned char, SECKEY_SIZE>> generateKeyPairs() {
-    std::array<unsigned char, PUBKEY_SIZE> pubkey;
-    std::array<unsigned char, SECKEY_SIZE> seckey;
-    crypto_sign_keypair(pubkey.data(), seckey.data());
+    std::array<unsigned char, SECKEY_SIZE> seckey{};
+    std::array<unsigned char, PUBKEY_SIZE> pubkey{};
+    if (crypto_sign_keypair(pubkey.data(), seckey.data()) != 0) {
+        throw std::runtime_error("crypto_sign_keypair failed");
+    }
 
-    std::array<unsigned char, crypto_hash_sha512_BYTES> privkey_signhash;
+    std::array<unsigned char, 64> privkey_signhash{};
     crypto_hash_sha512(privkey_signhash.data(), seckey.data(), 32);
 
-    // Clamp it to prevent small subgroups:
+    // Clamp:
     privkey_signhash[0] &= 248;
     privkey_signhash[31] &= 63;
     privkey_signhash[31] |= 64;
 
     ustring_view privkey{privkey_signhash.data(), 32};
-    // std::cout << "privkey: " << privkey.size() <<"  " << std::string(reinterpret_cast<const char*>(privkey.data()), privkey.size()) << std::endl;
 
-    // Double-check that we did it properly:
-    if (pubkey_from_privkey(privkey) != pubkey)
-        std::cerr << "Internal error: pubkey check failed";
+    if (pubkey_from_privkey(privkey) != pubkey) {
+        throw std::runtime_error("pubkey_from_privkey check failed");
+    }
 
     return {pubkey, seckey};
 }
 
+// Simplified restoreKeyPairs (without std::optional) for clarity
 std::pair<std::array<unsigned char, PUBKEY_SIZE>, std::array<unsigned char, SECKEY_SIZE>> restoreKeyPairs() {
-    std::cout << "Enter the Ed25519 secret key:\n";
-    char buf[129];
-    std::cin.ignore(); // Clear the input buffer
-    std::cin.getline(buf, 129);
-    if (!std::cin.good())
-        std::cerr << "Invalid input, aborting!";
-    
-    std::string_view skey_hex{buf};
-    
-    // Advanced feature: if you provide the concatenated privkey and pubkey in hex, we won't prompt
-    // for verification (as long as the pubkey matches what we derive from the privkey).
-    if (!(skey_hex.size() == 64 || skey_hex.size() == 128) || !oxenc::is_hex(skey_hex))
-        std::cerr << "Invalid input: provide the secret key as 64 hex characters";
+    std::cout << "Enter the Ed25519 secret key (64 hex chars):\n";
+    std::string skey_hex;
+    std::getline(std::cin, skey_hex);
 
-    std::array<unsigned char, SECKEY_SIZE> skey;
-    std::array<unsigned char, PUBKEY_SIZE> pubkey;
-    std::array<unsigned char, SEED_SIZE> seed;
-    std::optional<std::array<unsigned char, PUBKEY_SIZE>> pubkey_expected;
+    if (skey_hex.size() != 64 || !oxenc::is_hex(skey_hex)) {
+        throw std::runtime_error("Invalid secret key input");
+    }
 
-    oxenc::from_hex(skey_hex.begin(), skey_hex.begin() + 64, seed.begin());
-    if (skey_hex.size() == 128)
-        oxenc::from_hex(skey_hex.begin() + 64, skey_hex.end(), pubkey_expected.emplace().begin());
+    std::array<unsigned char, SEED_SIZE> seed{};
+    oxenc::from_hex(skey_hex.begin(), skey_hex.end(), seed.begin());
 
-    crypto_sign_seed_keypair(pubkey.data(), skey.data(), seed.data());
+    std::array<unsigned char, SECKEY_SIZE> seckey{};
+    std::array<unsigned char, PUBKEY_SIZE> pubkey{};
+    if (crypto_sign_seed_keypair(pubkey.data(), seckey.data(), seed.data()) != 0) {
+        throw std::runtime_error("crypto_sign_seed_keypair failed");
+    }
 
-    std::array<unsigned char, crypto_hash_sha512_BYTES> privkey_signhash;
-    crypto_hash_sha512(privkey_signhash.data(), skey.data(), 32);
+    std::array<unsigned char, 64> privkey_signhash{};
+    crypto_hash_sha512(privkey_signhash.data(), seckey.data(), 32);
 
-    // Clamp it to prevent small subgroups:
     privkey_signhash[0] &= 248;
     privkey_signhash[31] &= 63;
     privkey_signhash[31] |= 64;
 
     ustring_view privkey{privkey_signhash.data(), 32};
-    // std::cout << "privkey: " << privkey.size() <<"  " << std::string(reinterpret_cast<const char*>(privkey.data()), privkey.size()) << std::endl;
+    if (pubkey_from_privkey(privkey) != pubkey) {
+        throw std::runtime_error("pubkey_from_privkey check failed");
+    }
 
-    // Double-check that we did it properly:
-    if (pubkey_from_privkey(privkey) != pubkey)
-        std::cerr << "Internal error: pubkey check failed";
-    
-    return {pubkey, skey};
+    return {pubkey, seckey};
 }
 
-int verify_vrf_output (int n, int choice) {
-    try {
-        std::array<unsigned char, PUBKEY_SIZE> pubkey;
-        std::array<unsigned char, SECKEY_SIZE> seckey;
+void generateProofToAll(Block& block, const std::vector<KeyPair>& keyPairs, const unsigned char* alpha, size_t alpha_len) {
+    for (const auto& kp : keyPairs) {
+        unsigned char pi[80]{};
+        int err = vrf_prove(pi, kp.seckey.data(), alpha, alpha_len);
+        if (err != 0) {
+            std::cerr << "vrf_prove() returned error\n";
+            return;
+        }
+        block.addProof(kp.pubkey, pi);
+    }
+}
 
-        if (choice == 0) {
-            std::tie(pubkey, seckey) = generateKeyPairs();
-        } else {
-            std::tie(pubkey, seckey) = restoreKeyPairs();
+void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, const unsigned char* alpha, size_t alpha_len) {
+    int mnSize = keyPairs.size();
+    double tau = mnSize * 30/100;
+    double W = mnSize;
+
+    for (const auto& kp : keyPairs) {
+        unsigned char pi[80];
+        bool found = block.getProof(oxenc::to_hex(kp.pubkey.begin(), kp.pubkey.end()), pi);
+        if (!found) {
+            std::cerr << "Proof not found for pubkey\n";
+            continue;
         }
 
-        std::cout << "\nKey Pair (legacy MN format) for MN: "<< n <<"\n";
-        std::cout << "=============================\n";
-        std::cout << "Private Key (32 bytes): " << seckey.size() << " " << oxenc::to_hex(seckey.begin(), seckey.begin()+ 32) << "\n";
-        std::cout << "Public Key (32 bytes):  " << pubkey.size()  << " " <<  oxenc::to_hex(pubkey.begin(), pubkey.end()) << "\n\n";
-
-        unsigned char pi_ours[80];
-    
-        // Assuming seckey is defined and is a suitable container
-        unsigned char skpk[64], pi[80], output[64];
-        std::copy(seckey.begin(), seckey.end(), skpk);
-        unsigned char pk[32];
-        std::copy(pubkey.begin(), pubkey.end(), pk);
-
-        const unsigned char *alpha = reinterpret_cast<const unsigned char *>("victor");
-        unsigned long long alphalen = strlen(reinterpret_cast<const char *>(alpha));
-        
-        // Generate PI value 
-        // This PI is called Proof and this will forward to every masterNodes through handhsake.
-        // Here the Alpha is generated by every master nodes based on the blockhash
-        // int err = vrf_prove(pi_ours, skpk, alpha, alphalen);
-        // if (err != 0) {
-        //     std::cerr << "prove() returned error\n";
-        //     return (6);
-        // }
-        // // std::cout << "pi_ours : " << pi_ours << std::endl;
-        
-        // // Verify the Prof with the MN pubkey
-        // unsigned char hash[64];
-        // err = vrf_verify(hash, pk, pi_ours, alpha, alphalen);
-        // if (err != 0) {
-        //     std::cerr << "Proof did not verify\n";
-        //     return (8);
-        // }
-        // // std::cout << "hash(output(beta)) : " << hash << std::endl;
-
-        // Create the Threshhold value with MN active list data        
-        // Findout Fraction from the proof(PI)
-        // check the condition for the fraction with threshhodl valyue
-        
-        //     int response = verify_vrf_output_with_threshold(hash, tau, W);
-        
-        int res = cryptographic_sortition(output, pi, skpk, alpha, sizeof alpha, tau, W);
-        if (res != 0) {
-            std::cout << "\nVRF output is not matched with threshold ignore this in the quorum\n";
-            return (11);
-            }
-        else {
-            std::cout << "\nVRF output is matched with threshold add this into the quorum\n";
-            }
-
-        } catch (const std::exception& e) {
-            std::cerr << "Exception: " << e.what() << '\n';
-            return 1;
+        unsigned char output[64];
+        int err = vrf_verify(output, kp.pubkey.data(), pi, alpha, alpha_len);
+        if (err != 0) {
+            std::cerr << "Proof did not verify\n";
+            continue;
         }
 
-    return 0;
+        int response = verify_vrf_output_with_threshold(output, tau, W);
+        if (response == 0) {
+            block.addQuorumMember(kp.pubkey);
+        }
+    }
+}
+
+void calculateLeaderAndValidator(Block& block) {
 
 }
 
+std::array<uint8_t, 32> generateRandomBlockHash() {
+    std::array<uint8_t, 32> hash{};
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint16_t> dis(0, 255);
+
+    for (auto& byte : hash) {
+        byte = static_cast<uint8_t>(dis(gen));
+    }
+
+    return hash;
+}
 
 int main() {
-    int n = 0;
-    int m = 100;
-    std::cout << "Enter the type of Key generation (Generate new: 0, Restore: 1):\n";
+    try {
+        std::cout << "Key Generation started...\n";
 
-    int choice;
-    std::cin >> choice;
+        std::vector<KeyPair> keyPairs;
+        for (int i = 0; i < 200; i++) {
+            auto [pubkey, seckey] = generateKeyPairs();
+            keyPairs.push_back({pubkey, seckey});
+        }
 
-    // Handle invalid input
-    if (std::cin.fail() || (choice != 0 && choice != 1)) {
-        std::cerr << "Error: Invalid input. Expected 0 or 1.\n";
+        std::cout << "Key Generation done. Total MN size: " << keyPairs.size() << "\n";
+
+        std::vector<Block> blocks;
+        for (int blockNumber = 0; blockNumber < 10; blockNumber++) {
+            auto blockHash = generateRandomBlockHash();
+            Block block(blockHash.data(), "");
+            block.key_pairs = keyPairs;
+
+            // alpha depends on previous block hash or default string
+            std::string alphaStr;
+            if (blockNumber == 0) {
+                alphaStr = "victor";
+            } else {
+                alphaStr = blocks[blockNumber - 1].block_hash;
+            }
+
+            generateProofToAll(block, keyPairs, reinterpret_cast<const unsigned char*>(alphaStr.data()), alphaStr.size());
+            generateOutputAndStore(block, keyPairs, reinterpret_cast<const unsigned char*>(alphaStr.data()), alphaStr.size());
+            calculateLeaderAndValidator(block);
+
+            // Update block hash string
+            block.block_hash = oxenc::to_hex(blockHash.begin(), blockHash.end());
+
+            std::cout << "Block generated: " << block.block_hash << "\n";
+            blocks.push_back(std::move(block));
+        }
+
+        std::cout << "Total blocks: " << blocks.size() << "\n";
+
+        int blknum = 0;
+        for (const auto& blk : blocks) {
+            std::cout << "Block number: " << ++blknum << "\n";
+            std::cout << "Block hash: " << blk.block_hash << "\n";
+            std::cout << "Block leader: " << blk.leader << "\n";
+            std::cout << "Quorum size: " << blk.quorums.size() << "\n";
+            std::cout << "Validators size: " << blk.validators.size() << "\n\n";
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Exception: " << e.what() << "\n";
         return 1;
     }
 
-    for (int i = 0; i < m; i++) {
-    int res = verify_vrf_output(i, choice);
-    if (!res)
-        n += 1;
-    }
-    
-    std::cout << "The number of the MN's (out of " << m << ") which satisfy the threshold: " << n << "\n";
-    
     return 0;
 }

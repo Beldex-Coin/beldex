@@ -39,7 +39,7 @@ void compute_fraction(unsigned char beta[64], mpf_t fraction) {
         return;
     }
 
-    gmp_printf("The value of y: %Zd\n", y);
+    // gmp_printf("The value of y: %Zd\n", y);
 
     // Compute (2^512 - 1)
     mpz_ui_pow_ui(denominator, 2, 512);
@@ -456,7 +456,7 @@ int verify_vrf_output_with_threshold(unsigned char output[64],
 	compute_fraction(output, fraction);
 
 	// Print result
-	gmp_printf("Fraction: %.50Ff\n", fraction);
+	// gmp_printf("Fraction: %.50Ff\n", fraction);
 
 	double p = tau / W;
 	
@@ -465,11 +465,11 @@ int verify_vrf_output_with_threshold(unsigned char output[64],
 	mpf_init(threshold);
 	mpf_set_d(threshold, p);  // Convert double p to GMP floating-point
 
-	gmp_printf("Threshold: %.50Ff\n", threshold);
+	// gmp_printf("Threshold: %.50Ff\n", threshold);
 
 	// Compare fraction with threshold
 	if (mpf_cmp(fraction, threshold) > 0) {
-		printf("Fraction is greater than %.12f\n", p);
+		// printf("Fraction is greater than %.12f\n", p);
 		return 1;
 	} 
 

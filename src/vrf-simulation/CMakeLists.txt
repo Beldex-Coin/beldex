@@ -21,7 +21,7 @@ add_library(vrf STATIC
 target_link_libraries(vrf PUBLIC ${GMP_LIBRARY} ${GMPXX_LIBRARY})
 
 # Build the executable
-add_executable(vrf-simulation main.cpp)
+add_executable(vrf-simulation main.cpp block.cpp)
 
 include_directories(.)
 
