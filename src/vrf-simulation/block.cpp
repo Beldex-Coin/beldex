@@ -33,20 +33,10 @@ bool Block::getProof(const std::string& pubkey_hex, unsigned char* proof_out) co
     return false;
 }
 
-// void Block::addQuorumMember(const std::array<unsigned char, PUBKEY_SIZE>& pubkey, const mpf_t& fraction) {
-//     std::string key = oxenc::to_hex(pubkey.begin(), pubkey.end());
-
-//     mpf_t val;
-//     mpf_init(val);
-//     mpf_set(val, fraction);
-
-//     // Insert into map - will copy the mpf_t struct (array)
-//     quorums[key] = val;
-// }
-
-void Block::addQuorumMember(const std::array<unsigned char, PUBKEY_SIZE>& pubkey) {
+void Block::addQuorumMember(const std::array<unsigned char, PUBKEY_SIZE>& pubkey, mpf_class fraction_cpp) {
     std::string key = oxenc::to_hex(pubkey.begin(), pubkey.end());
-    quorums.push_back(key);
+
+    quorums.emplace_back(key, fraction_cpp);
 }
 
 void Block::addValidator(const std::string& pubkey) {
@@ -55,7 +45,5 @@ void Block::addValidator(const std::string& pubkey) {
 
 // In destructor:
 Block::~Block() {
-    // for (auto& [key, val] : quorums) {
-    //     mpf_clear(val);
-    // }
+
 }

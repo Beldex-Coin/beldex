@@ -119,15 +119,34 @@ void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, 
             continue;
         }
 
-        int response = verify_vrf_output_with_threshold(output, tau, W);
+        mpf_t fraction;
+        mpf_init(fraction);
+
+        int response = verify_vrf_output_with_threshold(output, fraction, tau, W);
         if (response == 0) {
-            block.addQuorumMember(kp.pubkey);
+            mpf_class fraction_cpp(fraction);
+            block.addQuorumMember(kp.pubkey, fraction_cpp);
         }
+        mpf_clear(fraction);
+
     }
 }
 
 void calculateLeaderAndValidator(Block& block) {
 
+    std::sort(block.quorums.begin(), block.quorums.end(),
+        [](const auto& a, const auto& b) {
+            return a.second < b.second;  // mpf_class supports comparison operators
+        });
+    
+    if (!block.quorums.empty()) {
+        block.leader = block.quorums.front().first;
+
+    // Add the rest to validators
+    for (size_t i = 1; i < block.quorums.size(); ++i) {
+        block.validators.push_back(block.quorums[i].first);
+    }
+}
 }
 
 std::array<uint8_t, 32> generateRandomBlockHash() {

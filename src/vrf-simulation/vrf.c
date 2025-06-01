@@ -444,19 +444,21 @@ vrf_verify(unsigned char output[64],
 
 // verify the outout of the vrf beta with the threshld: y/2^|y| < taw/W
 int verify_vrf_output_with_threshold(unsigned char output[64],
+								mpf_t fraction,
 								double tau,
 								double W
 								)
 {
 	// Define an mpf_t variable for the fraction result
-	mpf_t fraction;
-	mpf_init(fraction);
+	mpf_t local_fraction;
+	mpf_init(local_fraction);
 
-	// Compute fraction
-	compute_fraction(output, fraction);
+	// Compute local_fraction
+	compute_fraction(output, local_fraction);
+	mpf_set(fraction, local_fraction);
 
 	// Print result
-	// gmp_printf("Fraction: %.50Ff\n", fraction);
+	// gmp_printf("Fraction: %.50Ff\n", local_fraction);
 
 	double p = tau / W;
 	
@@ -467,8 +469,8 @@ int verify_vrf_output_with_threshold(unsigned char output[64],
 
 	// gmp_printf("Threshold: %.50Ff\n", threshold);
 
-	// Compare fraction with threshold
-	if (mpf_cmp(fraction, threshold) > 0) {
+	// Compare local_fraction with threshold
+	if (mpf_cmp(local_fraction, threshold) > 0) {
 		// printf("Fraction is greater than %.12f\n", p);
 		return 1;
 	} 
@@ -476,92 +478,92 @@ int verify_vrf_output_with_threshold(unsigned char output[64],
 	return 0;
 }
 
-int 
-cryptographic_sortition(unsigned char output[64],
-					unsigned char proof[80], 
-					const unsigned char skpk[64], 
-					const unsigned char *msg,
-					unsigned long long msglen,
-					double tau,
-					double W
-					) 
-{
+// int 
+// cryptographic_sortition(unsigned char output[64],
+// 					unsigned char proof[80], 
+// 					const unsigned char skpk[64], 
+// 					const unsigned char *msg,
+// 					unsigned long long msglen,
+// 					double tau,
+// 					double W
+// 					) 
+// {
 
-	int err = vrf_prove(proof, skpk, msg, msglen);
-	if (err != 0) {
-		fprintf(stderr, "prove() returned error\n");
-		return -1;
-	}
+// 	int err = vrf_prove(proof, skpk, msg, msglen);
+// 	if (err != 0) {
+// 		fprintf(stderr, "prove() returned error\n");
+// 		return -1;
+// 	}
 
-	err = vrf_proof_to_hash(output, proof);
-	if (err != 0) {
-		fprintf(stderr, "proof_to_hash() returned error\n");
-		return -1;
-	}
+// 	err = vrf_proof_to_hash(output, proof);
+// 	if (err != 0) {
+// 		fprintf(stderr, "proof_to_hash() returned error\n");
+// 		return -1;
+// 	}
 
-	err = verify_vrf_output_with_threshold(output, tau, W);
-	if (err != 0) {
-		fprintf(stderr, "\nMN not eligible to become part of the POS quorum");
-		return -1;
-	}
+// 	err = verify_vrf_output_with_threshold(output, tau, W);
+// 	if (err != 0) {
+// 		fprintf(stderr, "\nMN not eligible to become part of the POS quorum");
+// 		return -1;
+// 	}
 
-	// // Define an mpf_t variable for the fraction result
-    // mpf_t fraction;
-    // mpf_init(fraction);
+// 	// // Define an mpf_t variable for the fraction result
+//     // mpf_t fraction;
+//     // mpf_init(fraction);
 
-    // // Compute fraction
-    // compute_fraction(output, fraction);
+//     // // Compute fraction
+//     // compute_fraction(output, fraction);
 	
-    // gmp_printf("Fraction: %.50Ff\n", fraction);
+//     // gmp_printf("Fraction: %.50Ff\n", fraction);
 
-	// double p = tau / W;
+// 	// double p = tau / W;
 
-	// // Define an mpf_t variable for threshold and set it to `p`
-    // mpf_t threshold;
-    // mpf_init(threshold);
-    // mpf_set_d(threshold, p);  // Convert double p to GMP floating-point
+// 	// // Define an mpf_t variable for threshold and set it to `p`
+//     // mpf_t threshold;
+//     // mpf_init(threshold);
+//     // mpf_set_d(threshold, p);  // Convert double p to GMP floating-point
 
-	// gmp_printf("threshold: %.50Ff\n", threshold);
+// 	// gmp_printf("threshold: %.50Ff\n", threshold);
 
-	// // Compare fraction with threshold
-    // if (mpf_cmp(fraction, threshold) > 0) {
-	// 	printf("Fraction is greater than %.12f\n", p);
-    //     return -1;
-    // } 
+// 	// // Compare fraction with threshold
+//     // if (mpf_cmp(fraction, threshold) > 0) {
+// 	// 	printf("Fraction is greater than %.12f\n", p);
+//     //     return -1;
+//     // } 
 
-	return 0;
-}
+// 	return 0;
+// }
 
 
-int
-sortition_verify(const unsigned char pk[32],
-	   unsigned char proof[80],
-	   const unsigned char *msg, 
-	   unsigned long long msglen,
-	   double tau,
-	   double W)
-{
-	// 1. Verify the VRF proof
-	if ((vrf_validate_key(pk) != 0) || (verify_helper(pk, proof, msg, msglen) != 0)) {
-		printf("VRF proof verification failed\n");
-		return -1;
-	}
+// int
+// sortition_verify(const unsigned char pk[32],
+// 	   unsigned char proof[80],
+// 	   const unsigned char *msg, 
+// 	   unsigned long long msglen,
+// 	   double tau,
+// 	   double W)
+// {
+// 	// 1. Verify the VRF proof
+// 	if ((vrf_validate_key(pk) != 0) || (verify_helper(pk, proof, msg, msglen) != 0)) {
+// 		printf("VRF proof verification failed\n");
+// 		return -1;
+// 	}
 
-	// 2. Verify the VRF output with threshold (tau/W)
-	int err;
-	unsigned char output[64];
-	err = vrf_proof_to_hash(output, proof);
-	if (err != 0) {
-		fprintf(stderr, "proof_to_hash() returned error\n");
-		return -1;
-	}
+// 	// 2. Verify the VRF output with threshold (tau/W)
+// 	int err;
+// 	unsigned char output[64];
+// 	err = vrf_proof_to_hash(output, proof);
+// 	if (err != 0) {
+// 		fprintf(stderr, "proof_to_hash() returned error\n");
+// 		return -1;
+// 	}
 
-	err = verify_vrf_output_with_threshold(output, tau, W);
-	if (err != 0) {
-		fprintf(stderr, "The VRF output didn't match with threshold and MN not eligible to become part of the POS quorum");
-		return -1;
-	}
+// 	err = verify_vrf_output_with_threshold(output, tau, W);
+// 	if (err != 0) {
+// 		fprintf(stderr, "The VRF output didn't match with threshold and MN not eligible to become part of the POS quorum");
+// 		return -1;
+// 	}
 	
-	return 0;
-	}
+// 	return 0;
+// 	}
 

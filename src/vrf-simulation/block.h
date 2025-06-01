@@ -5,6 +5,7 @@
 #include <map>
 #include <vector>
 #include <gmp.h>
+#include <gmpxx.h>  // C++ GMP wrapper
 
 extern "C" {
     #include <sodium.h>
@@ -29,8 +30,8 @@ struct Block {
     // KeyPair vector
     std::vector<KeyPair> key_pairs; 
 
-    // Store the pubkey of quorum nodes
-    std::vector<std::string> quorums;
+    // Store the pubkey of quorum nodes with fraction
+    std::vector<std::pair<std::string, mpf_class>> quorums;
 
     // Store proofs per pubkey (pubkey hex string -> proof bytes)
     std::map<std::string, std::array<unsigned char, 80>> proofs;
@@ -45,7 +46,7 @@ struct Block {
     bool getProof(const std::string& pubkey_hex, unsigned char* proof_out) const;
 
     // Add quorum member (pubkey + fraction)
-    void addQuorumMember(const std::array<unsigned char, PUBKEY_SIZE>& pubkey);
+    void addQuorumMember(const std::array<unsigned char, PUBKEY_SIZE>& pubkey, mpf_class fraction_cpp);
 
     // Add validator pubkey string to the validator list
     void addValidator(const std::string& pubkey);
