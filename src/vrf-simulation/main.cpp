@@ -32,6 +32,7 @@ std::array<unsigned char, PUBKEY_SIZE> pubkey_from_privkey(const std::array<unsi
 }
 
 std::pair<std::array<unsigned char, PUBKEY_SIZE>, std::array<unsigned char, SECKEY_SIZE>> generateKeyPairs() {
+    std::cout << "Key Generation started...\n";
     std::array<unsigned char, SECKEY_SIZE> seckey{};
     std::array<unsigned char, PUBKEY_SIZE> pubkey{};
     if (crypto_sign_keypair(pubkey.data(), seckey.data()) != 0) {
@@ -58,7 +59,7 @@ std::pair<std::array<unsigned char, PUBKEY_SIZE>, std::array<unsigned char, SECK
 // Simplified restoreKeyPairs (without std::optional) for clarity
 void restoreKeyPairs(std::vector<KeyPair>& keyPairs) {
     std::cout << "restoring the Ed25519 secret key (64 hex chars) from the input file\n";
-    std::ifstream file("keyPairs.csv");
+    std::ifstream file("keyPairs-OG.csv");
     if (!file.is_open()) {
         std::cout << "Warning: keyPairs.csv not found. Proceeding without restoring keys.\n";
         return;
@@ -261,7 +262,6 @@ void blockToCSVRow(std::vector<Block>& blocks) {
     
 int main() {
     try {
-        std::cout << "Key Generation started...\n";
         std::cout << "Enter the number of MNs needed for simulation (min 10): ";
         
         int mn = 0;
