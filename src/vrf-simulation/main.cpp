@@ -1,4 +1,6 @@
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <random>
 #include <vector>
 #include <tuple>
@@ -162,6 +164,88 @@ std::array<uint8_t, 32> generateRandomBlockHash() {
     return hash;
 }
 
+void printLeaderCountInCsv(std::unordered_map<std::string, int> &leader_count)
+{
+    // Write to CSV
+    std::ofstream outfile("blockLeaders.csv");
+    if (!outfile)
+    {
+        std::cerr << "Failed to open output file." << std::endl;
+        return;
+    }
+
+    // Write CSV header
+    outfile << "Leader,Count\n";
+    for (const auto &entry : leader_count)
+    {
+        outfile << entry.first << "," << entry.second << "\n";
+    }
+
+    outfile.close();
+}
+
+void printKeyPairInCsv(std::vector<KeyPair>& keyPairs){
+    // Write to CSV
+    std::ofstream outfile("keyPairs.csv");
+    if (!outfile)
+    {
+        std::cerr << "Failed to open output file." << std::endl;
+        return;
+    }
+
+    // Write CSV header
+    outfile << "Seckey,Pubkey\n";
+    for (const auto& [pubkey, seckey]: keyPairs)
+    {
+        outfile << oxenc::to_hex(seckey.begin(), seckey.begin()+32) << "," << oxenc::to_hex(pubkey.begin(), pubkey.end()) << "\n";
+    }
+
+    outfile.close();
+}
+
+// Helper to join vector of strings with a delimiter
+std::string joinVector(const std::vector<std::string>& vec, std::string delimiter = "; ") {
+    std::stringstream ss;
+    for (size_t i = 0; i < vec.size(); ++i) {
+        ss << vec[i];
+        if (i != vec.size() - 1)
+            ss << delimiter;
+    }
+    return ss.str();
+}
+
+// Helper to join vector of strings with a delimiter
+std::string joinQuorumsVector(const std::vector<std::pair<std::string, mpf_class>>& vec, std::string delimiter = "; ") {
+    std::ostringstream ss;
+
+    for (size_t i = 0; i < vec.size(); ++i) {
+        ss << vec[i].first << "=" << vec[i].second;
+        if (i != vec.size() - 1)
+            ss << delimiter;
+    }
+    return ss.str();
+}
+
+// Convert block data to a CSV row string
+void blockToCSVRow(std::vector<Block>& blocks) {
+    // Write to CSV
+    std::ofstream outfile("BlockData.csv");
+    if (!outfile)
+    {
+        std::cerr << "Failed to open output file." << std::endl;
+        return;
+    }
+    // Write CSV header
+    outfile << "BlockHash,Leader,Quorums,Validators\n";
+    for (const auto& block : blocks) {
+        outfile << block.block_hash << ","
+                << block.leader << ","
+                << joinQuorumsVector(block.quorums) << ","
+                << joinVector(block.validators) << "\n";
+    }
+    outfile.close();
+}
+    
 int main() {
     try {
         std::cout << "Key Generation started...\n";
@@ -171,8 +255,12 @@ int main() {
             auto [pubkey, seckey] = generateKeyPairs();
             keyPairs.push_back({pubkey, seckey});
         }
+        printKeyPairInCsv(keyPairs);
 
         std::cout << "Key Generation done. Total MN size: " << keyPairs.size() << "\n";
+
+        // Map to count how many times each public key is a leader
+        std::unordered_map<std::string, int> leader_count;
 
         std::vector<Block> blocks;
         for (int blockNumber = 0; blockNumber < 10; blockNumber++) {
@@ -191,6 +279,9 @@ int main() {
             generateProofToAll(block, keyPairs, reinterpret_cast<const unsigned char*>(alphaStr.data()), alphaStr.size());
             generateOutputAndStore(block, keyPairs, reinterpret_cast<const unsigned char*>(alphaStr.data()), alphaStr.size());
             calculateLeaderAndValidator(block);
+            
+            // Increment the leader count for the current leader
+            leader_count[block.leader]++;
 
             // Update block hash string
             block.block_hash = oxenc::to_hex(blockHash.begin(), blockHash.end());
@@ -200,7 +291,7 @@ int main() {
         }
 
         std::cout << "Total blocks: " << blocks.size() << "\n";
-
+        blockToCSVRow(blocks);
         int blknum = 0;
         for (const auto& blk : blocks) {
             std::cout << "Block number: " << ++blknum << "\n";
@@ -209,6 +300,9 @@ int main() {
             std::cout << "Quorum size: " << blk.quorums.size() << "\n";
             std::cout << "Validators size: " << blk.validators.size() << "\n\n";
         }
+
+        printLeaderCountInCsv(leader_count);
+        
     } catch (const std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";
         return 1;
