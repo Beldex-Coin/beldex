@@ -32,7 +32,6 @@ std::array<unsigned char, PUBKEY_SIZE> pubkey_from_privkey(const std::array<unsi
 }
 
 std::pair<std::array<unsigned char, PUBKEY_SIZE>, std::array<unsigned char, SECKEY_SIZE>> generateKeyPairs() {
-    std::cout << "Key Generation started...\n";
     std::array<unsigned char, SECKEY_SIZE> seckey{};
     std::array<unsigned char, PUBKEY_SIZE> pubkey{};
     if (crypto_sign_keypair(pubkey.data(), seckey.data()) != 0) {
@@ -279,6 +278,7 @@ int main() {
 
         // Add or trim key pairs as needed
         if (keyPairs.size() < static_cast<size_t>(mn)) {
+            std::cout << "Key Generation started...\n";
             for (size_t i = keyPairs.size(); i < static_cast<size_t>(mn); ++i) {
                 auto [pubkey, seckey] = generateKeyPairs();
                 keyPairs.push_back({pubkey, seckey});
