@@ -56,37 +56,50 @@ std::pair<std::array<unsigned char, PUBKEY_SIZE>, std::array<unsigned char, SECK
 }
 
 // Simplified restoreKeyPairs (without std::optional) for clarity
-std::pair<std::array<unsigned char, PUBKEY_SIZE>, std::array<unsigned char, SECKEY_SIZE>> restoreKeyPairs() {
-    std::cout << "Enter the Ed25519 secret key (64 hex chars):\n";
-    std::string skey_hex;
-    std::getline(std::cin, skey_hex);
-
-    if (skey_hex.size() != 64 || !oxenc::is_hex(skey_hex)) {
-        throw std::runtime_error("Invalid secret key input");
+void restoreKeyPairs(std::vector<KeyPair>& keyPairs) {
+    std::cout << "restoring the Ed25519 secret key (64 hex chars) from the input file\n";
+    std::ifstream file("keyPairs.csv");
+    if (!file.is_open()) {
+        std::cout << "Warning: keyPairs.csv not found. Proceeding without restoring keys.\n";
+        return;
     }
 
-    std::array<unsigned char, SEED_SIZE> seed{};
-    oxenc::from_hex(skey_hex.begin(), skey_hex.end(), seed.begin());
+    std::string line;
+    // Skip the header line
+    std::getline(file, line);
 
-    std::array<unsigned char, SECKEY_SIZE> seckey{};
-    std::array<unsigned char, PUBKEY_SIZE> pubkey{};
-    if (crypto_sign_seed_keypair(pubkey.data(), seckey.data(), seed.data()) != 0) {
-        throw std::runtime_error("crypto_sign_seed_keypair failed");
+    while(std::getline(file, line)) {
+        std::stringstream ss(line);
+        std::string skey_hex;
+        std::getline(ss, skey_hex, ',');
+
+        if (skey_hex.size() != 64 || !oxenc::is_hex(skey_hex)) {
+            throw std::runtime_error("Invalid secret key input");
+        }
+
+        std::array<unsigned char, SEED_SIZE> seed{};
+        oxenc::from_hex(skey_hex.begin(), skey_hex.end(), seed.begin());
+
+        std::array<unsigned char, SECKEY_SIZE> seckey{};
+        std::array<unsigned char, PUBKEY_SIZE> pubkey{};
+        if (crypto_sign_seed_keypair(pubkey.data(), seckey.data(), seed.data()) != 0) {
+            throw std::runtime_error("crypto_sign_seed_keypair failed");
+        }
+
+        std::array<unsigned char, 64> privkey_signhash{};
+        crypto_hash_sha512(privkey_signhash.data(), seckey.data(), 32);
+
+        privkey_signhash[0] &= 248;
+        privkey_signhash[31] &= 63;
+        privkey_signhash[31] |= 64;
+
+        ustring_view privkey{privkey_signhash.data(), 32};
+        if (pubkey_from_privkey(privkey) != pubkey) {
+            throw std::runtime_error("pubkey_from_privkey check failed");
+        }
+        keyPairs.push_back({pubkey, seckey});
     }
-
-    std::array<unsigned char, 64> privkey_signhash{};
-    crypto_hash_sha512(privkey_signhash.data(), seckey.data(), 32);
-
-    privkey_signhash[0] &= 248;
-    privkey_signhash[31] &= 63;
-    privkey_signhash[31] |= 64;
-
-    ustring_view privkey{privkey_signhash.data(), 32};
-    if (pubkey_from_privkey(privkey) != pubkey) {
-        throw std::runtime_error("pubkey_from_privkey check failed");
-    }
-
-    return {pubkey, seckey};
+    file.close();
 }
 
 void generateProofToAll(Block& block, const std::vector<KeyPair>& keyPairs, const unsigned char* alpha, size_t alpha_len) {
@@ -249,15 +262,36 @@ void blockToCSVRow(std::vector<Block>& blocks) {
 int main() {
     try {
         std::cout << "Key Generation started...\n";
+        std::cout << "Enter the number of MNs needed for simulation (min 10): ";
+        
+        int mn = 0;
+        std::cin >> mn;
+        
+        // Handle invalid inputAdd commentMore actions
+        if (std::cin.fail() || mn < 10){
+            throw std::runtime_error("Error: Invalid input. Expected greater then or equal to 10 \n");
+            return 1;
+        }
 
         std::vector<KeyPair> keyPairs;
-        for (int i = 0; i < 200; i++) {
-            auto [pubkey, seckey] = generateKeyPairs();
-            keyPairs.push_back({pubkey, seckey});
-        }
-        printKeyPairInCsv(keyPairs);
+        restoreKeyPairs(keyPairs);
+        std::cout << "Restore done. Total MN size: " << keyPairs.size() << "\n";
 
-        std::cout << "Key Generation done. Total MN size: " << keyPairs.size() << "\n";
+        // Add or trim key pairs as needed
+        if (keyPairs.size() < static_cast<size_t>(mn)) {
+            for (size_t i = keyPairs.size(); i < static_cast<size_t>(mn); ++i) {
+                auto [pubkey, seckey] = generateKeyPairs();
+                keyPairs.push_back({pubkey, seckey});
+            }
+        } else {
+            keyPairs.resize(mn);
+        }
+
+        // Ensure correct size
+        assert(static_cast<size_t>(mn) == keyPairs.size());
+
+        printKeyPairInCsv(keyPairs);
+        std::cout << "Key Generation done. Total MNs: " << keyPairs.size() << "\n";
 
         // Map to count how many times each public key is a leader
         std::unordered_map<std::string, int> leader_count;
