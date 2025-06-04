@@ -8,6 +8,7 @@
 #include <optional>
 #include <algorithm>
 #include <cstring>
+#include <chrono>
 
 #include "block.h"
 #include "common/hex.h"
@@ -105,11 +106,15 @@ void restoreKeyPairs(std::vector<KeyPair>& keyPairs) {
 void generateProofToAll(Block& block, const std::vector<KeyPair>& keyPairs, const unsigned char* alpha, size_t alpha_len) {
     for (const auto& kp : keyPairs) {
         unsigned char pi[80]{};
+        // auto start = std::chrono::high_resolution_clock::now();
         int err = vrf_prove(pi, kp.seckey.data(), alpha, alpha_len);
         if (err != 0) {
             std::cerr << "vrf_prove() returned error\n";
             return;
         }
+        // auto end = std::chrono::high_resolution_clock::now();
+        // std::chrono::duration<double, std::milli> duration = end - start;
+        // std::cout << "Time for the proof calculation: " << duration.count() << " ms"<<"\n";
         block.addProof(kp.pubkey, pi);
     }
 }
@@ -118,6 +123,7 @@ void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, 
     int mnSize = keyPairs.size();
     double tau = mnSize * 30/100;
     double W = mnSize;
+    auto start = std::chrono::high_resolution_clock::now();
 
     for (const auto& kp : keyPairs) {
         unsigned char pi[80];
@@ -145,6 +151,11 @@ void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, 
         mpf_clear(fraction);
 
     }
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> duration = end - start;
+    block.timeTaken = duration.count();
+    // std::cout << "Time for the verify_vrf_output_with_threshold calculation: " << duration.count() << " ms"<<"\n";
+
 }
 
 void calculateLeaderAndValidator(Block& block) {
@@ -243,34 +254,54 @@ std::string joinQuorumsVector(const std::vector<std::pair<std::string, mpf_class
 void blockToCSVRow(std::vector<Block>& blocks) {
     // Write to CSV
     std::ofstream outfile("BlockData.csv");
-    if (!outfile)
+    std::ofstream timefile("ProofVeriTime.csv");
+
+    if (!outfile && !timefile)
     {
         std::cerr << "Failed to open output file." << std::endl;
         return;
     }
     // Write CSV header
     outfile << "BlockHash,Leader,Quorums,Validators\n";
+    timefile << "Time(s)\n";
     for (const auto& block : blocks) {
         outfile << block.block_hash << ","
                 << block.leader << ","
                 << joinQuorumsVector(block.quorums) << ","
                 << joinVector(block.validators) << "\n";
+        timefile << block.timeTaken/1000 << "\n";
     }
     outfile.close();
+    timefile.close();
+}
+
+int getValidatedInput(const std::string& prompt, int minValue) {
+    int value;
+    while (true) {
+        std::cout << prompt;
+        std::cin >> value;
+
+        if (std::cin.fail() || value < minValue) {
+            std::cin.clear(); // Clear error flags
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n'); // Discard invalid input
+            std::cerr << "Error: Invalid input. Please enter a number greater than or equal to " 
+                      << minValue << ".\n";
+        } else {
+            break; // Valid input
+        }
+    }
+    return value;
 }
     
 int main() {
     try {
-        std::cout << "Enter the number of MNs needed for simulation (min 10): ";
         
-        int mn = 0;
-        std::cin >> mn;
-        
-        // Handle invalid inputAdd commentMore actions
-        if (std::cin.fail() || mn < 10){
-            throw std::runtime_error("Error: Invalid input. Expected greater then or equal to 10 \n");
-            return 1;
-        }
+        int mn = getValidatedInput("Enter the number of MNs needed for simulation (min 10): ", 10);
+        int blk = getValidatedInput("Enter the number of Blocks needed for simulation (min 10): ", 10);
+
+        // Proceed with simulation using mn and blk
+        std::cout << "Starting simulation with " << mn << " MNs and " << blk << " Blocks.\n";
+
 
         std::vector<KeyPair> keyPairs;
         restoreKeyPairs(keyPairs);
@@ -297,7 +328,7 @@ int main() {
         std::unordered_map<std::string, int> leader_count;
 
         std::vector<Block> blocks;
-        for (int blockNumber = 0; blockNumber < 10; blockNumber++) {
+        for (int blockNumber = 0; blockNumber < blk; blockNumber++) {
             auto blockHash = generateRandomBlockHash();
             Block block(blockHash.data(), "");
             block.key_pairs = keyPairs;
@@ -320,20 +351,20 @@ int main() {
             // Update block hash string
             block.block_hash = oxenc::to_hex(blockHash.begin(), blockHash.end());
 
-            std::cout << "Block generated: " << block.block_hash << "\n";
+            std::cout << "Block generated: "<< (blockNumber + 1) <<" :" << block.block_hash << "\n";
             blocks.push_back(std::move(block));
         }
 
         std::cout << "Total blocks: " << blocks.size() << "\n";
         blockToCSVRow(blocks);
-        int blknum = 0;
-        for (const auto& blk : blocks) {
-            std::cout << "Block number: " << ++blknum << "\n";
-            std::cout << "Block hash: " << blk.block_hash << "\n";
-            std::cout << "Block leader: " << blk.leader << "\n";
-            std::cout << "Quorum size: " << blk.quorums.size() << "\n";
-            std::cout << "Validators size: " << blk.validators.size() << "\n\n";
-        }
+        // int blknum = 0;
+        // for (const auto& blk : blocks) {
+        //     std::cout << "Block number: " << ++blknum << "\n";
+        //     std::cout << "Block hash: " << blk.block_hash << "\n";
+        //     std::cout << "Block leader: " << blk.leader << "\n";
+        //     std::cout << "Quorum size: " << blk.quorums.size() << "\n";
+        //     std::cout << "Validators size: " << blk.validators.size() << "\n\n";
+        // }
 
         printLeaderCountInCsv(leader_count);
         

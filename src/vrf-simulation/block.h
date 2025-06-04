@@ -36,6 +36,9 @@ struct Block {
     // Store proofs per pubkey (pubkey hex string -> proof bytes)
     std::map<std::string, std::array<unsigned char, 80>> proofs;
 
+    // Time taken for the proof verification and threshodl calculation
+    double timeTaken;
+
     Block() = default;
     Block(const void* hash, const std::string& leader_init);
 
