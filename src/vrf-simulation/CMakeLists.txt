@@ -25,12 +25,21 @@ add_executable(vrf-simulation main.cpp block.cpp)
 
 include_directories(.)
 
+find_package(OpenMP)
+
 # Link the executable with your common and vrf libraries
 target_link_libraries(vrf-simulation
     PRIVATE
     common
     vrf
+    OpenMP::OpenMP_CXX
 )
+
+add_executable(leader-database getLeaders.cpp block_data.cpp)
+add_executable(leader-average testing.cpp)
+# add_executable(leader-database block_data.cpp)
+
+target_link_libraries(leader-database PRIVATE common sqlite3)
 
 # Optional: Output directory for the binary
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)

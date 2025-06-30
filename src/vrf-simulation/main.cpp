@@ -9,6 +9,11 @@
 #include <algorithm>
 #include <cstring>
 #include <chrono>
+#include <unordered_map> 
+#include <sqlite3.h>
+
+#include <omp.h>  // Add this at the top if not already included
+#include <csignal>
 
 #include "block.h"
 #include "common/hex.h"
@@ -19,6 +24,8 @@
 
 using ustring = std::basic_string<unsigned char>;
 using ustring_view = std::basic_string_view<unsigned char>;
+
+std::vector<Block> globalBlocks;
 
 
 std::array<unsigned char, PUBKEY_SIZE> pubkey_from_privkey(ustring_view privkey) {
@@ -104,53 +111,69 @@ void restoreKeyPairs(std::vector<KeyPair>& keyPairs) {
 }
 
 void generateProofToAll(Block& block, const std::vector<KeyPair>& keyPairs, const unsigned char* alpha, size_t alpha_len) {
-    for (const auto& kp : keyPairs) {
+    #pragma omp parallel for
+    for (int i = 0; i < static_cast<int>(keyPairs.size()); ++i) {
+        const auto& kp = keyPairs[i];
         unsigned char pi[80]{};
-        // auto start = std::chrono::high_resolution_clock::now();
+
         int err = vrf_prove(pi, kp.seckey.data(), alpha, alpha_len);
         if (err != 0) {
-            std::cerr << "vrf_prove() returned error\n";
-            return;
+            #pragma omp critical
+            std::cerr << "vrf_prove() returned error at index " << i << "\n";
+            continue;
         }
-        // auto end = std::chrono::high_resolution_clock::now();
-        // std::chrono::duration<double, std::milli> duration = end - start;
-        // std::cout << "Time for the proof calculation: " << duration.count() << " ms"<<"\n";
-        block.addProof(kp.pubkey, pi);
+
+        // Protect shared access
+        #pragma omp critical
+        {
+            block.addProof(kp.pubkey, pi);
+        }
     }
 }
 
 void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, const unsigned char* alpha, size_t alpha_len) {
     int mnSize = keyPairs.size();
-    double tau = mnSize * 30/100;
+    double tau = mnSize * 30 / 100.0;
     double W = mnSize;
     auto start = std::chrono::high_resolution_clock::now();
 
-    for (const auto& kp : keyPairs) {
+    #pragma omp parallel for
+    for (int i = 0; i < static_cast<int>(keyPairs.size()); ++i) {
+        const auto& kp = keyPairs[i];
         unsigned char pi[80];
-        bool found = block.getProof(oxenc::to_hex(kp.pubkey.begin(), kp.pubkey.end()), pi);
+
+        bool found;
+        {
+            // Protect block.getProof (if thread-unsafe due to map access)
+            #pragma omp critical
+            found = block.getProof(oxenc::to_hex(kp.pubkey.begin(), kp.pubkey.end()), pi);
+        }
+
         if (!found) {
-            std::cerr << "Proof not found for pubkey\n";
+            #pragma omp critical
+            std::cerr << "Proof not found for pubkey at index " << i << "\n";
             continue;
         }
 
         unsigned char output[64];
         int err = vrf_verify(output, kp.pubkey.data(), pi, alpha, alpha_len);
         if (err != 0) {
-            std::cerr << "Proof did not verify\n";
+            #pragma omp critical
+            std::cerr << "Proof did not verify at index " << i << "\n";
             continue;
         }
 
         mpf_t fraction;
         mpf_init(fraction);
-
         int response = verify_vrf_output_with_threshold(output, fraction, tau, W);
         if (response == 0) {
             mpf_class fraction_cpp(fraction);
+            #pragma omp critical
             block.addQuorumMember(kp.pubkey, fraction_cpp);
         }
         mpf_clear(fraction);
-
     }
+
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> duration = end - start;
     block.timeTaken = duration.count();
@@ -275,6 +298,105 @@ void blockToCSVRow(std::vector<Block>& blocks) {
     timefile.close();
 }
 
+void appendBlockToCSV(const Block& block, bool first) {
+    std::ofstream outfile("BlockData.csv", std::ios::app);
+    std::ofstream timefile("ProofVeriTime.csv", std::ios::app);
+
+    if (!outfile || !timefile) {
+        std::cerr << "Failed to open output file." << std::endl;
+        return;
+    }
+
+    if (first) {
+        outfile << "BlockHash,Leader,Quorums,Validators\n";
+        timefile << "Time(s)\n";
+    }
+
+    outfile << block.block_hash << ","
+            << block.leader << ","
+            << joinQuorumsVector(block.quorums) << ","
+            << joinVector(block.validators) << "\n";
+    timefile << block.timeTaken / 1000 << "\n";
+
+    outfile.close();
+    timefile.close();
+}
+
+int getExistingBlockCount() {
+    std::ifstream infile("BlockData.csv");
+    int count = 0;
+    std::string line;
+
+    if (!infile.is_open())
+        return 0;
+
+    // skip header
+    std::getline(infile, line);
+    while (std::getline(infile, line))
+        ++count;
+
+    return count;
+}
+
+std::unordered_map<std::string, int> restoreLeaderCount() {
+    std::unordered_map<std::string, int> leader_count;
+    std::ifstream infile("blockLeaders.csv");
+    std::string line;
+
+    if (!infile.is_open())
+        return leader_count;
+
+    // skip header
+    std::getline(infile, line);
+
+    while (std::getline(infile, line)) {
+        std::stringstream ss(line);
+        std::string leader;
+        int count;
+        if (std::getline(ss, leader, ',') && ss >> count) {
+            leader_count[leader] = count;
+        }
+    }
+
+    return leader_count;
+}
+
+void writeLeaderCount(const std::unordered_map<std::string, int>& leader_count) {
+    std::ofstream outfile("blockLeaders.csv");
+    if (!outfile) {
+        std::cerr << "Failed to open blockLeaders.csv\n";
+        return;
+    }
+
+    outfile << "Leader,Count\n";
+    for (const auto& [leader, count] : leader_count) {
+        outfile << leader << "," << count << "\n";
+    }
+    outfile.close();
+}
+
+std::optional<std::string> getLastBlockHash() {
+    std::ifstream infile("BlockData.csv");
+    if (!infile.is_open()) {
+        std::cerr << "BlockData.csv not found.\n";
+        return std::nullopt;
+    }
+
+    std::string line, lastLine;
+    std::getline(infile, line); // skip header
+
+    while (std::getline(infile, line)) {
+        if (!line.empty()) lastLine = line;
+    }
+
+    if (lastLine.empty()) return std::nullopt;
+
+    std::stringstream ss(lastLine);
+    std::string hash;
+    std::getline(ss, hash, ','); // First column is block_hash
+    return hash;
+}
+
 int getValidatedInput(const std::string& prompt, int minValue) {
     int value;
     while (true) {
@@ -292,9 +414,19 @@ int getValidatedInput(const std::string& prompt, int minValue) {
     }
     return value;
 }
+
+volatile std::sig_atomic_t g_stop_flag = 0;
+
+void handle_sigint(int signal) {
+    if (signal == SIGINT) {
+        g_stop_flag = 1;  // Set flag
+    }
+}
     
 int main() {
     try {
+
+        std::signal(SIGINT, handle_sigint);  // Set signal handler
         
         int mn = getValidatedInput("Enter the number of MNs needed for simulation (min 10): ", 10);
         int blk = getValidatedInput("Enter the number of Blocks needed for simulation (min 10): ", 10);
@@ -325,20 +457,39 @@ int main() {
         std::cout << "Key Generation done. Total MNs: " << keyPairs.size() << "\n";
 
         // Map to count how many times each public key is a leader
-        std::unordered_map<std::string, int> leader_count;
+        int existingBlocks = getExistingBlockCount();
+        std::cout << "existingBlocks : " << existingBlocks << std::endl;
+        
+        std::unordered_map<std::string, int> leader_count = restoreLeaderCount();
 
-        std::vector<Block> blocks;
-        for (int blockNumber = 0; blockNumber < blk; blockNumber++) {
+        for (int blockNumber = existingBlocks; blockNumber < blk; blockNumber++) {
+
+            if (g_stop_flag) {
+                std::cout << "\n❗ SIGINT received. Stopping gracefully...\n";
+                break;
+            }
+
             auto blockHash = generateRandomBlockHash();
             Block block(blockHash.data(), "");
             block.key_pairs = keyPairs;
 
             // alpha depends on previous block hash or default string
             std::string alphaStr;
-            if (blockNumber == 0) {
+            if (blockNumber == 0 && existingBlocks == 0) {
                 alphaStr = "victor";
             } else {
-                alphaStr = blocks[blockNumber - 1].block_hash;
+                if(globalBlocks.empty()) {
+                    auto lastHash = getLastBlockHash();
+                    if(lastHash) {
+                        alphaStr = *lastHash;
+                        std::cout << "Resuming from last hash: " << alphaStr << "\n";
+                    } else {
+                        std::cerr << "Failed to retrieve last block hash.\n";
+                        return 1;
+                    }
+                } else {
+                    alphaStr = globalBlocks.back().block_hash;
+                }
             }
 
             generateProofToAll(block, keyPairs, reinterpret_cast<const unsigned char*>(alphaStr.data()), alphaStr.size());
@@ -347,24 +498,19 @@ int main() {
             
             // Increment the leader count for the current leader
             leader_count[block.leader]++;
+            // writeLeaderCount(leader_count);
 
             // Update block hash string
             block.block_hash = oxenc::to_hex(blockHash.begin(), blockHash.end());
 
             std::cout << "Block generated: "<< (blockNumber + 1) <<" :" << block.block_hash << "\n";
-            blocks.push_back(std::move(block));
+            globalBlocks.push_back(std::move(block));
+
+            appendBlockToCSV(globalBlocks.back(), blockNumber == 0);
         }
 
-        std::cout << "Total blocks: " << blocks.size() << "\n";
-        blockToCSVRow(blocks);
-        // int blknum = 0;
-        // for (const auto& blk : blocks) {
-        //     std::cout << "Block number: " << ++blknum << "\n";
-        //     std::cout << "Block hash: " << blk.block_hash << "\n";
-        //     std::cout << "Block leader: " << blk.leader << "\n";
-        //     std::cout << "Quorum size: " << blk.quorums.size() << "\n";
-        //     std::cout << "Validators size: " << blk.validators.size() << "\n\n";
-        // }
+        // std::cout << "Total blocks: " << globalBlocks.size() << "\n";
+        // blockToCSVRow(globalBlocks);
 
         printLeaderCountInCsv(leader_count);
         
