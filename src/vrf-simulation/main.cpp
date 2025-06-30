@@ -19,13 +19,12 @@
 #include "common/hex.h"
 #include <oxenc/hex.h>
 #include "vrf.h"
+#include "block_data.hpp"
 
 // Your utility for pubkey from privkey (unchanged, or you can inline)
 
 using ustring = std::basic_string<unsigned char>;
 using ustring_view = std::basic_string_view<unsigned char>;
-
-std::vector<Block> globalBlocks;
 
 
 std::array<unsigned char, PUBKEY_SIZE> pubkey_from_privkey(ustring_view privkey) {
@@ -211,26 +210,6 @@ std::array<uint8_t, 32> generateRandomBlockHash() {
     return hash;
 }
 
-void printLeaderCountInCsv(std::unordered_map<std::string, int> &leader_count)
-{
-    // Write to CSV
-    std::ofstream outfile("blockLeaders.csv");
-    if (!outfile)
-    {
-        std::cerr << "Failed to open output file." << std::endl;
-        return;
-    }
-
-    // Write CSV header
-    outfile << "Leader,Count\n";
-    for (const auto &entry : leader_count)
-    {
-        outfile << entry.first << "," << entry.second << "\n";
-    }
-
-    outfile.close();
-}
-
 void printKeyPairInCsv(std::vector<KeyPair>& keyPairs){
     // Write to CSV
     std::ofstream outfile("keyPairs.csv");
@@ -273,128 +252,85 @@ std::string joinQuorumsVector(const std::vector<std::pair<std::string, mpf_class
     return ss.str();
 }
 
-// Convert block data to a CSV row string
-void blockToCSVRow(std::vector<Block>& blocks) {
-    // Write to CSV
-    std::ofstream outfile("BlockData.csv");
-    std::ofstream timefile("ProofVeriTime.csv");
+int getExistingBlockCount(sqlite3 *blockDb)
+{
+    int height = 0;
+    std::string query = "SELECT MAX(height) FROM blocks";
+    sqlite3_stmt *stmt = prepare_statement(blockDb, query);
 
-    if (!outfile && !timefile)
+    for (bool infinite_loop = true; infinite_loop;)
     {
-        std::cerr << "Failed to open output file." << std::endl;
-        return;
-    }
-    // Write CSV header
-    outfile << "BlockHash,Leader,Quorums,Validators\n";
-    timefile << "Time(s)\n";
-    for (const auto& block : blocks) {
-        outfile << block.block_hash << ","
-                << block.leader << ","
-                << joinQuorumsVector(block.quorums) << ","
-                << joinVector(block.validators) << "\n";
-        timefile << block.timeTaken/1000 << "\n";
-    }
-    outfile.close();
-    timefile.close();
-}
-
-void appendBlockToCSV(const Block& block, bool first) {
-    std::ofstream outfile("BlockData.csv", std::ios::app);
-    std::ofstream timefile("ProofVeriTime.csv", std::ios::app);
-
-    if (!outfile || !timefile) {
-        std::cerr << "Failed to open output file." << std::endl;
-        return;
-    }
-
-    if (first) {
-        outfile << "BlockHash,Leader,Quorums,Validators\n";
-        timefile << "Time(s)\n";
-    }
-
-    outfile << block.block_hash << ","
-            << block.leader << ","
-            << joinQuorumsVector(block.quorums) << ","
-            << joinVector(block.validators) << "\n";
-    timefile << block.timeTaken / 1000 << "\n";
-
-    outfile.close();
-    timefile.close();
-}
-
-int getExistingBlockCount() {
-    std::ifstream infile("BlockData.csv");
-    int count = 0;
-    std::string line;
-
-    if (!infile.is_open())
-        return 0;
-
-    // skip header
-    std::getline(infile, line);
-    while (std::getline(infile, line))
-        ++count;
-
-    return count;
-}
-
-std::unordered_map<std::string, int> restoreLeaderCount() {
-    std::unordered_map<std::string, int> leader_count;
-    std::ifstream infile("blockLeaders.csv");
-    std::string line;
-
-    if (!infile.is_open())
-        return leader_count;
-
-    // skip header
-    std::getline(infile, line);
-
-    while (std::getline(infile, line)) {
-        std::stringstream ss(line);
-        std::string leader;
-        int count;
-        if (std::getline(ss, leader, ',') && ss >> count) {
-            leader_count[leader] = count;
+        int step_result = step(*stmt);
+        switch (step_result)
+        {
+            case SQLITE_ROW:
+            {
+                height = sqlite3_column_int(stmt, 0);
+                break;
+            };
+            case SQLITE_DONE:
+            {
+                infinite_loop = false;
+                break;
+            }
+            case SQLITE_BUSY:
+                break;
+            default:
+            {
+                std::cout << "Failed to execute statement: " << sqlite3_sql(stmt) << ", reason: " << sqlite3_errstr(step_result) << "\n";
+                infinite_loop = false;
+                break;
+            }
         }
     }
-
-    return leader_count;
+    sqlite3_finalize(stmt);
+    return height;
 }
 
-void writeLeaderCount(const std::unordered_map<std::string, int>& leader_count) {
-    std::ofstream outfile("blockLeaders.csv");
-    if (!outfile) {
-        std::cerr << "Failed to open blockLeaders.csv\n";
-        return;
+std::optional<std::string> getLastBlockHash(sqlite3 *blockDb) {
+    std::string hash = "";
+    std::string query = "SELECT block_hash FROM blocks WHERE height = (SELECT MAX(height) FROM blocks)";
+    sqlite3_stmt *stmt = prepare_statement(blockDb, query);
+
+    for (bool infinite_loop = true; infinite_loop;)
+    {
+        int step_result = step(*stmt);
+        switch (step_result)
+        {
+            case SQLITE_ROW:
+            {
+                const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+                if (text)
+                    hash = std::string(text);
+                break;
+            };
+            case SQLITE_DONE:
+            {
+                infinite_loop = false;
+                break;
+            }
+            case SQLITE_BUSY:
+                break;
+            default:
+            {
+                std::cout << "Failed to execute statement: " << sqlite3_sql(stmt) << ", reason: " << sqlite3_errstr(step_result) << "\n";
+                infinite_loop = false;
+                break;
+            }
+        }
     }
-
-    outfile << "Leader,Count\n";
-    for (const auto& [leader, count] : leader_count) {
-        outfile << leader << "," << count << "\n";
-    }
-    outfile.close();
-}
-
-std::optional<std::string> getLastBlockHash() {
-    std::ifstream infile("BlockData.csv");
-    if (!infile.is_open()) {
-        std::cerr << "BlockData.csv not found.\n";
-        return std::nullopt;
-    }
-
-    std::string line, lastLine;
-    std::getline(infile, line); // skip header
-
-    while (std::getline(infile, line)) {
-        if (!line.empty()) lastLine = line;
-    }
-
-    if (lastLine.empty()) return std::nullopt;
-
-    std::stringstream ss(lastLine);
-    std::string hash;
-    std::getline(ss, hash, ','); // First column is block_hash
+    sqlite3_finalize(stmt);
     return hash;
+}
+
+bool storeBlockDetailsToDb(sqlite3 *blockDb, Block block) {
+
+    constexpr auto query = "INSERT INTO blocks (block_hash, leader, quorums, validators) VALUES (?, ?, ?, ?)";
+    sqlite3_stmt *stmt = prepare_statement(blockDb, query);
+    
+    if(!insertBlockData(blockDb, stmt, block.block_hash, block.leader, joinQuorumsVector(block.quorums), joinVector(block.validators))) return false;
+
+    return true;
 }
 
 int getValidatedInput(const std::string& prompt, int minValue) {
@@ -424,11 +360,18 @@ void handle_sigint(int signal) {
 }
     
 int main() {
+    // Initialize dataBase
+    sqlite3 *blockDb = init_database("blockData.db");
+    if (!blockDb) return 1;
+
+    // Create a table if not exist
+    if(!createTable(blockDb, "CREATE TABLE IF NOT EXISTS blocks(height INTEGER PRIMARY KEY AUTOINCREMENT, block_hash VARCHAR NOT NULL UNIQUE, leader VARCHAR NOT NULL, quorums VARCHAR NOT NULL, validators VARCHAR NOT NULL)")) return 1;
+
     try {
 
         std::signal(SIGINT, handle_sigint);  // Set signal handler
         
-        int mn = getValidatedInput("Enter the number of MNs needed for simulation (min 10): ", 10);
+        int mn =  getValidatedInput("Enter the number of MNs needed for simulation (min 10): ", 10);
         int blk = getValidatedInput("Enter the number of Blocks needed for simulation (min 10): ", 10);
 
         // Proceed with simulation using mn and blk
@@ -457,11 +400,10 @@ int main() {
         std::cout << "Key Generation done. Total MNs: " << keyPairs.size() << "\n";
 
         // Map to count how many times each public key is a leader
-        int existingBlocks = getExistingBlockCount();
+        int existingBlocks = getExistingBlockCount(blockDb);
         std::cout << "existingBlocks : " << existingBlocks << std::endl;
-        
-        std::unordered_map<std::string, int> leader_count = restoreLeaderCount();
 
+        std::string lastHash_tmp = "";
         for (int blockNumber = existingBlocks; blockNumber < blk; blockNumber++) {
 
             if (g_stop_flag) {
@@ -478,8 +420,8 @@ int main() {
             if (blockNumber == 0 && existingBlocks == 0) {
                 alphaStr = "victor";
             } else {
-                if(globalBlocks.empty()) {
-                    auto lastHash = getLastBlockHash();
+                if(lastHash_tmp == "") {
+                    auto lastHash = getLastBlockHash(blockDb);
                     if(lastHash) {
                         alphaStr = *lastHash;
                         std::cout << "Resuming from last hash: " << alphaStr << "\n";
@@ -488,7 +430,7 @@ int main() {
                         return 1;
                     }
                 } else {
-                    alphaStr = globalBlocks.back().block_hash;
+                    alphaStr = lastHash_tmp;
                 }
             }
 
@@ -496,23 +438,16 @@ int main() {
             generateOutputAndStore(block, keyPairs, reinterpret_cast<const unsigned char*>(alphaStr.data()), alphaStr.size());
             calculateLeaderAndValidator(block);
             
-            // Increment the leader count for the current leader
-            leader_count[block.leader]++;
-            // writeLeaderCount(leader_count);
 
             // Update block hash string
             block.block_hash = oxenc::to_hex(blockHash.begin(), blockHash.end());
+            lastHash_tmp = block.block_hash;
 
+            if(!storeBlockDetailsToDb(blockDb, block)) return 1;
+            
             std::cout << "Block generated: "<< (blockNumber + 1) <<" :" << block.block_hash << "\n";
-            globalBlocks.push_back(std::move(block));
 
-            appendBlockToCSV(globalBlocks.back(), blockNumber == 0);
         }
-
-        // std::cout << "Total blocks: " << globalBlocks.size() << "\n";
-        // blockToCSVRow(globalBlocks);
-
-        printLeaderCountInCsv(leader_count);
         
     } catch (const std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";

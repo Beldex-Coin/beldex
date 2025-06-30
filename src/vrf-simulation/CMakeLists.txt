@@ -21,7 +21,7 @@ add_library(vrf STATIC
 target_link_libraries(vrf PUBLIC ${GMP_LIBRARY} ${GMPXX_LIBRARY})
 
 # Build the executable
-add_executable(vrf-simulation main.cpp block.cpp)
+add_executable(vrf-simulation main.cpp block.cpp block_data.cpp)
 
 include_directories(.)
 
@@ -33,6 +33,7 @@ target_link_libraries(vrf-simulation
     common
     vrf
     OpenMP::OpenMP_CXX
+    sqlite3
 )
 
 add_executable(leader-database getLeaders.cpp block_data.cpp)

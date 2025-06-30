@@ -5,6 +5,10 @@ bool clear_bindings(sqlite3_stmt& s) {
   return SQLITE_OK == sqlite3_clear_bindings(&s);
 }
 
+int step(sqlite3_stmt& s) {
+  return sqlite3_step(&s);
+}
+
 sqlite3 * init_database(std::string dbName)
 {   
     std::cout << "intializing database ...\n";
@@ -41,6 +45,26 @@ sqlite3 * init_database(std::string dbName)
 
     return result;
 
+}
+
+sqlite3_stmt* prepare_statement(sqlite3 *blockDb, std::string query){
+    // Prepare the statement for the data entry
+    sqlite3_stmt* st;
+
+    #if SQLITE_VERSION_NUMBER >= 3020000
+        int prepare_result = sqlite3_prepare_v3(blockDb, query.data(), query.size(), SQLITE_PREPARE_PERSISTENT, &st, nullptr /*pzTail*/);
+    #else
+        int prepare_result = sqlite3_prepare_v2(blockDb, query, strlen(query), &st, nullptr /*pzTail*/);
+    #endif
+
+    if (prepare_result != SQLITE_OK) {
+        std::cerr << "Can not compile SQL statement:\n" << query << "\nReason: " << sqlite3_errstr(prepare_result);
+        return nullptr;
+    }
+
+    // Bind the values in the statement
+    clear_bindings(*st);
+    return st;
 }
 
 bool insertBlockRewardData(sqlite3 *blockDb, std::unordered_map<std::string, int> &leader_count){
@@ -87,6 +111,39 @@ bool insertBlockRewardData(sqlite3 *blockDb, std::unordered_map<std::string, int
     }
 
     std::cout << "blocks: " << blocks << std::endl;
+    return true;
+}
+
+bool insertBlockData(sqlite3 *blockDb, sqlite3_stmt *st, std::string blockHash, std::string leader, std::string quorums, std::string validators)
+{
+    if (sqlite3_bind_text(st, 1, blockHash.data(), blockHash.size(), SQLITE_TRANSIENT) != SQLITE_OK)
+    {
+        std::cerr << "Failed to bind mnKey\n";
+        return false;
+    }
+    if (sqlite3_bind_text(st, 2, leader.data(), leader.size(), SQLITE_TRANSIENT) != SQLITE_OK)
+    {
+        std::cerr << "Failed to bind mnKey\n";
+        return false;
+    }
+    if (sqlite3_bind_text(st, 3, quorums.data(), quorums.size(), SQLITE_TRANSIENT) != SQLITE_OK)
+    {
+        std::cerr << "Failed to bind mnKey\n";
+        return false;
+    }
+    if (sqlite3_bind_text(st, 4, validators.data(), validators.size(), SQLITE_TRANSIENT) != SQLITE_OK)
+    {
+        std::cerr << "Failed to bind mnKey\n";
+        return false;
+    }
+
+    if (sqlite3_step(st) == SQLITE_DONE) {
+            // std::cout << "Insertion done for : " << blockHash << "\n";
+    } else {
+        std::cerr << "Failed to insert: " << sqlite3_errmsg(blockDb) << "\n";
+        return false;
+    }
+
     return true;
 }
 
