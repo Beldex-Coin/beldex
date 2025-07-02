@@ -37,10 +37,11 @@ target_link_libraries(vrf-simulation
 )
 
 add_executable(leader-database getLeaders.cpp block_data.cpp)
-add_executable(leader-average testing.cpp)
+add_executable(leader-average testing.cpp block_data.cpp)
 # add_executable(leader-database block_data.cpp)
 
 target_link_libraries(leader-database PRIVATE common sqlite3)
+target_link_libraries(leader-average PRIVATE common sqlite3)
 
 # Optional: Output directory for the binary
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)

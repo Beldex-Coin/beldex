@@ -6,31 +6,54 @@
 #include <string>
 #include "block_data.hpp"
 
-std::vector<std::string> fetchLeadersFromCSV(const std::string& filename) {
-    std::ifstream file(filename);
-    std::vector<std::string> leaders;
-
-    if (!file.is_open()) {
-        std::cerr << "Unable to open file: " << filename << "\n";
-        return leaders;
+bool fetchLeadersFromDB(sqlite3 *blockDb) {
+    std::cout << "Fetching Leaders from database....\n";
+    bool status = true;
+    std::ofstream outfile("blockLeaders.csv");
+    if (!outfile) {
+        std::cerr << "Failed to open output file." << std::endl;
+        return false;
     }
 
-    std::string line;
-    std::getline(file, line); // Skip header
-    
-    std::cout << "Feteching block details from the csv file ....\n";
-    while (std::getline(file, line)) {
-        if (line.empty()) continue;
-
-        std::stringstream ss(line);
-        std::string field;
-        std::getline(ss, field, ','); // BlockHash
-        std::getline(ss, field, ','); // Leader
-        leaders.push_back(field);
+    // Write CSV header
+    outfile << "Leader,Count\n";
+    std::string query = "SELECT leader, COUNT(*) AS count FROM blocks GROUP BY leader";
+    // std::string query = "SELECT height, block_hash, leader, quorums, validators FROM blocks WHERE height = (SELECT MAX(height) FROM blocks)";
+    sqlite3_stmt *stmt = prepare_statement(blockDb, query);
+    if (!stmt) {
+        std::cerr << "Failed to prepare statement.\n";
+        return false;
     }
 
-    file.close();
-    return leaders;
+    int totalBlocks = 0;
+    for (bool infinite_loop = true; infinite_loop;) {
+        int step_result = step(*stmt);
+        switch (step_result) {
+            case SQLITE_ROW: {
+                const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+                int count = sqlite3_column_int(stmt, 1);
+                outfile << std::string(text ? text : "") << "," << count << "\n";
+                totalBlocks += count;
+                break;
+            }
+            case SQLITE_DONE:
+                infinite_loop = false;
+                break;
+            case SQLITE_BUSY:
+                break;
+            default:
+                std::cerr << "Failed to execute statement: " << sqlite3_sql(stmt)
+                          << ", reason: " << sqlite3_errstr(step_result) << "\n";
+                infinite_loop = false;
+                status = false;
+                break;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    outfile.close();
+    std::cout << "totalBlocks : " << totalBlocks << std::endl;
+    return status;
 }
 
 bool storeLeaderCountInDb(sqlite3* blockDb, std::unordered_map<std::string, int> &leader_count)
@@ -132,24 +155,45 @@ bool getTheDatailsFromDb(sqlite3 *blockDb) {
     return true;
 }
 
+bool getTheDatailsFromDbFromBlockHash(sqlite3 *blockDb) {
+    sqlite3_stmt* stmt;
+    const char* query = "SELECT height, block_hash FROM blocks WHERE block_hash = 'cfa8a8c61ee842aab50b1c2b01bc3b7649baf02ea54d5cb0d14068d4ff2f2438'";
+
+    if (sqlite3_prepare_v2(blockDb, query, -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            int height = sqlite3_column_int(stmt, 0);
+            std::string block_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+
+            std::cout << "Height: " << height << "\n";
+            std::cout << "Hash: " << block_hash << "\n";
+        } else {
+            std::cerr << "No blocks found in the table.\n";
+        }
+    } else {
+        std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(blockDb) << "\n";
+    }
+
+    sqlite3_finalize(stmt);
+
+    return true;
+}
+
 int main() {
     // Initialize dataBase
     sqlite3 *blockDb = init_database("blockData.db");
     if (!blockDb) return 1;
 
-    // // Block Leaders fetch and store into csv -> database 
+    // Block Leaders fetch and store into csv -> database 
     // std::unordered_map<std::string, int> leader_count;
-    // auto leaders = fetchLeadersFromCSV("BlockData.csv");
+    if(!fetchLeadersFromDB(blockDb)) return 1;
 
-    // for (const std::string& leader : leaders) {
-    //     leader_count[leader]++;
-    // }
 
     // if(!storeLeaderCountInDb(blockDb, leader_count)) return 1;
 
     // if(storeBlockDetailsToDb(blockDb, "BlockData.csv")) return 1;
     
-    if(getTheDatailsFromDb(blockDb)) return 1;
+    // if(!getTheDatailsFromDb(blockDb)) return 1;
+    // if(!getTheDatailsFromDbFromBlockHash(blockDb)) return 1;
     
     // Close the database
     sqlite3_close_v2(blockDb);

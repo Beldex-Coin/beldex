@@ -140,7 +140,7 @@ bool insertBlockData(sqlite3 *blockDb, sqlite3_stmt *st, std::string blockHash, 
     if (sqlite3_step(st) == SQLITE_DONE) {
             // std::cout << "Insertion done for : " << blockHash << "\n";
     } else {
-        std::cerr << "Failed to insert: " << sqlite3_errmsg(blockDb) << "\n";
+        std::cerr << "Failed to insert: " << sqlite3_errmsg(blockDb)  << "for BlockHash : " << blockHash << "\n";
         return false;
     }
 

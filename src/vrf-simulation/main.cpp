@@ -404,7 +404,7 @@ int main() {
         std::cout << "existingBlocks : " << existingBlocks << std::endl;
 
         std::string lastHash_tmp = "";
-        for (int blockNumber = existingBlocks; blockNumber < blk; blockNumber++) {
+        for (int blockNumber = existingBlocks; blockNumber < blk; ) {
 
             if (g_stop_flag) {
                 std::cout << "\n❗ SIGINT received. Stopping gracefully...\n";
@@ -441,11 +441,14 @@ int main() {
 
             // Update block hash string
             block.block_hash = oxenc::to_hex(blockHash.begin(), blockHash.end());
-            lastHash_tmp = block.block_hash;
 
-            if(!storeBlockDetailsToDb(blockDb, block)) return 1;
+            if(!storeBlockDetailsToDb(blockDb, block)){
+                std::cout << "Block generation failed for block" << blockNumber+1 << std::endl;
+                continue;
+            }
             
-            std::cout << "Block generated: "<< (blockNumber + 1) <<" :" << block.block_hash << "\n";
+            std::cout << "Block generated: "<< (++blockNumber) <<" :" << block.block_hash << "\n";
+            lastHash_tmp = block.block_hash;
 
         }
         
@@ -453,6 +456,9 @@ int main() {
         std::cerr << "Exception: " << e.what() << "\n";
         return 1;
     }
+
+    // Close the database
+    sqlite3_close_v2(blockDb);
 
     return 0;
 }
