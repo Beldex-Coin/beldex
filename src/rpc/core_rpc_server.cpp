@@ -763,8 +763,10 @@ namespace cryptonote::rpc {
       void operator()(const tx_extra_beldex_name_system& x) {
         json bns{};
         bns["version"] = x.version;          
-        if ((x.is_buying() || x.is_renewing()) && (x.version == 1))
-          bns["blocks"] = bns::expiry_blocks(nettype, x.mapping_years) ;
+        if ((x.is_buying() || x.is_renewing()) && (x.version == 1)) {
+          auto expiry = bns::expiry_blocks(nettype, x.mapping_years);
+          bns["blocks"] = expiry.has_value() ? expiry.value() : 0;
+        }
         if(x.version == 0)
           switch (x.type)
           {
@@ -3280,7 +3282,7 @@ namespace cryptonote::rpc {
         elem["encrypted_wallet_value"]                       = oxenc::to_hex(record.encrypted_wallet_value.to_view());
         elem["encrypted_belnet_value"]                       = oxenc::to_hex(record.encrypted_belnet_value.to_view());
         elem["encrypted_eth_addr_value"]                     = oxenc::to_hex(record.encrypted_eth_addr_value.to_view());
-        elem["expiration_height"]                            = record.expiration_height;
+        elem["expiration_height"]                            = record.expiration_height.has_value()? record.expiration_height.value() : 0;
         elem["update_height"]                                = record.update_height;
         elem["txid"]                                         = tools::type_to_hex(record.txid);
       }

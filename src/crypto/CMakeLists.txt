@@ -27,6 +27,13 @@
 # STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+find_package(GMP REQUIRED)
+
+add_library(gmp INTERFACE)
+target_include_directories(gmp INTERFACE ${GMP_INCLUDE_DIRS})
+target_link_libraries(gmp INTERFACE ${GMP_LIBRARIES})
+
+
 add_library(cncrypto
   aesb.c
   blake256.c
@@ -51,7 +58,8 @@ add_library(cncrypto
   cn_heavy_hash_soft.cpp
   cn_turtle_hash.c
   rx-slow-hash.c
-  tree-hash.c)
+  tree-hash.c
+  vrf.c)
 
 option(MONERO_SLOW_HASH "Enable support for Monero CNv0/CNv1 hashing (currently only used in the Android wallet). Defaults to disabled because this causes many false alarms in virus/malware detection software." OFF)
 if(MONERO_SLOW_HASH)
@@ -65,6 +73,7 @@ target_link_libraries(cncrypto
     randomx
     Boost::thread
     sodium
+    gmp
   PRIVATE
     extra)
 

@@ -1,6 +1,8 @@
 #include <array>
 #include <mutex>
 #include <chrono>
+#include <gmp.h>
+#include <gmpxx.h>
 
 #include "epee/wipeable_string.h"
 #include "epee/memwipe.h"
@@ -12,6 +14,7 @@
 #include "master_node_list.h"
 #include "master_node_quorum_cop.h"
 #include "master_node_rules.h"
+#include "crypto/vrf.h"
 
 extern "C"
 {
@@ -423,6 +426,30 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
     case POS::message_type::vrf_proof:
     {
       // check the size of the proof
+      
+      if (sizeof(msg.vrf_proof.value.data) != 80)
+      {
+        if (error) stream << log_prefix(context) << "Quorum position " << msg.quorum_position << " in POS message indexes oob";
+        return false;
+      }
+
+      key = &msg.vrf_proof.key;
+
+      // Need to move to prepare for round
+      // unsigned char output[64];
+      // uint64_t chain_height = blockchain.get_current_blockchain_height(true /*lock*/);
+      // const crypto::hash& alpha = blockchain.get_block_id_by_height(chain_height - 2);
+
+      // const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+      // unsigned char pk[32];
+      // std::memcpy(pk, msg.vrf_proof.key.data, sizeof(pk));
+
+      // int err = vrf_verify(output, pk, msg.vrf_proof.value.data, alpha_bytes, sizeof(alpha_bytes));
+      // if (err != 0) {
+      //     std::cerr << "Proof did not verify for the masternode: " << msg.vrf_proof.key << "\n";
+      //     return false;
+      //   }
+
     }
     break;
   }
@@ -1334,6 +1361,19 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       
       // calculate vrf data here then asign to value
       // context.transient.vrf_proof.send.data = proof from vrf;
+      const crypto::secret_key& sk = key.key;
+      const unsigned char* sk_bytes = reinterpret_cast<const unsigned char*>(sk.data);
+
+      // get the alpha value from the previous two blocks
+      const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
+      const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+
+      int err = vrf_prove(context.transient.vrf_proof.send.data.data, sk_bytes, alpha_bytes, sizeof(alpha_bytes));
+      if (err != 0) {
+            std::cerr << "vrf_prove() returned error for masternode " << key.pub << "\n";
+            return round_state::prepare_for_round;
+        }
+
       msg.vrf_proof.value = context.transient.vrf_proof.send.data;
       crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
       handle_message(quorumnet_state, msg, true); // Add our own. We receive our own msg for the first time which also triggers us to relay.

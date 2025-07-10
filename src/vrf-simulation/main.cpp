@@ -12,13 +12,13 @@
 #include <unordered_map> 
 #include <sqlite3.h>
 
-#include <omp.h>  // Add this at the top if not already included
+// #include <omp.h>  // Add this at the top if not already included
 #include <csignal>
 
 #include "block.h"
 #include "common/hex.h"
 #include <oxenc/hex.h>
-#include "vrf.h"
+#include "crypto/vrf.h"
 #include "block_data.hpp"
 
 // Your utility for pubkey from privkey (unchanged, or you can inline)
@@ -110,20 +110,20 @@ void restoreKeyPairs(std::vector<KeyPair>& keyPairs) {
 }
 
 void generateProofToAll(Block& block, const std::vector<KeyPair>& keyPairs, const unsigned char* alpha, size_t alpha_len) {
-    #pragma omp parallel for
+    // #pragma omp parallel for
     for (int i = 0; i < static_cast<int>(keyPairs.size()); ++i) {
         const auto& kp = keyPairs[i];
         unsigned char pi[80]{};
 
         int err = vrf_prove(pi, kp.seckey.data(), alpha, alpha_len);
         if (err != 0) {
-            #pragma omp critical
+            // #pragma omp critical
             std::cerr << "vrf_prove() returned error at index " << i << "\n";
             continue;
         }
 
         // Protect shared access
-        #pragma omp critical
+        // #pragma omp critical
         {
             block.addProof(kp.pubkey, pi);
         }
@@ -136,7 +136,7 @@ void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, 
     double W = mnSize;
     auto start = std::chrono::high_resolution_clock::now();
 
-    #pragma omp parallel for
+    // #pragma omp parallel for
     for (int i = 0; i < static_cast<int>(keyPairs.size()); ++i) {
         const auto& kp = keyPairs[i];
         unsigned char pi[80];
@@ -144,12 +144,12 @@ void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, 
         bool found;
         {
             // Protect block.getProof (if thread-unsafe due to map access)
-            #pragma omp critical
+            // #pragma omp critical
             found = block.getProof(oxenc::to_hex(kp.pubkey.begin(), kp.pubkey.end()), pi);
         }
 
         if (!found) {
-            #pragma omp critical
+            // #pragma omp critical
             std::cerr << "Proof not found for pubkey at index " << i << "\n";
             continue;
         }
@@ -157,7 +157,7 @@ void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, 
         unsigned char output[64];
         int err = vrf_verify(output, kp.pubkey.data(), pi, alpha, alpha_len);
         if (err != 0) {
-            #pragma omp critical
+            // #pragma omp critical
             std::cerr << "Proof did not verify at index " << i << "\n";
             continue;
         }
@@ -167,7 +167,7 @@ void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, 
         int response = verify_vrf_output_with_threshold(output, fraction, tau, W);
         if (response == 0) {
             mpf_class fraction_cpp(fraction);
-            #pragma omp critical
+            // #pragma omp critical
             block.addQuorumMember(kp.pubkey, fraction_cpp);
         }
         mpf_clear(fraction);

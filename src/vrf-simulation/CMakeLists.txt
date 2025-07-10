@@ -3,36 +3,36 @@
 message(STATUS "--------- INSIDE THE vrf-simulation ------")
 
 # Try to find GMP manually (if system-wide installed via apt, brew, etc.)
-find_path(GMP_INCLUDE_DIR gmp.h)
-find_library(GMP_LIBRARY NAMES gmp)
-find_library(GMPXX_LIBRARY NAMES gmpxx)
+# find_path(GMP_INCLUDE_DIR gmp.h)
+# find_library(GMP_LIBRARY NAMES gmp)
+# find_library(GMPXX_LIBRARY NAMES gmpxx)
 
-if (NOT GMP_INCLUDE_DIR OR NOT GMP_LIBRARY OR NOT GMPXX_LIBRARY)
-    message(FATAL_ERROR "GMP or GMPXX library not found. Please install GMP development files.")
-endif()
+# if (NOT GMP_INCLUDE_DIR OR NOT GMP_LIBRARY OR NOT GMPXX_LIBRARY)
+#     message(FATAL_ERROR "GMP or GMPXX library not found. Please install GMP development files.")
+# endif()
 
-include_directories(${GMP_INCLUDE_DIR})
+# include_directories(${GMP_INCLUDE_DIR})
 
-# Build the VRF static library
-add_library(vrf STATIC
-    vrf.c
-)
+# # Build the VRF static library
+# add_library(vrf STATIC
+#     vrf.c
+# )
 
-target_link_libraries(vrf PUBLIC ${GMP_LIBRARY} ${GMPXX_LIBRARY})
+# target_link_libraries(vrf PUBLIC ${GMP_LIBRARY} ${GMPXX_LIBRARY})
 
 # Build the executable
 add_executable(vrf-simulation main.cpp block.cpp block_data.cpp)
 
 include_directories(.)
 
-find_package(OpenMP)
+# find_package(OpenMP)
 
 # Link the executable with your common and vrf libraries
 target_link_libraries(vrf-simulation
     PRIVATE
     common
-    vrf
-    OpenMP::OpenMP_CXX
+    # vrf
+    # OpenMP::OpenMP_CXX
     sqlite3
 )
 
