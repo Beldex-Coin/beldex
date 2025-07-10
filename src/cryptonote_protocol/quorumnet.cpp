@@ -378,6 +378,7 @@ private:
             // Opportunistically relay to all my *incoming* sources within the quorum *if* I already
             // have a connection open with them, but don't open a new connection if I don't.
             for (int j : quorum_incoming_conns(my_position[i], validators.size())) {
+                std::cout << "number of time in quorum_incoming_conns\n";
                 if (add_peer(validators[j], false /*!strong*/))
                     MTRACE("Optional opportunistic relay within quorum " << (i == 0 ? "Q" : "Q'") << "[" << my_position[i] << "] to [" << j << "] " << validators[j]);
             }
@@ -1450,18 +1451,27 @@ const std::string POS_TAG_RANDOM_VALUE_HASH     = "x";
 const std::string POS_TAG_FINAL_BLOCK_SIGNATURE = "z";
 
 const std::string POS_CMD_CATEGORY               = "POS";
+const std::string POS_CMD_VRF_PROOF              = "vrf_proof";
 const std::string POS_CMD_VALIDATOR_BITSET       = "validator_bitset";
 const std::string POS_CMD_VALIDATOR_BIT          = "validator_bit";
 const std::string POS_CMD_BLOCK_TEMPLATE         = "block_template";
 const std::string POS_CMD_RANDOM_VALUE_HASH      = "random_value_hash";
 const std::string POS_CMD_RANDOM_VALUE           = "random_value";
 const std::string POS_CMD_SIGNED_BLOCK           = "signed_block";
+const std::string POS_CMD_SEND_VRF_PROOF         = POS_CMD_CATEGORY + "." + POS_CMD_VRF_PROOF;
 const std::string POS_CMD_SEND_VALIDATOR_BITSET  = POS_CMD_CATEGORY + "." + POS_CMD_VALIDATOR_BITSET;
 const std::string POS_CMD_SEND_VALIDATOR_BIT     = POS_CMD_CATEGORY + "." + POS_CMD_VALIDATOR_BIT;
 const std::string POS_CMD_SEND_BLOCK_TEMPLATE    = POS_CMD_CATEGORY + "." + POS_CMD_BLOCK_TEMPLATE;
 const std::string POS_CMD_SEND_RANDOM_VALUE_HASH = POS_CMD_CATEGORY + "." + POS_CMD_RANDOM_VALUE_HASH;
 const std::string POS_CMD_SEND_RANDOM_VALUE      = POS_CMD_CATEGORY + "." + POS_CMD_RANDOM_VALUE;
 const std::string POS_CMD_SEND_SIGNED_BLOCK      = POS_CMD_CATEGORY + "." + POS_CMD_SIGNED_BLOCK;
+
+void POS_relay_vrf_proof_to_mn(void *self,POS::message const &msg){
+// 1] create the bt_dict values
+// 2] serialize the dict value
+// 3] calculate the destination (all the MN)
+// 4] relay
+}
 
 void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nodes::quorum const &quorum, bool block_producer)
 {
@@ -1587,6 +1597,11 @@ POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consume
 // QuorumNet from another validator, either forwarded or originating from that
 // node. The message is added to the POS message queue and validating the
 // contents of the message is left to the caller.
+void handle_POS_VRF_proof(Message &m, QnetState &qnet)
+{
+
+}
+
 void handle_POS_participation_bit_or_bitset(Message &m, QnetState& qnet, bool bitset)
 {
   if (m.data.size() != 1)
@@ -1701,6 +1716,7 @@ void init_core_callbacks() {
     cryptonote::quorumnet_relay_obligation_votes = relay_obligation_votes;
     cryptonote::quorumnet_send_flash = send_flash;
     cryptonote::quorumnet_POS_relay_message_to_quorum = POS_relay_message_to_quorum;
+    cryptonote::quorumnet_POS_relay_vrf_proof_to_mn = POS_relay_vrf_proof_to_mn;
 }
 
 namespace {
@@ -1732,6 +1748,7 @@ void setup_endpoints(cryptonote::core& core, void* obj) {
             ;
 
         omq.add_category(POS_CMD_CATEGORY, Access{AuthLevel::none, true /*remote mn*/, true /*local mn*/}, 1 /*reserved thread*/)
+            .add_command(POS_CMD_VRF_PROOF, [&qnet](Message& m) { handle_POS_VRF_proof(m, qnet); })
             .add_command(POS_CMD_VALIDATOR_BIT, [&qnet](Message& m) { handle_POS_participation_bit_or_bitset(m, qnet, false /*bitset*/); })
             .add_command(POS_CMD_VALIDATOR_BITSET, [&qnet](Message& m) { handle_POS_participation_bit_or_bitset(m, qnet, true /*bitset*/); })
             .add_command(POS_CMD_BLOCK_TEMPLATE, [&qnet](Message& m) { handle_POS_block_template(m, qnet); })

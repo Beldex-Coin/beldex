@@ -256,6 +256,8 @@ namespace cryptonote
   quorumnet_relay_obligation_votes_proc *quorumnet_relay_obligation_votes = [](void*, const std::vector<master_nodes::quorum_vote_t>&) { need_core_init("quorumnet_relay_obligation_votes"sv); };
   quorumnet_send_flash_proc *quorumnet_send_flash = [](core&, const std::string&) -> std::future<std::pair<flash_result, std::string>> { need_core_init("quorumnet_send_flash"sv); };
   quorumnet_POS_relay_message_to_quorum_proc *quorumnet_POS_relay_message_to_quorum = [](void *, POS::message const &, master_nodes::quorum const &, bool) -> void { need_core_init("quorumnet_POS_relay_message_to_quorum"sv); };
+  quorumnet_POS_relay_vrf_proof_to_mn_proc *quorumnet_POS_relay_vrf_proof_to_mn = [](void *, POS::message const &) -> void { need_core_init("quorumnet_POS_relay_vrf_proof_to_mn"sv); };
+
 
   //-----------------------------------------------------------------------------------------------
   core::core()

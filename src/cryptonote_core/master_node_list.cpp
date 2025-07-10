@@ -1752,7 +1752,7 @@ namespace master_nodes
 
     std::vector<cryptonote::block> blocks;
     blocks.reserve(POS_QUORUM_SIZE);
-
+    // 100-21 => 79+12 => 91
     // NOTE: Go backwards from the block and retrieve the blocks for entropy.
     // We search by block so that this function handles alternatives blocks as
     // well as mainchain blocks.
@@ -1817,6 +1817,7 @@ namespace master_nodes
       return result;
     }
 
+    // all the active list are stored into the pos_canditates
     std::vector<pubkey_and_mninfo const *> POS_candidates;
     POS_candidates.reserve(active_mnode_list.size());
     for (auto &node : active_mnode_list)

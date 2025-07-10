@@ -98,6 +98,8 @@ namespace cryptonote
 
   // Relay a POS message to members specified in the quorum excluding the originating message owner.
   using quorumnet_POS_relay_message_to_quorum_proc = void (void *, POS::message const &msg, master_nodes::quorum const &quorum, bool block_producer);
+  
+  using quorumnet_POS_relay_vrf_proof_to_mn_proc = void (void *, POS::message const &msg);
 
   // Function pointer that we invoke when the mempool has changed; this gets set during
   // rpc/http_server.cpp's init_options().
@@ -110,6 +112,7 @@ namespace cryptonote
   extern quorumnet_send_flash_proc *quorumnet_send_flash;
 
   extern quorumnet_POS_relay_message_to_quorum_proc *quorumnet_POS_relay_message_to_quorum;
+  extern quorumnet_POS_relay_vrf_proof_to_mn_proc *quorumnet_POS_relay_vrf_proof_to_mn;
 
   /************************************************************************/
   /*                                                                      */

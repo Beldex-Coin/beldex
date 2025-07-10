@@ -375,6 +375,12 @@ namespace cryptonote
     static constexpr bool binary_serializable = true;
   };
 
+  struct POS_VRF_proof
+  {
+    unsigned char data[80];
+    bool operator==(POS_VRF_proof const &other) const { return std::memcmp(data, other.data, sizeof(data)) == 0; }
+  };
+
   struct POS_header
   {
     POS_random_value random_value;
