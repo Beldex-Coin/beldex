@@ -204,6 +204,53 @@ peer_prepare_relay_to_quorum_subset(cryptonote::core &core, It quorum_begin, It 
     return result;
 }
 
+std::vector<prepared_relay_destinations> peer_prepare_relay_to_mn_subset(cryptonote::core &core, std::unordered_set<crypto::public_key> candidates,  size_t num_peers) {
+    // Lookup the x25519 and ZMQ connection string for all possible flash recipients so that we
+    // know where to send it to, and so that we can immediately exclude MNs that aren't active
+    // anymore.
+
+    MDEBUG("Have " << candidates.size() << " MN candidates");
+
+    std::vector<std::tuple<std::string, std::string, decltype(proof_info{}.proof->version)>> remotes; // {x25519 pubkey, connect string, version}
+    remotes.reserve(candidates.size());
+    core.get_master_node_list().for_each_master_node_info_and_proof(candidates.begin(), candidates.end(),
+        [&remotes](const auto &pubkey, const auto &info, const auto &proof) {
+            if (!info.is_active()) {
+                MTRACE("Not include inactive node " << pubkey);
+                return;
+            }
+            if (!proof.pubkey_x25519 || !proof.proof->qnet_port || !proof.proof->public_ip) {
+                MTRACE("Not including node " << pubkey << ": missing x25519(" << to_hex(get_data_as_string(proof.pubkey_x25519)) << "), "
+                        "public_ip(" << epee::string_tools::get_ip_string_from_int32(proof.proof->public_ip) << "), or qnet port(" << proof.proof->qnet_port << ")");
+                return;
+            }
+            remotes.emplace_back(get_data_as_string(proof.pubkey_x25519),
+                    "tcp://" + epee::string_tools::get_ip_string_from_int32(proof.proof->public_ip) + ":" + std::to_string(proof.proof->qnet_port),
+                    proof.proof->version);
+        });
+
+    // Select 4 random MNs to send the data to, but prefer MNs with newer versions because they may have network fixes.
+    MDEBUG("Have " << remotes.size() << " candidates after checking active status and connection details");
+    std::vector<size_t> indices(remotes.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    std::shuffle(indices.begin(), indices.end(), tools::rng);
+
+    // Stable sort by version so that we keep the shuffled order within a version
+    using std::get;
+    std::stable_sort(indices.begin(), indices.end(), [&remotes](size_t a, size_t b) {
+        return get<2>(remotes[a]) > get<2>(remotes[b]); });
+
+    if (indices.size() > num_peers)
+        indices.resize(num_peers);
+
+    std::vector<prepared_relay_destinations> result;
+    result.reserve(indices.size());
+
+    for (size_t i : indices)
+      result.push_back({std::move(get<0>(remotes[i])), std::move(get<1>(remotes[i]))});
+    return result;
+}
+
 void peer_relay_to_prepared_destinations(cryptonote::core &core, std::vector<prepared_relay_destinations> const &destinations, std::string_view command, std::string &&data)
 {
     for (auto const &[x25519_string, connect_string]: destinations) {
@@ -1444,6 +1491,8 @@ const std::string POS_TAG_BLOCK_ROUND       = "r";
 const std::string POS_TAG_SIGNATURE         = "s";
 
 // Extra fields are intentionally given tags after the common header fields.
+const std::string POS_TAG_VRF_PROOF             = "p";
+const std::string POS_TAG_VRF_PROOF_KEY         = "k";
 const std::string POS_TAG_BLOCK_TEMPLATE        = "t";
 const std::string POS_TAG_VALIDATOR_BITSET      = "u";
 const std::string POS_TAG_RANDOM_VALUE          = "v";
@@ -1466,11 +1515,39 @@ const std::string POS_CMD_SEND_RANDOM_VALUE_HASH = POS_CMD_CATEGORY + "." + POS_
 const std::string POS_CMD_SEND_RANDOM_VALUE      = POS_CMD_CATEGORY + "." + POS_CMD_RANDOM_VALUE;
 const std::string POS_CMD_SEND_SIGNED_BLOCK      = POS_CMD_CATEGORY + "." + POS_CMD_SIGNED_BLOCK;
 
-void POS_relay_vrf_proof_to_mn(void *self,POS::message const &msg){
+void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
 // 1] create the bt_dict values
 // 2] serialize the dict value
 // 3] calculate the destination (all the MN)
-// 4] relay
+// 4] relay message to destinations
+
+// 1] create the bt_dict value
+  std::string_view command  = POS_CMD_SEND_VRF_PROOF;
+  
+  bt_dict data              = {};
+  data[POS_TAG_SIGNATURE]   = tools::view_guts(msg.signature);
+  data[POS_TAG_BLOCK_ROUND] = msg.round;
+
+  if(msg.type == POS::message_type::vrf_proof){
+    data[POS_TAG_VRF_PROOF]     = tools::view_guts(msg.vrf_proof.value);
+    data[POS_TAG_VRF_PROOF_KEY] = tools::view_guts(msg.vrf_proof.key);
+  }
+
+// 2] serialization we can call it from the quorum_subset
+// 3] calculate the destination
+  auto &qnet = QnetState::from(self);
+  auto const active_node_list             = qnet.core.get_master_node_list().active_master_nodes_infos();
+  std::unordered_set<crypto::public_key> candidates;
+
+  for(const auto& [pubkey, info] : active_node_list)
+    candidates.insert(pubkey);
+
+  std::cout << "Have " << candidates.size() << " MN candidates" << "\n";
+
+// 4] relay_message_to mn
+  auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
+  peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
+
 }
 
 void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nodes::quorum const &quorum, bool block_producer)
@@ -1570,7 +1647,7 @@ POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consume
   POS::message result = {};
   result.type           = type;
 
-  if (type != POS::message_type::block_template)
+  if (type != POS::message_type::block_template && type != POS::message_type::vrf_proof)
   {
     if (auto const &tag = POS_TAG_QUORUM_POSITION; data.skip_until(tag))
       result.quorum_position = data.consume_integer<int>();
@@ -1599,7 +1676,33 @@ POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consume
 // contents of the message is left to the caller.
 void handle_POS_VRF_proof(Message &m, QnetState &qnet)
 {
+  if (m.data.size() != 1)
+      throw std::runtime_error("Rejecting POS_VRF proof expected one data entry not "s + std::to_string(m.data.size()));
+  
+  bt_dict_consumer data{m.data[0]};
+  std::string_view constexpr INVALID_ARG_PREFIX = "Invalid POS_VRF proof: missing required field '"sv;
+  POS::message msg = POS_parse_msg_header_fields(POS::message_type::vrf_proof, data, INVALID_ARG_PREFIX);
 
+  if (auto const &tag = POS_TAG_VRF_PROOF; data.skip_until(tag)) {
+    auto str = data.consume_string_view();
+    if (str.size() != sizeof(msg.vrf_proof.value.data))
+      throw std::invalid_argument("Invalid data size: " + std::to_string(str.size()));
+    std::memcpy(msg.random_value.value.data, str.data(), str.size());
+  } else {
+    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
+  }
+
+  if (auto const &tag = POS_TAG_VRF_PROOF_KEY; data.skip_until(tag)) {
+    auto str = data.consume_string_view();
+    if (str.size() != sizeof(msg.vrf_proof.key))
+      throw std::invalid_argument("Invalid pubkey data size: " + std::to_string(str.size()));
+
+    std::memcpy(msg.vrf_proof.key.data, str.data(), str.size());
+  } else {
+    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
+  }
+
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data, true); }, qnet.core.POS_thread_id());
 }
 
 void handle_POS_participation_bit_or_bitset(Message &m, QnetState& qnet, bool bitset)
