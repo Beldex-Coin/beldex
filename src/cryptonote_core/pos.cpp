@@ -562,7 +562,7 @@ bool enforce_validator_participation_and_timeouts(round_context const &context,
 
 void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool all_mn)
 {
-  MGINFO_GREEN(log_prefix(context) << "Handle message called...." << msg_source_string(context, msg));
+  MGINFO_GREEN(log_prefix(context) << "Handle message called...." << msg.type);
   if (context.state < round_state::wait_for_round)
   {
     // TODO(doyle): Handle this better.
@@ -616,14 +616,14 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     return;
   }
-
+  MGINFO_GREEN(log_prefix(context) << "Passed signature check");
   POS_wait_stage *stage = nullptr;
   POS_VRF_wait_stage *vrf_stage = nullptr;
   switch(msg.type)
   {
     case POS::message_type::invalid:
     {
-      MTRACE(log_prefix(context) << "Received invalid message type, dropped");
+      MGINFO_GREEN(log_prefix(context) << "Received invalid message type, dropped");
       return;
     }
 
@@ -653,6 +653,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   // need to handle the early vrf proof in the pos_wait_stage
   if (msg_received_early) // Enqueue the message until we're ready to process it
   {
+    MGINFO_GREEN(log_prefix(context) << "msg_received_early is true");
     if(msg.type == POS::message_type::vrf_proof)
     {
       MGINFO_GREEN(log_prefix(context) << "msg vrf_proofs are trying to add in the wait list");
@@ -820,6 +821,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     case POS::message_type::vrf_proof:
     {
+      MGINFO_GREEN(log_prefix(context) << "Adding the proof into context" << msg.vrf_proof.key);
       auto &quorum = context.transient.vrf_proof.wait.data;
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
@@ -835,6 +837,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   vrf_stage->msgs_received++;
 
   if (quorumnet_state){
+    MGINFO_GREEN(log_prefix(context) << "Brodcasting data to the quorumnet");
     if(all_mn)
       cryptonote::quorumnet_POS_relay_vrf_proof_to_mn(quorumnet_state, msg);
     else
