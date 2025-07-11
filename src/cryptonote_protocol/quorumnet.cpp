@@ -1532,6 +1532,7 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
     data[POS_TAG_VRF_PROOF]     = tools::view_guts(msg.vrf_proof.value);
     data[POS_TAG_VRF_PROOF_KEY] = tools::view_guts(msg.vrf_proof.key);
   }
+  std::cout << "vrf_proof relay start for the key : " << msg.vrf_proof.key << std::endl;
 
 // 2] serialization we can call it from the quorum_subset
 // 3] calculate the destination
@@ -1546,6 +1547,10 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
 
 // 4] relay_message_to mn
   auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
+  for(const auto &[x25519_string, connect_string]:destinations)
+  {
+    std::cout << "the Destinations are : " << x25519_string << connect_string << std::endl;
+  }
   peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
 
 }
@@ -1676,6 +1681,7 @@ POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consume
 // contents of the message is left to the caller.
 void handle_POS_VRF_proof(Message &m, QnetState &qnet)
 {
+  std::cout << "handling the vrf proof from the other MN\n";
   if (m.data.size() != 1)
       throw std::runtime_error("Rejecting POS_VRF proof expected one data entry not "s + std::to_string(m.data.size()));
   
@@ -1702,6 +1708,7 @@ void handle_POS_VRF_proof(Message &m, QnetState &qnet)
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
   }
 
+  std::cout << "Handling the vrf proof from the other MN " << msg.vrf_proof.key << "\n";
   qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data, true); }, qnet.core.POS_thread_id());
 }
 

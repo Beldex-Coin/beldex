@@ -32,6 +32,8 @@ enum struct round_state
   null_state,
   wait_for_next_block,
 
+  send_and_wait_for_vrf_proofs,
+
   prepare_for_round,
   wait_for_round,
 
@@ -47,7 +49,6 @@ enum struct round_state
   send_and_wait_for_random_value,
   send_and_wait_for_signed_blocks,
   
-  send_and_wait_for_vrf_proofs
 };
 
 constexpr std::string_view round_state_string(round_state state)
@@ -56,6 +57,8 @@ constexpr std::string_view round_state_string(round_state state)
   {
     case round_state::null_state: return "XX Null State"sv;
     case round_state::wait_for_next_block: return "Wait For Next Block"sv;
+
+    case round_state::send_and_wait_for_vrf_proofs: return "Send & Wait For vrf proofs"sv;
 
     case round_state::prepare_for_round: return "Prepare For Round"sv;
     case round_state::wait_for_round: return "Wait For Round"sv;
@@ -72,7 +75,6 @@ constexpr std::string_view round_state_string(round_state state)
     case round_state::send_and_wait_for_random_value: return "Send & Wait For Random Value"sv;
     case round_state::send_and_wait_for_signed_blocks: return "Send & Wait For Signed Blocks"sv;
     
-    case round_state::send_and_wait_for_vrf_proofs: return "Send & Wait For vrf proofs"sv;
   }
 
   return "Invalid2"sv;
@@ -638,13 +640,13 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   switch(msg.type)
   {
     case POS::message_type::invalid:           assert("Invalid Code Path" != nullptr); return;
-    case POS::message_type::handshake:         msg_received_early = (context.state == round_state::send_and_wait_for_vrf_proofs)? (context.state > round_state::send_and_wait_for_handshakes) : (context.state < round_state::send_and_wait_for_handshakes);          break;
-    case POS::message_type::handshake_bitset:  msg_received_early = (context.state == round_state::send_and_wait_for_vrf_proofs)? (context.state > round_state::wait_for_handshake_bitsets) :(context.state < round_state::wait_for_handshake_bitsets);            break;
-    case POS::message_type::block_template:    msg_received_early = (context.state == round_state::send_and_wait_for_vrf_proofs)? (context.state > round_state::wait_for_block_template) :(context.state < round_state::wait_for_block_template);               break;
-    case POS::message_type::random_value_hash: msg_received_early = (context.state == round_state::send_and_wait_for_vrf_proofs)? (context.state > round_state::send_and_wait_for_random_value_hashes) :(context.state < round_state::send_and_wait_for_random_value_hashes); break;
-    case POS::message_type::random_value:      msg_received_early = (context.state == round_state::send_and_wait_for_vrf_proofs)? (context.state > round_state::send_and_wait_for_random_value) :(context.state < round_state::send_and_wait_for_random_value);        break;
-    case POS::message_type::signed_block:      msg_received_early = (context.state == round_state::send_and_wait_for_vrf_proofs)? (context.state > round_state::send_and_wait_for_signed_blocks) :(context.state < round_state::send_and_wait_for_signed_blocks);       break;
-    case POS::message_type::vrf_proof:         msg_received_early = (context.state > round_state::send_and_wait_for_vrf_proofs);          break;
+    case POS::message_type::vrf_proof:         msg_received_early = (context.state < round_state::send_and_wait_for_vrf_proofs);          break;
+    case POS::message_type::handshake:         msg_received_early = (context.state < round_state::send_and_wait_for_handshakes);          break;
+    case POS::message_type::handshake_bitset:  msg_received_early = (context.state < round_state::wait_for_handshake_bitsets);            break;
+    case POS::message_type::block_template:    msg_received_early = (context.state < round_state::wait_for_block_template);               break;
+    case POS::message_type::random_value_hash: msg_received_early = (context.state < round_state::send_and_wait_for_random_value_hashes); break;
+    case POS::message_type::random_value:      msg_received_early = (context.state < round_state::send_and_wait_for_random_value);        break;
+    case POS::message_type::signed_block:      msg_received_early = (context.state < round_state::send_and_wait_for_signed_blocks);       break;
   }
 
   // need to handle the early vrf proof in the pos_wait_stage
@@ -652,10 +654,12 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   {
     if(msg.type == POS::message_type::vrf_proof)
     {
+      std::cout << "msg vrf_proofs are trying to add in the wait list\n";
       // add data into the POS_VRF_wait_stage
       auto &[entry, queued] = vrf_stage->queue[msg.vrf_proof.key];
       if (queued == queueing_state::empty)
       {
+        std::cout << "msg vrf_proofs are added in the wait list for the key of: " << msg.vrf_proof.key << "\n";
         MTRACE(log_prefix(context) << "Message received early " << msg_source_string(context, msg) << ", queueing until we're ready.");
         entry  = std::move(msg);
         queued = queueing_state::received;
@@ -820,6 +824,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
 
+      std::cout << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.key << "\n";
       value = msg.vrf_proof.value;
     }
     break;
@@ -1336,7 +1341,8 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
   {
     using namespace master_nodes;
     context.prepare_for_round.start_time                          = context.wait_for_next_block.round_0_start_time                + (context.prepare_for_round.round * POS_ROUND_TIME);
-    context.transient.send_and_wait_for_handshakes.stage.end_time = context.prepare_for_round.start_time                          + POS_WAIT_FOR_HANDSHAKES_DURATION;
+    context.transient.vrf_proof.wait.stage.end_time               = context.prepare_for_round.start_time                          + POS_WAIT_FOR_VRF_PROOF_DURATION;     
+    context.transient.send_and_wait_for_handshakes.stage.end_time = context.transient.vrf_proof.wait.stage.end_time               + POS_WAIT_FOR_HANDSHAKES_DURATION;
     context.transient.wait_for_handshake_bitsets.stage.end_time   = context.transient.send_and_wait_for_handshakes.stage.end_time + POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION;
     context.transient.wait_for_block_template.stage.end_time      = context.transient.wait_for_handshake_bitsets.stage.end_time   + POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION;
     context.transient.random_value_hashes.wait.stage.end_time     = context.transient.wait_for_block_template.stage.end_time      + POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION;
@@ -1360,15 +1366,13 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       msg.type                   = POS::message_type::vrf_proof;
       
       // calculate vrf data here then asign to value
-      // context.transient.vrf_proof.send.data = proof from vrf;
-      const crypto::secret_key& sk = key.key;
-      const unsigned char* sk_bytes = reinterpret_cast<const unsigned char*>(sk.data);
+      const unsigned char *skpk = reinterpret_cast<const unsigned char *>(key.key_ed25519.data);
 
       // get the alpha value from the previous two blocks
       const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
       const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
-      int err = vrf_prove(context.transient.vrf_proof.send.data.data, sk_bytes, alpha_bytes, sizeof(alpha_bytes));
+      int err = vrf_prove(context.transient.vrf_proof.send.data.data, skpk, alpha_bytes, sizeof(alpha_bytes));
       if (err != 0) {
             std::cerr << "vrf_prove() returned error for masternode " << key.pub << "\n";
             return round_state::prepare_for_round;
@@ -1387,8 +1391,10 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
 
     auto const &quorum            = context.transient.vrf_proof.wait.data;
     bool const timed_out          = POS::clock::now() >= stage.end_time;
-    bool const all_handshakes     = stage.msgs_received == quorum.size();
-
+    auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
+    bool const all_handshakes     = activeList.size() == quorum.size();
+    std::cout <<"active size : " << activeList.size() << " proof received size : " << quorum.size() << std::endl;
+    
     if (all_handshakes || timed_out)
     {
       bool missing_handshakes = timed_out && !all_handshakes;

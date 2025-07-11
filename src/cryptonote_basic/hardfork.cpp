@@ -51,13 +51,13 @@ static constexpr std::array testnet_hard_forks =
 {
   hard_fork{hf::hf1,                    0,        1, 1548474440 },
   hard_fork{hf::hf7,                    0,       10, 1559474448 },
-  hard_fork{hf::hf8,                    0,    40000, 1559474448 },
-  hard_fork{hf::hf11_infinite_staking,  0,    54288, 1628224369 },
-  hard_fork{hf::hf12_security_signature,0,   104832, 1629012232 }, // Sunday, August 15, 2021 7:23:52 AM
-  hard_fork{hf::hf15_flash,             0,   169950, 1636391396 }, //  Monday, November 8, 2021 5:09:56 PM
-  hard_fork{hf::hf17_POS,               0,   169960, 1636391696 }, // Monday, November 8, 2021 5:14:56 PM
-  hard_fork{hf::hf18_bns,               0,  1251330, 1701063000 }, // Monday, November 27, 2023 5:30:00 AM
-  hard_fork{hf::hf19_enhance_bns,       0,  1997558, 1723447800 }, // Monday, Aug 12, 2024 7:30:00 AM
+  hard_fork{hf::hf8,                    0,    20, 1559474448 },
+  hard_fork{hf::hf11_infinite_staking,  0,    30, 1628224369 },
+  hard_fork{hf::hf12_security_signature,0,   40, 1629012232 }, // Sunday, August 15, 2021 7:23:52 AM
+  hard_fork{hf::hf15_flash,             0,   50, 1636391396 }, //  Monday, November 8, 2021 5:09:56 PM
+  hard_fork{hf::hf17_POS,               0,   150, 1636391696 }, // Monday, November 8, 2021 5:14:56 PM
+  hard_fork{hf::hf18_bns,               0,  200, 1701063000 }, // Monday, November 27, 2023 5:30:00 AM
+  hard_fork{hf::hf19_enhance_bns,       0,  300, 1723447800 }, // Monday, Aug 12, 2024 7:30:00 AM
 };
 
 static constexpr std::array devnet_hard_forks =

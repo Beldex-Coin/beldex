@@ -579,14 +579,13 @@ namespace nodetool
     std::set<std::string> full_addrs;
     if (nettype == cryptonote::network_type::TESTNET)
     {
-		full_addrs.insert("test1.rpcnode.stream:29090");
-        full_addrs.insert("test2.rpcnode.stream:29090");
+		  full_addrs.insert("13.234.116.62:29090");
     }
     else if (nettype == cryptonote::network_type::DEVNET)
     {
-		full_addrs.insert("35.237.218.150:39090");
-        full_addrs.insert("35.243.157.236:39090");
-        full_addrs.insert("35.237.118.17:39090");
+		  full_addrs.insert("35.237.218.150:39090");
+      full_addrs.insert("35.243.157.236:39090");
+      full_addrs.insert("35.237.118.17:39090");
     }
     else if (nettype == cryptonote::network_type::FAKECHAIN)
     {

@@ -30,13 +30,13 @@ using time_point = std::chrono::time_point<clock>;
 enum struct message_type : uint8_t
 {
   invalid,
+  vrf_proof,
   handshake,
   handshake_bitset,
   block_template,
   random_value_hash,
   random_value,
   signed_block,
-  vrf_proof
 };
 
 constexpr std::string_view message_type_string(message_type type)
@@ -44,13 +44,13 @@ constexpr std::string_view message_type_string(message_type type)
   switch(type)
   {
     case message_type::invalid: return "Invalid"sv;
+    case message_type::vrf_proof: return "Vrf Proof"sv;
     case message_type::handshake: return "Handshake"sv;
     case message_type::handshake_bitset: return "Handshake Bitset"sv;
     case message_type::block_template: return "Block Template"sv;
     case message_type::random_value_hash: return "Random Value Hash"sv;
     case message_type::random_value: return "Random Value"sv;
     case message_type::signed_block: return "Signed Block"sv;
-    case message_type::vrf_proof: return "Vrf Proof"sv;
 
   }
   return "Invalid2"sv;
