@@ -562,6 +562,7 @@ bool enforce_validator_participation_and_timeouts(round_context const &context,
 
 void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool all_mn)
 {
+  MGINFO_GREEN(log_prefix(context) << "Handle message called...." << msg_source_string(context, msg));
   if (context.state < round_state::wait_for_round)
   {
     // TODO(doyle): Handle this better.
@@ -654,13 +655,12 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   {
     if(msg.type == POS::message_type::vrf_proof)
     {
-      std::cout << "msg vrf_proofs are trying to add in the wait list\n";
+      MGINFO_GREEN(log_prefix(context) << "msg vrf_proofs are trying to add in the wait list");
       // add data into the POS_VRF_wait_stage
       auto &[entry, queued] = vrf_stage->queue[msg.vrf_proof.key];
       if (queued == queueing_state::empty)
       {
-        std::cout << "msg vrf_proofs are added in the wait list for the key of: " << msg.vrf_proof.key << "\n";
-        MTRACE(log_prefix(context) << "Message received early " << msg_source_string(context, msg) << ", queueing until we're ready.");
+        MGINFO_GREEN(log_prefix(context) << "Message received early " << msg_source_string(context, msg) << ", queueing until we're ready.");
         entry  = std::move(msg);
         queued = queueing_state::received;
       }
@@ -824,7 +824,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
 
-      std::cout << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.key << "\n";
+      MGINFO_GREEN(log_prefix(context) << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.key);
       value = msg.vrf_proof.value;
     }
     break;
@@ -1351,7 +1351,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
   }
 
 
-  std::cout << "Processing the vrf proofs\n";
+  MGINFO_GREEN(log_prefix(context) << "Processing the vrf proofs:" << context.wait_for_next_block.height);
   bool process_vrf = true;
   
   // for sending the vrf-proof and wait for receiving
@@ -1359,7 +1359,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     //
     // NOTE: Send
     //
-    if (!context.transient.vrf_proof.send.one_time_only())
+    if (context.transient.vrf_proof.send.one_time_only())
     {
       // Message
       POS::message msg         = msg_init_from_context(context);
@@ -1379,6 +1379,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
         }
 
       msg.vrf_proof.value = context.transient.vrf_proof.send.data;
+      MGINFO_GREEN(log_prefix(context) << "my msg.vrf_proof.value :  " << msg.vrf_proof.value.data);
       crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
       handle_message(quorumnet_state, msg, true); // Add our own. We receive our own msg for the first time which also triggers us to relay.
     }
@@ -1393,16 +1394,17 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     bool const timed_out          = POS::clock::now() >= stage.end_time;
     auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
     bool const all_handshakes     = activeList.size() == quorum.size();
-    std::cout <<"active size : " << activeList.size() << " proof received size : " << quorum.size() << std::endl;
+    MGINFO_GREEN(log_prefix(context) <<"active size : " << activeList.size() << " proof received size : " << quorum.size());
     
     if (all_handshakes || timed_out)
     {
       bool missing_handshakes = timed_out && !all_handshakes;
-      MINFO(log_prefix(context) << "Collected masternodes proofs ");
+      MGINFO_GREEN(log_prefix(context) << "Collected masternodes proofs ");
       return round_state::prepare_for_round;
     }
     else
     {
+      MGINFO_GREEN(log_prefix(context) << "Again called send_and_wait_for_vrf_proofs ");
       return round_state::send_and_wait_for_vrf_proofs;
     }
 

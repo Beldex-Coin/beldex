@@ -580,7 +580,7 @@ namespace nodetool
     if (nettype == cryptonote::network_type::TESTNET)
     {
 		  full_addrs.insert("13.235.13.134:29090");
-      full_addrs.insert("52.66.5.204:29090")
+      full_addrs.insert("52.66.5.204:29090");
     }
     else if (nettype == cryptonote::network_type::DEVNET)
     {

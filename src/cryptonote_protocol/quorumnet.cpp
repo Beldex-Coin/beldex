@@ -254,7 +254,7 @@ std::vector<prepared_relay_destinations> peer_prepare_relay_to_mn_subset(crypton
 void peer_relay_to_prepared_destinations(cryptonote::core &core, std::vector<prepared_relay_destinations> const &destinations, std::string_view command, std::string &&data)
 {
     for (auto const &[x25519_string, connect_string]: destinations) {
-        MINFO("Relaying data to " << to_hex(x25519_string) << " @ " << connect_string);
+        MGINFO_GREEN("Relaying data to " << to_hex(x25519_string) << " @ " << connect_string);
         core.get_omq().send(x25519_string, command, std::move(data), send_option::hint{connect_string});
     }
 }
@@ -1532,7 +1532,7 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
     data[POS_TAG_VRF_PROOF]     = tools::view_guts(msg.vrf_proof.value);
     data[POS_TAG_VRF_PROOF_KEY] = tools::view_guts(msg.vrf_proof.key);
   }
-  std::cout << "vrf_proof relay start for the key : " << msg.vrf_proof.key << std::endl;
+  MGINFO_GREEN("vrf_proof relay start for the key : " << msg.vrf_proof.key);
 
 // 2] serialization we can call it from the quorum_subset
 // 3] calculate the destination
@@ -1543,13 +1543,13 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
   for(const auto& [pubkey, info] : active_node_list)
     candidates.insert(pubkey);
 
-  std::cout << "Have " << candidates.size() << " MN candidates" << "\n";
+  MGINFO_GREEN("Have " << candidates.size() << " MN candidates");
 
 // 4] relay_message_to mn
   auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
   for(const auto &[x25519_string, connect_string]:destinations)
   {
-    std::cout << "the Destinations are : " << x25519_string << connect_string << std::endl;
+    MGINFO_GREEN("The Destinations are : " << x25519_string << connect_string);
   }
   peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
 
