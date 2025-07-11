@@ -429,27 +429,11 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
       
       if (sizeof(msg.vrf_proof.value.data) != 80)
       {
-        if (error) stream << log_prefix(context) << "Quorum position " << msg.quorum_position << " in POS message indexes oob";
+        if (error) stream << log_prefix(context) << "VRF proof size does not match oob";
         return false;
       }
 
-      key = &msg.vrf_proof.key;
-
-      // Need to move to prepare for round
-      // unsigned char output[64];
-      // uint64_t chain_height = blockchain.get_current_blockchain_height(true /*lock*/);
-      // const crypto::hash& alpha = blockchain.get_block_id_by_height(chain_height - 2);
-
-      // const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
-      // unsigned char pk[32];
-      // std::memcpy(pk, msg.vrf_proof.key.data, sizeof(pk));
-
-      // int err = vrf_verify(output, pk, msg.vrf_proof.value.data, alpha_bytes, sizeof(alpha_bytes));
-      // if (err != 0) {
-      //     std::cerr << "Proof did not verify for the masternode: " << msg.vrf_proof.key << "\n";
-      //     return false;
-      //   }
-
+       key = &msg.vrf_proof.key;
     }
     break;
   }
@@ -1362,13 +1346,21 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       // calculate vrf data here then asign to value
       // context.transient.vrf_proof.send.data = proof from vrf;
       const crypto::secret_key& sk = key.key;
+      const crypto::public_key& pk = key.pub;
       const unsigned char* sk_bytes = reinterpret_cast<const unsigned char*>(sk.data);
+      const unsigned char* pk_bytes = reinterpret_cast<const unsigned char*>(pk.data);
+
+      unsigned char skpk[64];
+      // Copy 32 bytes of sk to the first half
+      memcpy(skpk, sk.data, 32);
+      // Copy 32 bytes of pk to the second half
+      memcpy(skpk + 32, pk.data, 32);
 
       // get the alpha value from the previous two blocks
       const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
       const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
-      int err = vrf_prove(context.transient.vrf_proof.send.data.data, sk_bytes, alpha_bytes, sizeof(alpha_bytes));
+      int err = vrf_prove(context.transient.vrf_proof.send.data.data, skpk, alpha_bytes, sizeof(alpha_bytes));
       if (err != 0) {
             std::cerr << "vrf_prove() returned error for masternode " << key.pub << "\n";
             return round_state::prepare_for_round;
@@ -1405,6 +1397,61 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
   return round_state::prepare_for_round;
 }
 
+  
+// round_state prepare_for_round(round_context &context, master_nodes::master_node_keys const &key, cryptonote::Blockchain const &blockchain)
+// {
+
+//   std::vector<crypto::hash> const entropy = master_nodes::get_POS_entropy_for_next_block(blockchain.get_db(), context.wait_for_next_block.top_hash, context.prepare_for_round.round);
+//   auto const active_node_list             = blockchain.get_master_node_list().active_master_nodes_infos();
+//   auto hf_version                         = blockchain.get_network_version();
+//   crypto::public_key const &block_leader  = blockchain.get_master_node_list().get_block_leader().key;
+
+//   context.prepare_for_round.quorum =
+//       master_nodes::generate_POS_quorum(blockchain.nettype(),
+//                                            block_leader,
+//                                            hf_version,
+//                                            active_node_list,
+//                                            entropy,
+//                                            context.prepare_for_round.round);
+
+//   if (!master_nodes::verify_POS_quorum_sizes(context.prepare_for_round.quorum))
+//   {
+//     MINFO(log_prefix(context) << "Insufficient Master Nodes to execute POS on height " << context.wait_for_next_block.height << ", we require a PoW miner block. Sleeping until next block.");
+//     return goto_wait_for_next_block_and_clear_round_data(context);
+//   }
+
+//   MTRACE(log_prefix(context) << "Generate POS quorum: " << context.prepare_for_round.quorum);
+
+//   //
+//   // NOTE: Quorum participation
+//   //
+//   if (key.pub == context.prepare_for_round.quorum.workers[0])
+//   {
+//     // NOTE: Producer doesn't send handshakes, they only collect the
+//     // handshake bitsets from the other validators to determine who to
+//     // lock in for this round in the block template.
+//     context.prepare_for_round.participant = mn_type::producer;
+//     context.prepare_for_round.node_name   = "W[0]";
+//   }
+//   else
+//   {
+//     for (size_t index = 0; index < context.prepare_for_round.quorum.validators.size(); index++)
+//     {
+//       auto const &validator_key = context.prepare_for_round.quorum.validators[index];
+//       if (validator_key == key.pub)
+//       {
+//         context.prepare_for_round.participant        = mn_type::validator;
+//         context.prepare_for_round.my_quorum_position = index;
+//         context.prepare_for_round.node_name = "V[" + std::to_string(context.prepare_for_round.my_quorum_position) + "]";
+//         break;
+//       }
+//     }
+//   }
+
+//   return round_state::wait_for_round;
+// }
+
+
 round_state prepare_for_round(round_context &context, master_nodes::master_node_keys const &key, cryptonote::Blockchain const &blockchain)
 {
 
@@ -1413,6 +1460,62 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
   auto hf_version                         = blockchain.get_network_version();
   crypto::public_key const &block_leader  = blockchain.get_master_node_list().get_block_leader().key;
 
+  // Prepare your "alpha" (message input to VRF)
+  const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
+  const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+
+  // unordered map for vrf outputs
+  // std::unordered_map<crypto::public_key, std::array<unsigned char, 64>> vrf_output;
+  std::unordered_map<crypto::public_key, std::unique_ptr<unsigned char[]>> vrf_output;
+
+  // verify the cryptographic sortition and insert the valid proof into the vrf_output
+  for (const auto& [pubkey, proof_opt] : context.transient.vrf_proof.wait.data) {
+    if (!proof_opt)
+        continue; // skip entries without proofs
+
+    const cryptonote::POS_VRF_proof& proof = *proof_opt;
+
+    unsigned char pk[32];
+    std::memcpy(pk, pubkey.data, sizeof(pk));
+
+    // Declare output buffer
+    //unsigned char output[64];
+    std::array<unsigned char, 64> output;
+
+    
+    // Verify and compute output
+    int ok = vrf_verify(output.data(), pk, proof.data, alpha_bytes, sizeof(alpha_bytes));
+
+    if (ok == 0) {
+        // Valid proof, insert into output map
+        // Valid proof: allocate a new buffer and copy the result
+        std::unique_ptr<unsigned char[]> ptr(new unsigned char[64]);
+        std::memcpy(ptr.get(), output.data(), 64);
+
+        vrf_output[pubkey] = std::move(ptr); 
+    } else {
+        // Optionally log invalid proof
+        std::cerr << "Invalid VRF proof for pubkey:" << pubkey;
+    } 
+  }
+
+  
+  // Step 1: Convert the unordered_map into a vector of (pubkey, array<uchar, 64>)
+  std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> sorted_vrf_output;
+
+  for (const auto& [pubkey, output_ptr] : vrf_output) {
+    std::array<unsigned char, 64> output;
+    std::memcpy(output.data(), output_ptr.get(), 64);  // Copy data from unique_ptr to std::array
+    sorted_vrf_output.emplace_back(pubkey, output);
+  }
+
+  // Step 2: Sort the vector by VRF output value
+  std::sort(sorted_vrf_output.begin(), sorted_vrf_output.end(),
+    [](const auto& a, const auto& b) {
+        return std::memcmp(a.second.data(), b.second.data(), 64) < 0;
+    }
+  );
+  
   context.prepare_for_round.quorum =
       master_nodes::generate_POS_quorum(blockchain.nettype(),
                                            block_leader,
@@ -1457,6 +1560,7 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
 
   return round_state::wait_for_round;
 }
+
 
 round_state wait_for_round(round_context &context, cryptonote::Blockchain const &blockchain)
 {

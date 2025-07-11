@@ -22,7 +22,8 @@ int cryptographic_sortition(unsigned char output[64], unsigned char proof[80],
                     
 int sortition_verify(const unsigned char pk[32],
 	   			unsigned char proof[80],
-	   			const unsigned char *msg, 
+				unsigned char output[64],
+				const unsigned char *msg, 
 	   			unsigned long long msglen,
 	   			double tau,
 	   			double W);
