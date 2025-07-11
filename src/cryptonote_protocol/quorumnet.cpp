@@ -1590,6 +1590,8 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
 
       case POS::message_type::block_template: break;
 
+      case POS::message_type::vrf_proof: break;
+
       case POS::message_type::handshake: /* FALLTHRU */
       case POS::message_type::handshake_bitset:
       {
