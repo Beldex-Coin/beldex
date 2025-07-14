@@ -428,8 +428,9 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
     case POS::message_type::vrf_proof:
     {
       // check the size of the proof
+      MGINFO_GREEN(log_prefix(context) << "checking the vrf_proof signature");
       
-      if (sizeof(msg.vrf_proof.value.data) != 80)
+      if (std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.value.data)) != 80)
       {
         if (error) stream << log_prefix(context) << "Quorum position " << msg.quorum_position << " in POS message indexes oob";
         return false;
@@ -462,6 +463,7 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
     return false;
   }
 
+  MGINFO_YELLOW(log_prefix(context) << "signatue check is true");
   return true;
 }
 
@@ -1382,8 +1384,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
         }
 
       msg.vrf_proof.value = context.transient.vrf_proof.send.data;
-      size_t length = sizeof(msg.vrf_proof.value.data) / sizeof(msg.vrf_proof.value.data[0]);
-      MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< length);
+      MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.value.data)));
 
       MGINFO_GREEN(log_prefix(context) << "My msg.vrf_proof.value: " << msg.vrf_proof.value.data);
       crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
