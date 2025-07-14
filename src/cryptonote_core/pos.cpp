@@ -562,7 +562,7 @@ bool enforce_validator_participation_and_timeouts(round_context const &context,
 
 void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool all_mn)
 {
-  MGINFO_GREEN(log_prefix(context) << "Handle message called...." << msg.type);
+  MGINFO_GREEN(log_prefix(context) << "Handle message called...." << static_cast<uint8_t>(msg.type));
   if (context.state < round_state::wait_for_round)
   {
     // TODO(doyle): Handle this better.
@@ -1382,7 +1382,10 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
         }
 
       msg.vrf_proof.value = context.transient.vrf_proof.send.data;
-      MGINFO_GREEN(log_prefix(context) << "my msg.vrf_proof.value :  " << msg.vrf_proof.value.data);
+      size_t length = sizeof(msg.vrf_proof.value.data) / sizeof(msg.vrf_proof.value.data[0]);
+      MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< length);
+
+      MGINFO_GREEN(log_prefix(context) << "My msg.vrf_proof.value: " << msg.vrf_proof.value.data);
       crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
       handle_message(quorumnet_state, msg, true); // Add our own. We receive our own msg for the first time which also triggers us to relay.
     }
@@ -1438,7 +1441,7 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
     return goto_wait_for_next_block_and_clear_round_data(context);
   }
 
-  MTRACE(log_prefix(context) << "Generate POS quorum: " << context.prepare_for_round.quorum);
+  MGINFO_BLUE(log_prefix(context) << "Generate POS quorum: " << context.prepare_for_round.quorum);
 
   //
   // NOTE: Quorum participation
