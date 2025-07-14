@@ -380,6 +380,7 @@ std::string msg_source_string(round_context const &context, POS::message const &
 
 bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_hash, master_nodes::quorum const &quorum, std::string *error)
 {
+  MGINFO_MAGENTA(log_prefix(context) << "checking the msg_signature_check");
   std::stringstream stream;
   BELDEX_DEFER {
     if (error) *error = stream.str();
@@ -564,7 +565,7 @@ bool enforce_validator_participation_and_timeouts(round_context const &context,
 
 void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool all_mn)
 {
-  MGINFO_GREEN(log_prefix(context) << "Handle message called...." << static_cast<uint8_t>(msg.type));
+  MGINFO_GREEN(log_prefix(context) << "Handle message called....: " << static_cast<uint8_t>(msg.type));
   if (context.state < round_state::wait_for_round)
   {
     // TODO(doyle): Handle this better.
@@ -1357,13 +1358,14 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
 
 
   MGINFO_GREEN(log_prefix(context) << "Processing the vrf proofs:" << context.wait_for_next_block.height);
-  bool process_vrf = true;
+  bool process_vrf = false;
   
   // for sending the vrf-proof and wait for receiving
   if(process_vrf){
     //
     // NOTE: Send
     //
+    MGINFO_BLUE(log_prefix(context) << context.transient.vrf_proof.send.sent);
     if (context.transient.vrf_proof.send.one_time_only())
     {
       // Message
@@ -1515,17 +1517,17 @@ round_state wait_for_round(round_context &context, cryptonote::Blockchain const 
 
   if (context.prepare_for_round.participant == mn_type::validator)
   {
-    MINFO(log_prefix(context) << "We are a POS validator, sending handshake bit and collecting other handshakes.");
+    MGINFO_MAGENTA(log_prefix(context) << "We are a POS validator, sending handshake bit and collecting other handshakes.");
     return round_state::send_and_wait_for_handshakes;
   }
   else if (context.prepare_for_round.participant == mn_type::producer)
   {
-    MINFO(log_prefix(context) << "We are the block producer for height " << context.wait_for_next_block.height << " in round " << +context.prepare_for_round.round << ", awaiting handshake bitsets.");
+    MGINFO_MAGENTA(log_prefix(context) << "We are the block producer for height " << context.wait_for_next_block.height << " in round " << +context.prepare_for_round.round << ", awaiting handshake bitsets.");
     return round_state::wait_for_handshake_bitsets;
   }
   else
   {
-    MDEBUG(log_prefix(context) << "Non-participant for round, waiting on next round or block.");
+    MGINFO_MAGENTA(log_prefix(context) << "Non-participant for round, waiting on next round or block.");
     return goto_preparing_for_next_round(context);
   }
 }
