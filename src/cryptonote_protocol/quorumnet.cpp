@@ -216,11 +216,11 @@ std::vector<prepared_relay_destinations> peer_prepare_relay_to_mn_subset(crypton
     core.get_master_node_list().for_each_master_node_info_and_proof(candidates.begin(), candidates.end(),
         [&remotes](const auto &pubkey, const auto &info, const auto &proof) {
             if (!info.is_active()) {
-                MTRACE("Not include inactive node " << pubkey);
+                MGINFO_RED("Not include inactive node " << pubkey);
                 return;
             }
             if (!proof.pubkey_x25519 || !proof.proof->qnet_port || !proof.proof->public_ip) {
-                MTRACE("Not including node " << pubkey << ": missing x25519(" << to_hex(get_data_as_string(proof.pubkey_x25519)) << "), "
+                MGINFO_RED("Not including node " << pubkey << ": missing x25519(" << to_hex(get_data_as_string(proof.pubkey_x25519)) << "), "
                         "public_ip(" << epee::string_tools::get_ip_string_from_int32(proof.proof->public_ip) << "), or qnet port(" << proof.proof->qnet_port << ")");
                 return;
             }
@@ -230,7 +230,7 @@ std::vector<prepared_relay_destinations> peer_prepare_relay_to_mn_subset(crypton
         });
 
     // Select 4 random MNs to send the data to, but prefer MNs with newer versions because they may have network fixes.
-    MDEBUG("Have " << remotes.size() << " candidates after checking active status and connection details");
+    MGINFO_GREEN("Have " << remotes.size() << " candidates after checking active status and connection details");
     std::vector<size_t> indices(remotes.size());
     std::iota(indices.begin(), indices.end(), 0);
     std::shuffle(indices.begin(), indices.end(), tools::rng);
@@ -1547,7 +1547,7 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
 
 // 4] relay_message_to mn
   auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
-  for(const auto &[x25519_string, connect_string]:destinations)
+  for(const auto &[x25519_string, connect_string]: destinations)
   {
     MGINFO_GREEN("The Destinations are : " << x25519_string << connect_string);
   }

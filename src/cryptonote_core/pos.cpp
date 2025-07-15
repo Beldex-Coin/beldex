@@ -59,10 +59,9 @@ constexpr std::string_view round_state_string(round_state state)
   {
     case round_state::null_state: return "XX Null State"sv;
     case round_state::wait_for_next_block: return "Wait For Next Block"sv;
-
-    case round_state::send_and_wait_for_vrf_proofs: return "Send & Wait For vrf proofs"sv;
-
     case round_state::prepare_for_round: return "Prepare For Round"sv;
+    case round_state::send_and_wait_for_vrf_proofs: return "Send & Wait For vrf proofs"sv;
+    case round_state::prepare_quorum: return "Prepare Quorum"sv;
     case round_state::wait_for_round: return "Wait For Round"sv;
 
     case round_state::send_and_wait_for_handshakes: return "Send & Wait For Handshakes"sv;
@@ -78,6 +77,7 @@ constexpr std::string_view round_state_string(round_state state)
     case round_state::send_and_wait_for_signed_blocks: return "Send & Wait For Signed Blocks"sv;
     
   }
+
 
   return "Invalid2"sv;
 }
@@ -431,15 +431,16 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
     case POS::message_type::vrf_proof:
     {
       // check the size of the proof
-      MGINFO_GREEN(log_prefix(context) << "checking the vrf_proof signature");
+      MGINFO_GREEN(log_prefix(context) << "checking the vrf_proof signature: " << msg.vrf_proof.key);
       
-      if (std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.value.data)) != 80)
-      {
-        if (error) stream << log_prefix(context) << "Quorum position " << msg.quorum_position << " in POS message indexes oob";
-        return false;
-      }
+      // if (std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.value.data)) != 80)
+      // {
+      //   if (error) stream << log_prefix(context) << "Quorum position " << msg.quorum_position << " in POS message indexes oob";
+      //   return false;
+      // }
 
       key = &msg.vrf_proof.key;
+      // std::cout << "key : " << key << std::endl; 
 
       // Need to move to prepare for round
       // unsigned char output[64];
@@ -567,8 +568,8 @@ bool enforce_validator_participation_and_timeouts(round_context const &context,
 
 void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool all_mn)
 {
-  MGINFO_GREEN(log_prefix(context) << "Handle message called....: " << static_cast<uint8_t>(msg.type));
-  if (context.state < round_state::wait_for_round)
+  MGINFO_GREEN(log_prefix(context) << "Handle message called....: " << message_type_string(msg.type));
+  if (context.state < round_state::wait_for_round && context.state != round_state::send_and_wait_for_vrf_proofs)
   {
     // TODO(doyle): Handle this better.
     // We are not ready for any messages because we haven't prepared for a round
@@ -837,9 +838,13 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     break;
   }
 
-  stage->bitset |= validator_bit;
-  stage->msgs_received++;
-  vrf_stage->msgs_received++;
+  if(msg.type != POS::message_type::vrf_proof)
+  {
+    stage->bitset |= validator_bit;
+    stage->msgs_received++;
+  } else {
+    vrf_stage->msgs_received++;
+  }
 
   if (quorumnet_state){
     MGINFO_GREEN(log_prefix(context) << "Brodcasting data to the quorumnet");
@@ -1397,11 +1402,12 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
             std::cerr << "Proof did not verify at pubkey:" << key.pub << "\n";
             return round_state::prepare_for_round;
       }
-      MGINFO_GREEN(log_prefix(context) << "Output from the VRF proof:" << output);
+      // MGINFO_GREEN(log_prefix(context) << "Output from the VRF proof:" << output);
       msg.vrf_proof.value = context.transient.vrf_proof.send.data;
-      MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.value.data)));
+      msg.vrf_proof.key = key.pub;
+      // MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.value.data)));
 
-      MGINFO_GREEN(log_prefix(context) << "My msg.vrf_proof.value: " << msg.vrf_proof.value.data);
+      // MGINFO_GREEN(log_prefix(context) << "My msg.vrf_proof.value: " << msg.vrf_proof.value.data);
       crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
       handle_message(quorumnet_state, msg, true); // Add our own. We receive our own msg for the first time which also triggers us to relay.
     }
@@ -1414,6 +1420,16 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
 
     auto const &quorum            = context.transient.vrf_proof.wait.data;
     bool const timed_out          = POS::clock::now() >= stage.end_time;
+    
+    // Convert to time_t
+    std::time_t nowt = std::chrono::system_clock::to_time_t(POS::clock::now());
+
+    // Print in readable format
+    std::cout << "Current time: " << std::put_time(std::localtime(&nowt), "%F %T") << "\n";
+
+    std::time_t t = std::chrono::system_clock::to_time_t(stage.end_time);
+    std::cout << "end time: " << std::put_time(std::localtime(&t), "%F %T") << std::endl;
+    
     auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
     bool const all_handshakes     = activeList.size() == quorum.size();
     MGINFO_GREEN(log_prefix(context) <<"active size : " << activeList.size() << " proof received size : " << quorum.size());
@@ -1426,7 +1442,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     }
     else
     {
-      MGINFO_GREEN(log_prefix(context) << "Again called send_and_wait_for_vrf_proofs ");
+      MDEBUG(log_prefix(context) << "Again called send_and_wait_for_vrf_proofs ");
       return round_state::send_and_wait_for_vrf_proofs;
     }
 
