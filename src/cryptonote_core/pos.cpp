@@ -32,9 +32,11 @@ enum struct round_state
   null_state,
   wait_for_next_block,
 
-  send_and_wait_for_vrf_proofs,
-
   prepare_for_round,
+
+  send_and_wait_for_vrf_proofs,
+  prepare_quorum,
+
   wait_for_round,
 
   send_and_wait_for_handshakes,
@@ -869,6 +871,7 @@ bool POS::get_round_timings(cryptonote::Blockchain const &blockchain, uint64_t b
     return false;
 
   uint64_t const delta_height = block_height - cryptonote::get_block_height(POS_genesis_block);
+  std::cout << "delta_height : " << delta_height << std::endl;
   times.genesis_timestamp     = POS::time_point(std::chrono::seconds(POS_genesis_block.timestamp));
   times.prev_timestamp  = POS::time_point(std::chrono::seconds(prev_timestamp));
   times.ideal_timestamp  = POS::time_point(times.genesis_timestamp + (cryptonote::TARGET_BLOCK_TIME * delta_height)); //only for POS
@@ -1285,10 +1288,10 @@ round_state wait_for_next_block(uint64_t hf17_height, round_context &context, cr
   context.wait_for_next_block.top_hash           = prev_hash;
   context.prepare_for_round                      = {};
 
-  return round_state::send_and_wait_for_vrf_proofs;
+  return round_state::prepare_for_round;
 }
 
-round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain const &blockchain)
+round_state prepare_for_round(round_context &context, master_nodes::master_node_keys const &key, cryptonote::Blockchain const &blockchain)
 {
   //
   // NOTE: Clear Round Data
@@ -1356,9 +1359,13 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     context.transient.signed_block.wait.stage.end_time            = context.transient.random_value.wait.stage.end_time            + POS_WAIT_FOR_SIGNED_BLOCK_DURATION;
   }
 
+  return round_state::send_and_wait_for_vrf_proofs;
+}
 
-  MGINFO_GREEN(log_prefix(context) << "Processing the vrf proofs:" << context.wait_for_next_block.height);
-  bool process_vrf = false;
+round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain const &blockchain)
+{
+  // MGINFO_GREEN(log_prefix(context) << "Processing the vrf proofs:" << context.wait_for_next_block.height);
+  bool process_vrf = true;
   
   // for sending the vrf-proof and wait for receiving
   if(process_vrf){
@@ -1415,7 +1422,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     {
       bool missing_handshakes = timed_out && !all_handshakes;
       MGINFO_GREEN(log_prefix(context) << "Collected masternodes proofs ");
-      return round_state::prepare_for_round;
+      return round_state::prepare_quorum;
     }
     else
     {
@@ -1425,10 +1432,10 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
 
   }
 
-  return round_state::prepare_for_round;
+  return round_state::prepare_quorum;
 }
 
-round_state prepare_for_round(round_context &context, master_nodes::master_node_keys const &key, cryptonote::Blockchain const &blockchain)
+round_state prepare_quorum(round_context &context, master_nodes::master_node_keys const &key, cryptonote::Blockchain const &blockchain)
 {
 
   std::vector<crypto::hash> const entropy = master_nodes::get_POS_entropy_for_next_block(blockchain.get_db(), context.wait_for_next_block.top_hash, context.prepare_for_round.round);
@@ -1450,7 +1457,7 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
     return goto_wait_for_next_block_and_clear_round_data(context);
   }
 
-  MGINFO_BLUE(log_prefix(context) << "Generate POS quorum: " << context.prepare_for_round.quorum);
+  // MGINFO_BLUE(log_prefix(context) << "Generate POS quorum: " << context.prepare_for_round.quorum);
 
   //
   // NOTE: Quorum participation
@@ -1533,7 +1540,7 @@ round_state wait_for_round(round_context &context, cryptonote::Blockchain const 
   }
   else
   {
-    MGINFO_MAGENTA(log_prefix(context) << "Non-participant for round, waiting on next round or block.");
+    MDEBUG(log_prefix(context) << "Non-participant for round, waiting on next round or block.");
     return goto_preparing_for_next_round(context);
   }
 }
@@ -1987,6 +1994,14 @@ void POS::main(void *quorumnet_state, cryptonote::core &core)
       case round_state::prepare_for_round:
         context.state = prepare_for_round(context, key, blockchain);
         break;
+      
+      case round_state::send_and_wait_for_vrf_proofs:
+        context.state = send_and_wait_for_vrf_proofs(context, quorumnet_state, key, blockchain);
+        break;
+
+      case round_state::prepare_quorum:
+        context.state = prepare_quorum(context, key, blockchain);
+        break;
 
       case round_state::wait_for_round:
         context.state = wait_for_round(context, blockchain);
@@ -2022,10 +2037,6 @@ void POS::main(void *quorumnet_state, cryptonote::core &core)
 
       case round_state::send_and_wait_for_signed_blocks:
         context.state = send_and_wait_for_signed_blocks(context, node_list, quorumnet_state, key, core);
-        break;
-
-      case round_state::send_and_wait_for_vrf_proofs:
-        context.state = send_and_wait_for_vrf_proofs(context, quorumnet_state, key, blockchain);
         break;
     }
   }

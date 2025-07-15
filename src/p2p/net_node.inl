@@ -579,8 +579,7 @@ namespace nodetool
     std::set<std::string> full_addrs;
     if (nettype == cryptonote::network_type::TESTNET)
     {
-		  full_addrs.insert("test1.rpcnode.stream:29090");
-      full_addrs.insert("test2.rpcnode.stream:29090");
+		  full_addrs.insert("15.206.122.12:29090");
     }
     else if (nettype == cryptonote::network_type::DEVNET)
     {

@@ -80,7 +80,7 @@ inline constexpr uint64_t LOCKED_TX_ALLOWED_DELTA_BLOCKS       = 1;
         #define DIFFICULTY_TARGET_V2                            120  // seconds
         #define DIFFICULTY_TARGET_V1                            60  // seconds - before first fork
 
-inline constexpr auto TARGET_BLOCK_TIME     = 30s;
+inline constexpr auto TARGET_BLOCK_TIME     = 1min;
 inline constexpr uint64_t BLOCKS_PER_HOUR   = 1h / TARGET_BLOCK_TIME;
 inline constexpr uint64_t BLOCKS_PER_DAY    = 24h / TARGET_BLOCK_TIME;
 
@@ -347,7 +347,7 @@ namespace config
     inline constexpr uint16_t ZMQ_RPC_DEFAULT_PORT = 29092;
     inline constexpr uint16_t QNET_DEFAULT_PORT = 29095;
     inline constexpr std::array<unsigned char, 16> const NETWORK_ID = { {
-        0x12 ,0x30, 0xF1, 0x71 , 0x61, 0x04 , 0x41, 0x61, 0x17, 0x31, 0x00, 0x82, 0x17, 0xA1, 0xB6, 0x91
+        0x12 ,0x30, 0xF1, 0x71 , 0x61, 0x04 , 0x41, 0x61, 0x17, 0x31, 0x00, 0x82, 0x17, 0xA1, 0xB8, 0x93
       } }; // Bender's daydream
     inline constexpr std::string_view GENESIS_TX = "023c01ff0001d7c1c4e81402a4b3be74714906edf0d798d22083d36983e80086d62436302684ca5bea0f312b420195937f9cb7005504052c96bf73d65d55f611c141876e5e519cef59fcb041d90872000000000000000000000000000000000000000000000000000000000000000000"sv;
     inline constexpr uint32_t GENESIS_NONCE = 11012;
