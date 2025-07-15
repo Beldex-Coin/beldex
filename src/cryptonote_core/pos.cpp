@@ -1373,18 +1373,24 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       msg.type                   = POS::message_type::vrf_proof;
       
       // calculate vrf data here then asign to value
-      const unsigned char *skpk = reinterpret_cast<const unsigned char *>(key.key_ed25519.data);
+      // const unsigned char *skpk = reinterpret_cast<const unsigned char *>(key.key_ed25519.data);
 
       // get the alpha value from the previous two blocks
       const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
       const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
-      int err = vrf_prove(context.transient.vrf_proof.send.data.data, skpk, alpha_bytes, sizeof(alpha_bytes));
+      int err = vrf_prove(context.transient.vrf_proof.send.data.data, key.key_ed25519.data, alpha_bytes, sizeof(alpha.data));
       if (err != 0) {
             std::cerr << "vrf_prove() returned error for masternode " << key.pub << "\n";
             return round_state::prepare_for_round;
-        }
-
+      }
+      unsigned char output[64];
+      err = vrf_verify(output, reinterpret_cast<const unsigned char*>(key.pub.data), context.transient.vrf_proof.send.data.data, alpha_bytes, sizeof(alpha.data));
+      if (err != 0) {
+            std::cerr << "Proof did not verify at pubkey:" << key.pub << "\n";
+            return round_state::prepare_for_round;
+      }
+      MGINFO_GREEN(log_prefix(context) << "Output from the VRF proof:" << output);
       msg.vrf_proof.value = context.transient.vrf_proof.send.data;
       MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.value.data)));
 
