@@ -1547,10 +1547,6 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
 
 // 4] relay_message_to mn
   auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
-  for(const auto &[x25519_string, connect_string]: destinations)
-  {
-    MGINFO_GREEN("The Destinations are : " << x25519_string << connect_string);
-  }
   peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
 
 }
@@ -1681,38 +1677,45 @@ POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consume
 // QuorumNet from another validator, either forwarded or originating from that
 // node. The message is added to the POS message queue and validating the
 // contents of the message is left to the caller.
-void handle_POS_VRF_proof(Message &m, QnetState &qnet)
-{
-  std::cout << "handling the vrf proof from the other MN\n";
+void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
+  std::cout << "Handling the VRF proof from another MN...\n";
+
   if (m.data.size() != 1)
-      throw std::runtime_error("Rejecting POS_VRF proof expected one data entry not "s + std::to_string(m.data.size()));
-  
+    throw std::runtime_error("Rejecting POS_VRF proof: expected 1 data entry, got " + std::to_string(m.data.size()));
+
   bt_dict_consumer data{m.data[0]};
-  std::string_view constexpr INVALID_ARG_PREFIX = "Invalid POS_VRF proof: missing required field '"sv;
+  constexpr std::string_view INVALID_ARG_PREFIX = "Invalid POS_VRF proof: missing required field '";
+
   POS::message msg = POS_parse_msg_header_fields(POS::message_type::vrf_proof, data, INVALID_ARG_PREFIX);
 
-  if (auto const &tag = POS_TAG_VRF_PROOF; data.skip_until(tag)) {
+  if (auto const& tag = POS_TAG_VRF_PROOF; data.skip_until(tag)) {
     auto str = data.consume_string_view();
     if (str.size() != sizeof(msg.vrf_proof.value.data))
-      throw std::invalid_argument("Invalid data size: " + std::to_string(str.size()));
-    std::memcpy(msg.random_value.value.data, str.data(), str.size());
+      throw std::invalid_argument("Invalid proof data size: " + std::to_string(str.size()));
+    std::memcpy(msg.vrf_proof.value.data, str.data(), str.size());
   } else {
-    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
+    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF + "'");
   }
 
-  if (auto const &tag = POS_TAG_VRF_PROOF_KEY; data.skip_until(tag)) {
+  if (auto const& tag = POS_TAG_VRF_PROOF_KEY; data.skip_until(tag)) {
     auto str = data.consume_string_view();
     if (str.size() != sizeof(msg.vrf_proof.key))
-      throw std::invalid_argument("Invalid pubkey data size: " + std::to_string(str.size()));
-
+      throw std::invalid_argument("Invalid key data size: " + std::to_string(str.size()));
     std::memcpy(msg.vrf_proof.key.data, str.data(), str.size());
   } else {
-    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
+    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF_KEY + "'");
   }
 
-  std::cout << "Handling the vrf proof from the other MN " << msg.vrf_proof.key << "\n";
-  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data, true); }, qnet.core.POS_thread_id());
+  std::cout << "Received VRF proof from MN pubkey: " << to_hex(get_data_as_string(msg.vrf_proof.key)) << "\n";
+
+  qnet.omq.job(
+    [&qnet, data = std::move(msg)]() {
+      POS::handle_message(&qnet, data, true);
+    },
+    qnet.core.POS_thread_id()
+  );
 }
+
 
 void handle_POS_participation_bit_or_bitset(Message &m, QnetState& qnet, bool bitset)
 {

@@ -832,7 +832,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
 
-      MGINFO_GREEN(log_prefix(context) << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.key);
+      MGINFO_GREEN(log_prefix(context) << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.value.data);
       value = msg.vrf_proof.value;
     }
     break;
@@ -1377,7 +1377,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     //
     // NOTE: Send
     //
-    MGINFO_BLUE(log_prefix(context) << context.transient.vrf_proof.send.sent);
+    // MGINFO_BLUE(log_prefix(context) << context.transient.vrf_proof.send.sent);
     if (context.transient.vrf_proof.send.one_time_only())
     {
       // Message
@@ -1423,19 +1423,14 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     
     // Convert to time_t
     std::time_t nowt = std::chrono::system_clock::to_time_t(POS::clock::now());
-
-    // Print in readable format
-    std::cout << "Current time: " << std::put_time(std::localtime(&nowt), "%F %T") << "\n";
-
-    std::time_t t = std::chrono::system_clock::to_time_t(stage.end_time);
-    std::cout << "end time: " << std::put_time(std::localtime(&t), "%F %T") << std::endl;
     
     auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
     bool const all_handshakes     = activeList.size() == quorum.size();
-    MGINFO_GREEN(log_prefix(context) <<"active size : " << activeList.size() << " proof received size : " << quorum.size());
     
     if (all_handshakes || timed_out)
     {
+      MGINFO_GREEN(log_prefix(context) <<"active size : " << activeList.size() << " proof received size : " << quorum.size());
+
       bool missing_handshakes = timed_out && !all_handshakes;
       MGINFO_GREEN(log_prefix(context) << "Collected masternodes proofs ");
       return round_state::prepare_quorum;
