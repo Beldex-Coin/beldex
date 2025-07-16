@@ -1381,11 +1381,14 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
     std::cout << "Duration (seconds): " << sec << " s\n";
 
     auto start_time = context.prepare_for_round.start_time;
-    if (auto now = POS::clock::now(); now < start_time)
-    {
-      for (static uint64_t last_height = 0; last_height != context.wait_for_next_block.height; last_height = context.wait_for_next_block.height)
-        MGINFO_BLUE(log_prefix(context) << "Waiting for round " << +context.prepare_for_round.round << " to start in " << tools::friendly_duration(start_time - now));
-      return round_state::wait_for_round;
+    while(true){
+      if (auto now = POS::clock::now(); now < start_time)
+      {
+        for (static uint64_t last_height = 0; last_height != context.wait_for_next_block.height; last_height = context.wait_for_next_block.height)
+          MGINFO_BLUE(log_prefix(context) << "Waiting for round " << +context.prepare_for_round.round << " to start in " << tools::friendly_duration(start_time - now));
+      } else {
+        break;
+      }
     }
   }
 
@@ -1451,6 +1454,8 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
 
     auto const &quorum            = context.transient.vrf_proof.wait.data;
     bool const timed_out          = POS::clock::now() >= stage.end_time;
+    std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+    MGINFO_BLUE("now_c : " << std::put_time(std::gmtime(&now_c), "%F %T"));
         
     auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
     bool const all_handshakes     = activeList.size() == quorum.size();
