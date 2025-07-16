@@ -1701,7 +1701,7 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
     data[POS_TAG_VRF_PROOF]     = tools::view_guts(msg.vrf_proof.value);
     data[POS_TAG_VRF_PROOF_KEY]     = tools::view_guts(msg.vrf_proof.key);
   }
-  MGINFO_GREEN("vrf_proof relay start for the key : " << msg.vrf_proof.key);
+//   MGINFO_GREEN("vrf_proof relay start for the key : " << msg.vrf_proof.key);
 
   if(!handle_POS_VRF_proof_check(bt_serialize(data))){
     MGINFO_RED("error in vrf-proof de-serialize");

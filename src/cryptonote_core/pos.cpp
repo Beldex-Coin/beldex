@@ -431,7 +431,7 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
     case POS::message_type::vrf_proof:
     {
       // check the size of the proof
-      MGINFO_GREEN(log_prefix(context) << "checking the vrf_proof signature: " << msg.vrf_proof.key);
+      // MGINFO_GREEN(log_prefix(context) << "checking the vrf_proof signature: " << msg.vrf_proof.key);
       
       // if (std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.value.data)) != 80)
       // {
@@ -831,7 +831,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     case POS::message_type::vrf_proof:
     {
-      MGINFO_GREEN(log_prefix(context) << "Adding the proof into context" << msg.vrf_proof.key);
+      // MGINFO_GREEN(log_prefix(context) << "Adding the proof into context" << msg.vrf_proof.key);
       auto &quorum = context.transient.vrf_proof.wait.data;
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
@@ -1380,16 +1380,16 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
     auto sec = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
     std::cout << "Duration (seconds): " << sec << " s\n";
 
-    auto start_time = context.prepare_for_round.start_time;
-    while(true){
-      if (auto now = POS::clock::now(); now < start_time)
-      {
-        for (static uint64_t last_height = 0; last_height != context.wait_for_next_block.height; last_height = context.wait_for_next_block.height)
-          MGINFO_BLUE(log_prefix(context) << "Waiting for round " << +context.prepare_for_round.round << " to start in " << tools::friendly_duration(start_time - now));
-      } else {
-        break;
-      }
-    }
+    // auto start_time = context.prepare_for_round.start_time;
+    // while(true){
+    //   if (auto now = POS::clock::now(); now < start_time)
+    //   {
+    //     for (static uint64_t last_height = 0; last_height != context.wait_for_next_block.height; last_height = context.wait_for_next_block.height)
+    //       MGINFO_BLUE(log_prefix(context) << "Waiting for round " << +context.prepare_for_round.round << " to start in " << tools::friendly_duration(start_time - now));
+    //   } else {
+    //     break;
+    //   }
+    // }
   }
 
   return round_state::send_and_wait_for_vrf_proofs;
@@ -1455,7 +1455,6 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     auto const &quorum            = context.transient.vrf_proof.wait.data;
     bool const timed_out          = POS::clock::now() >= stage.end_time;
     std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
-    MGINFO_BLUE("now_c : " << std::put_time(std::gmtime(&now_c), "%F %T"));
         
     auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
     bool const all_handshakes     = activeList.size() == quorum.size();
@@ -1463,6 +1462,10 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     if (all_handshakes || timed_out)
     {
       MGINFO_GREEN(log_prefix(context) <<"active size : " << activeList.size() << " proof received size : " << quorum.size());
+
+      std::time_t vrf_proof_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
+      MGINFO_BLUE("vrf_proof_time_t.end_time : " << std::put_time(std::gmtime(&vrf_proof_time_t), "%F %T"));
+      MGINFO_BLUE("now_c (VRF): " << std::put_time(std::gmtime(&now_c), "%F %T"));
 
       bool missing_handshakes = timed_out && !all_handshakes;
       MGINFO_GREEN(log_prefix(context) << "Collected masternodes proofs ");
@@ -1624,6 +1627,11 @@ round_state send_and_wait_for_handshakes(round_context &context, void *quorumnet
 
   if (all_handshakes || timed_out)
   {
+    std::time_t handshakes_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
+      MGINFO_BLUE("handshakes.end_time : " << std::put_time(std::gmtime(&handshakes_time_t), "%F %T"));
+
+      std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+      MGINFO_BLUE("now_c (handshakes): " << std::put_time(std::gmtime(&now_c), "%F %T"));
     bool missing_handshakes = timed_out && !all_handshakes;
     MINFO(log_prefix(context) << "Collected validator handshakes " << bitset_view16(stage.bitset) << (missing_handshakes ? ", we timed out and some handshakes were not seen! " : ". ") << "Sending handshake bitset and collecting other validator bitsets.");
     return round_state::send_handshake_bitsets;
@@ -1659,6 +1667,11 @@ round_state wait_for_handshake_bitsets(round_context &context, master_nodes::mas
 
   if (timed_out || all_bitsets)
   {
+    std::time_t bitsets_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
+      MGINFO_BLUE("bitsets.end_time : " << std::put_time(std::gmtime(&bitsets_time_t), "%F %T"));
+      std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+      MGINFO_BLUE("now_c (bitsets): " << std::put_time(std::gmtime(&now_c), "%F %T"));
+  
     std::map<uint16_t, int> most_common_bitset;
     uint16_t best_bitset = 0;
     size_t count         = 0;
@@ -1786,6 +1799,10 @@ round_state wait_for_block_template(round_context &context, master_nodes::master
   bool received = context.transient.wait_for_block_template.stage.msgs_received == 1;
   if (timed_out || received)
   {
+      std::time_t block_template_time_t = std::chrono::system_clock::to_time_t(context.transient.wait_for_block_template.stage.end_time);
+      MGINFO_BLUE("block_template.end_time : " << std::put_time(std::gmtime(&block_template_time_t), "%F %T"));
+      std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+      MGINFO_BLUE("now_c (block_template): " << std::put_time(std::gmtime(&now_c), "%F %T"));
     if (received)
     {
       cryptonote::block const &block = context.transient.wait_for_block_template.block;
@@ -1835,6 +1852,10 @@ round_state send_and_wait_for_random_value_hashes(round_context &context, master
 
   if (timed_out || all_hashes)
   {
+    std::time_t random_value_hashes_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
+      MGINFO_BLUE("random_value_hashes.end_time : " << std::put_time(std::gmtime(&random_value_hashes_time_t), "%F %T"));
+      std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+      MGINFO_BLUE("now_c (random_value_hashes): " << std::put_time(std::gmtime(&now_c), "%F %T"));
     if (!enforce_validator_participation_and_timeouts(context, stage, node_list, timed_out, all_hashes))
       return goto_preparing_for_next_round(context);
 
@@ -1873,6 +1894,10 @@ round_state send_and_wait_for_random_value(round_context &context, master_nodes:
 
   if (timed_out || all_values)
   {
+    std::time_t random_value_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
+      MGINFO_BLUE("random_value.end_time : " << std::put_time(std::gmtime(&random_value_time_t), "%F %T"));
+      std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+      MGINFO_BLUE("now_c (random_value): " << std::put_time(std::gmtime(&now_c), "%F %T"));
     if (!enforce_validator_participation_and_timeouts(context, stage, node_list, timed_out, all_values))
       return goto_preparing_for_next_round(context);
 
@@ -1954,6 +1979,10 @@ round_state send_and_wait_for_signed_blocks(round_context &context, master_nodes
 
   if (timed_out || all_received)
   {
+      std::time_t signed_block_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
+      MGINFO_BLUE("signed_block.end_time : " << std::put_time(std::gmtime(&signed_block_time_t), "%F %T"));
+      std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+      MGINFO_BLUE("now_c (signed_block): " << std::put_time(std::gmtime(&now_c), "%F %T"));
     if (!enforce_validator_participation_and_timeouts(context, stage, node_list, timed_out, all_received))
       return goto_preparing_for_next_round(context);
 
