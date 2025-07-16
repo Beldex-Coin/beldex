@@ -1366,6 +1366,27 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
     context.transient.random_value_hashes.wait.stage.end_time     = context.transient.wait_for_block_template.stage.end_time      + POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION;
     context.transient.random_value.wait.stage.end_time            = context.transient.random_value_hashes.wait.stage.end_time     + POS_WAIT_FOR_RANDOM_VALUE_DURATION;
     context.transient.signed_block.wait.stage.end_time            = context.transient.random_value.wait.stage.end_time            + POS_WAIT_FOR_SIGNED_BLOCK_DURATION;
+
+    std::time_t start_time_t = std::chrono::system_clock::to_time_t(context.prepare_for_round.start_time);
+    MGINFO_BLUE("prepare_for_round.start_time : " << std::put_time(std::gmtime(&start_time_t), "%F %T"));
+    
+    std::time_t vrf_proof_time_t = std::chrono::system_clock::to_time_t(context.transient.vrf_proof.wait.stage.end_time);
+    MGINFO_BLUE("vrf_proof_time_t.end_time : " << std::put_time(std::gmtime(&vrf_proof_time_t), "%F %T"));
+
+    std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+    MGINFO_BLUE("now_c : " << std::put_time(std::gmtime(&now_c), "%F %T"));
+
+    auto duration = context.transient.signed_block.wait.stage.end_time - context.prepare_for_round.start_time;
+    auto sec = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
+    std::cout << "Duration (seconds): " << sec << " s\n";
+
+    auto start_time = context.prepare_for_round.start_time;
+    if (auto now = POS::clock::now(); now < start_time)
+    {
+      for (static uint64_t last_height = 0; last_height != context.wait_for_next_block.height; last_height = context.wait_for_next_block.height)
+        MGINFO_BLUE(log_prefix(context) << "Waiting for round " << +context.prepare_for_round.round << " to start in " << tools::friendly_duration(start_time - now));
+      return round_state::wait_for_round;
+    }
   }
 
   return round_state::send_and_wait_for_vrf_proofs;
