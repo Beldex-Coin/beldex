@@ -254,7 +254,7 @@ std::vector<prepared_relay_destinations> peer_prepare_relay_to_mn_subset(crypton
 void peer_relay_to_prepared_destinations(cryptonote::core &core, std::vector<prepared_relay_destinations> const &destinations, std::string_view command, std::string &&data)
 {
     for (auto const &[x25519_string, connect_string]: destinations) {
-        MGINFO_GREEN("Relaying data to " << to_hex(x25519_string) << " @ " << connect_string);
+        MTRACE("Relaying data to " << to_hex(x25519_string) << " @ " << connect_string);
         core.get_omq().send(x25519_string, command, std::move(data), send_option::hint{connect_string});
     }
 }
@@ -1716,7 +1716,7 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
   for(const auto& [pubkey, info] : active_node_list)
     candidates.insert(pubkey);
 
-  MGINFO_GREEN("Have " << candidates.size() << " MN candidates");
+//   MGINFO_GREEN("Have " << candidates.size() << " MN candidates");
 
 // 4] relay_message_to mn
   auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
@@ -1729,7 +1729,7 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
 // node. The message is added to the POS message queue and validating the
 // contents of the message is left to the caller.
 void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
-  std::cout << "Handling the VRF proof from another MN...\n";
+//   std::cout << "Handling the VRF proof from another MN...\n";
 
   if (m.data.size() != 1)
     throw std::runtime_error("Rejecting POS_VRF proof: expected 1 data entry, got " + std::to_string(m.data.size()));

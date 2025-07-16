@@ -382,7 +382,7 @@ std::string msg_source_string(round_context const &context, POS::message const &
 
 bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_hash, master_nodes::quorum const &quorum, std::string *error)
 {
-  MGINFO_MAGENTA(log_prefix(context) << "checking the msg_signature_check");
+  // MGINFO_MAGENTA(log_prefix(context) << "checking the msg_signature_check");
   std::stringstream stream;
   BELDEX_DEFER {
     if (error) *error = stream.str();
@@ -467,7 +467,7 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
     return false;
   }
 
-  MGINFO_YELLOW(log_prefix(context) << "signatue check is true");
+  // MGINFO_YELLOW(log_prefix(context) << "signatue check is true");
   return true;
 }
 
@@ -626,7 +626,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     return;
   }
-  MGINFO_GREEN(log_prefix(context) << "Passed signature check");
+  // MGINFO_GREEN(log_prefix(context) << "Passed signature check");
   POS_wait_stage *stage = nullptr;
   POS_VRF_wait_stage *vrf_stage = nullptr;
   switch(msg.type)
@@ -663,7 +663,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   // need to handle the early vrf proof in the pos_wait_stage
   if (msg_received_early) // Enqueue the message until we're ready to process it
   {
-    MGINFO_GREEN(log_prefix(context) << "msg_received_early is true");
+    // MGINFO_GREEN(log_prefix(context) << "msg_received_early is true");
     if(msg.type == POS::message_type::vrf_proof)
     {
       MGINFO_GREEN(log_prefix(context) << "msg vrf_proofs are trying to add in the wait list");
@@ -836,7 +836,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
 
-      MGINFO_GREEN(log_prefix(context) << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.value.data);
+      // MGINFO_GREEN(log_prefix(context) << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.value.data);
       value = msg.vrf_proof.value;
     }
     break;
@@ -851,7 +851,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   }
 
   if (quorumnet_state){
-    MGINFO_GREEN(log_prefix(context) << "Brodcasting data to the quorumnet");
+    // MGINFO_GREEN(log_prefix(context) << "Brodcasting data to the quorumnet");
     if(all_mn)
       cryptonote::quorumnet_POS_relay_vrf_proof_to_mn(quorumnet_state, msg);
     else
@@ -1406,12 +1406,12 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
             std::cerr << "vrf_prove() returned error for masternode " << key.pub << "\n";
             return round_state::prepare_for_round;
       }
-      unsigned char output[64];
-      err = vrf_verify(output, reinterpret_cast<const unsigned char*>(key.pub.data), context.transient.vrf_proof.send.data.data, alpha_bytes, sizeof(alpha.data));
-      if (err != 0) {
-            std::cerr << "Proof did not verify at pubkey:" << key.pub << "\n";
-            return round_state::prepare_for_round;
-      }
+      // unsigned char output[64];
+      // err = vrf_verify(output, reinterpret_cast<const unsigned char*>(key.pub.data), context.transient.vrf_proof.send.data.data, alpha_bytes, sizeof(alpha.data));
+      // if (err != 0) {
+      //       std::cerr << "Proof did not verify at pubkey:" << key.pub << "\n";
+      //       return round_state::prepare_for_round;
+      // }
       // MGINFO_GREEN(log_prefix(context) << "Output from the VRF proof:" << output);
       msg.vrf_proof.value = context.transient.vrf_proof.send.data;
       msg.vrf_proof.key = key.pub;
