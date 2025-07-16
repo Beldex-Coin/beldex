@@ -517,13 +517,17 @@ void handle_messages_received_early_for(POS_wait_stage &stage, void *quorumnet_s
   }
 }
 
-void handle_messages_received_early_for_vrf_proof(POS_VRF_wait_stage &stage, void *quorumnet_state)
+void handle_messages_received_early_for_vrf_proof(POS_VRF_wait_stage &stage, void *quorumnet_state, cryptonote::Blockchain const &blockchain)
 {
   if (!stage.queue.size())
     return;
 
   for (auto& [pubkey, entry] : stage.queue)
   {
+    if(!blockchain.get_master_node_list().is_master_node(pubkey)){
+      MGINFO_RED(log_prefix(context) << "Received key is not a masternode" << pubkey);
+      continue;
+    }
       auto& [msg, queued] = entry;
       if (queued == queueing_state::received)
       {
@@ -1372,6 +1376,12 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
   // MGINFO_GREEN(log_prefix(context) << "Processing the vrf proofs:" << context.wait_for_next_block.height);
   bool process_vrf = true;
   
+  if(!blockchain.get_master_node_list().is_master_node(key.pub)){
+    MGINFO_RED(log_prefix(context) << "You are not a masternode");
+    return goto_wait_for_next_block_and_clear_round_data(context);
+  }
+
+
   // for sending the vrf-proof and wait for receiving
   if(process_vrf){
     //
@@ -1415,15 +1425,12 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     //
     // NOTE: Wait
     //
-    handle_messages_received_early_for_vrf_proof(context.transient.vrf_proof.wait.stage, quorumnet_state);
+    handle_messages_received_early_for_vrf_proof(context.transient.vrf_proof.wait.stage, quorumnet_state, blockchain);
     POS_VRF_wait_stage const &stage = context.transient.vrf_proof.wait.stage;
 
     auto const &quorum            = context.transient.vrf_proof.wait.data;
     bool const timed_out          = POS::clock::now() >= stage.end_time;
-    
-    // Convert to time_t
-    std::time_t nowt = std::chrono::system_clock::to_time_t(POS::clock::now());
-    
+        
     auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
     bool const all_handshakes     = activeList.size() == quorum.size();
     

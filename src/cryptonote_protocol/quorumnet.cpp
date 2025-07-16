@@ -1491,8 +1491,8 @@ const std::string POS_TAG_BLOCK_ROUND       = "r";
 const std::string POS_TAG_SIGNATURE         = "s";
 
 // Extra fields are intentionally given tags after the common header fields.
-const std::string POS_TAG_VRF_PROOF             = "p";
-const std::string POS_TAG_VRF_PROOF_KEY         = "k";
+const std::string POS_TAG_VRF_PROOF             = "v";
+const std::string POS_TAG_VRF_PROOF_KEY         = "x";
 const std::string POS_TAG_BLOCK_TEMPLATE        = "t";
 const std::string POS_TAG_VALIDATOR_BITSET      = "u";
 const std::string POS_TAG_RANDOM_VALUE          = "v";
@@ -1515,40 +1515,51 @@ const std::string POS_CMD_SEND_RANDOM_VALUE_HASH = POS_CMD_CATEGORY + "." + POS_
 const std::string POS_CMD_SEND_RANDOM_VALUE      = POS_CMD_CATEGORY + "." + POS_CMD_RANDOM_VALUE;
 const std::string POS_CMD_SEND_SIGNED_BLOCK      = POS_CMD_CATEGORY + "." + POS_CMD_SIGNED_BLOCK;
 
-void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
-// 1] create the bt_dict values
-// 2] serialize the dict value
-// 3] calculate the destination (all the MN)
-// 4] relay message to destinations
+POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consumer &data, std::string_view error_prefix);
 
-// 1] create the bt_dict value
-  std::string_view command  = POS_CMD_SEND_VRF_PROOF;
-  
-  bt_dict data              = {};
-  data[POS_TAG_SIGNATURE]   = tools::view_guts(msg.signature);
-  data[POS_TAG_BLOCK_ROUND] = msg.round;
+bool handle_POS_VRF_proof_check(std::string data_) {
+  std::cout << "Handling the VRF proof verification before send: " << data_.size() <<" : " << data_ << "\n";
 
-  if(msg.type == POS::message_type::vrf_proof){
-    data[POS_TAG_VRF_PROOF]     = tools::view_guts(msg.vrf_proof.value);
-    data[POS_TAG_VRF_PROOF_KEY] = tools::view_guts(msg.vrf_proof.key);
+//   if (data_.size() != 1){
+//     throw std::runtime_error("Rejecting POS_VRF proof: expected 1 data entry, got " + std::to_string(data_.size()));
+//     return false;
+//   }
+  bt_dict_consumer data{data_};
+  constexpr std::string_view INVALID_ARG_PREFIX = "Invalid POS_VRF proof: missing required field '";
+    // std::cout << "🔍 Keys in incoming POS_VRF message:\n";
+    // // Walk through keys using real API: consume_key() → key_ → skip_value()
+    // while (data.consume_key()) {
+    //     std::string_view key = data.key();  // get current key
+    //     std::cout << " • " << key << "\n";
+    //     data.skip_value();  // move to next key-value pair
+    // }
+  POS::message msg = POS_parse_msg_header_fields(POS::message_type::vrf_proof, data, INVALID_ARG_PREFIX);
+  if (auto const& tag = POS_TAG_VRF_PROOF; data.skip_until(tag)) {
+    auto str = data.consume_string_view();
+    if (str.size() != sizeof(msg.vrf_proof.value.data)){
+        std::cout << "Invalid proof data size: " + std::to_string(str.size()) << "\n";
+        return false;
+    }
+    std::memcpy(msg.vrf_proof.value.data, str.data(), sizeof(msg.vrf_proof.value.data));
+  } else {
+    std::cout << std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF + "'";
+    return false;
   }
-  MGINFO_GREEN("vrf_proof relay start for the key : " << msg.vrf_proof.key);
 
-// 2] serialization we can call it from the quorum_subset
-// 3] calculate the destination
-  auto &qnet = QnetState::from(self);
-  auto const active_node_list             = qnet.core.get_master_node_list().active_master_nodes_infos();
-  std::unordered_set<crypto::public_key> candidates;
+  if (auto const& tag = POS_TAG_VRF_PROOF_KEY; data.skip_until(tag)) {
+    auto str = data.consume_string_view();
+    if (str.size() != sizeof(msg.vrf_proof.key)){
+        std::cout << "Invalid key data size: " + std::to_string(str.size())<< "\n";
+        return false;
+    }
+    std::memcpy(msg.vrf_proof.key.data, str.data(), sizeof(crypto::public_key));
+  } else {
+    std::cout << std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF_KEY + "'"<< "\n";
+    return false;
+  }
 
-  for(const auto& [pubkey, info] : active_node_list)
-    candidates.insert(pubkey);
-
-  MGINFO_GREEN("Have " << candidates.size() << " MN candidates");
-
-// 4] relay_message_to mn
-  auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
-  peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
-
+  std::cout << "My VRF proof from MN pubkey: " << to_hex(get_data_as_string(msg.vrf_proof.key)) << "\n";
+  return true;
 }
 
 void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nodes::quorum const &quorum, bool block_producer)
@@ -1673,6 +1684,46 @@ POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consume
   return result;
 }
 
+void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
+// 1] create the bt_dict values
+// 2] serialize the dict value
+// 3] calculate the destination (all the MN)
+// 4] relay message to destinations
+
+// 1] create the bt_dict value
+  std::string_view command  = POS_CMD_SEND_VRF_PROOF;
+  
+  bt_dict data              = {};
+  data[POS_TAG_SIGNATURE]   = tools::view_guts(msg.signature);
+  data[POS_TAG_BLOCK_ROUND] = msg.round;
+
+  if(msg.type == POS::message_type::vrf_proof){
+    data[POS_TAG_VRF_PROOF]     = tools::view_guts(msg.vrf_proof.value);
+    data[POS_TAG_VRF_PROOF_KEY]     = tools::view_guts(msg.vrf_proof.key);
+  }
+  MGINFO_GREEN("vrf_proof relay start for the key : " << msg.vrf_proof.key);
+
+  if(!handle_POS_VRF_proof_check(bt_serialize(data))){
+    MGINFO_RED("error in vrf-proof de-serialize");
+  }
+
+// 2] serialization we can call it from the quorum_subset
+// 3] calculate the destination
+  auto &qnet = QnetState::from(self);
+  auto const active_node_list             = qnet.core.get_master_node_list().active_master_nodes_infos();
+  std::unordered_set<crypto::public_key> candidates;
+
+  for(const auto& [pubkey, info] : active_node_list)
+    candidates.insert(pubkey);
+
+  MGINFO_GREEN("Have " << candidates.size() << " MN candidates");
+
+// 4] relay_message_to mn
+  auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
+  peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
+
+}
+
 // Invoked when daemon has received a participation handshake message via
 // QuorumNet from another validator, either forwarded or originating from that
 // node. The message is added to the POS message queue and validating the
@@ -1692,7 +1743,7 @@ void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
     auto str = data.consume_string_view();
     if (str.size() != sizeof(msg.vrf_proof.value.data))
       throw std::invalid_argument("Invalid proof data size: " + std::to_string(str.size()));
-    std::memcpy(msg.vrf_proof.value.data, str.data(), str.size());
+    std::memcpy(msg.vrf_proof.value.data, str.data(), sizeof(msg.vrf_proof.value.data));
   } else {
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF + "'");
   }
@@ -1701,7 +1752,7 @@ void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
     auto str = data.consume_string_view();
     if (str.size() != sizeof(msg.vrf_proof.key))
       throw std::invalid_argument("Invalid key data size: " + std::to_string(str.size()));
-    std::memcpy(msg.vrf_proof.key.data, str.data(), str.size());
+    std::memcpy(msg.vrf_proof.key.data, str.data(), sizeof(crypto::public_key));
   } else {
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF_KEY + "'");
   }
@@ -1715,7 +1766,6 @@ void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
     qnet.core.POS_thread_id()
   );
 }
-
 
 void handle_POS_participation_bit_or_bitset(Message &m, QnetState& qnet, bool bitset)
 {

@@ -28,8 +28,8 @@ namespace master_nodes {
   inline constexpr auto POS_WAIT_FOR_RANDOM_VALUE_DURATION               = 10s;
   inline constexpr auto POS_WAIT_FOR_SIGNED_BLOCK_DURATION               = 10s;
 
-  inline constexpr size_t POS_QUORUM_NUM_VALIDATORS     = 4;
-  inline constexpr size_t POS_BLOCK_REQUIRED_SIGNATURES = 3;  // A block must have exactly N signatures to be considered properly
+  inline constexpr size_t POS_QUORUM_NUM_VALIDATORS     = 11;
+  inline constexpr size_t POS_BLOCK_REQUIRED_SIGNATURES = 7;  // A block must have exactly N signatures to be considered properly
 #endif
 
   inline constexpr auto POS_MIN_TARGET_BLOCK_TIME = cryptonote::TARGET_BLOCK_TIME - 15s;

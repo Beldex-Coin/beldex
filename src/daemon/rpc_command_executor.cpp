@@ -502,8 +502,8 @@ bool rpc_command_executor::show_status() {
         my_mn_active = state["active"].get<bool>();
         my_decomm_remaining = state["earned_downtime_blocks"].get<uint64_t>();
         my_mn_last_uptime = state["last_uptime_proof"].get<uint64_t>();
-        my_reason_all = state["last_decommission_reason_consensus_all"].get<uint16_t>();
-        my_reason_any = state["last_decommission_reason_consensus_any"].get<uint16_t>();
+        my_reason_all = state.value<uint16_t>("last_decommission_reason_consensus_all", 0);
+        my_reason_any = state.value<uint16_t>("last_decommission_reason_consensus_any", 0);
       }
     }
   }
@@ -2537,7 +2537,7 @@ bool rpc_command_executor::prepare_registration(bool force_registration)
 
     auto& registration = *maybe_registration;
 
-    tools::success_msg_writer() << registration["registration_cmd"];
+    tools::success_msg_writer() << registration["registration_cmd"].get<std::string>();
   }
 
   return true;
