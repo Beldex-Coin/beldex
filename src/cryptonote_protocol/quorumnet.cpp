@@ -216,11 +216,11 @@ std::vector<prepared_relay_destinations> peer_prepare_relay_to_mn_subset(crypton
     core.get_master_node_list().for_each_master_node_info_and_proof(candidates.begin(), candidates.end(),
         [&remotes](const auto &pubkey, const auto &info, const auto &proof) {
             if (!info.is_active()) {
-                MGINFO_RED("Not include inactive node " << pubkey);
+                MTRACE("Not include inactive node " << pubkey);
                 return;
             }
             if (!proof.pubkey_x25519 || !proof.proof->qnet_port || !proof.proof->public_ip) {
-                MGINFO_RED("Not including node " << pubkey << ": missing x25519(" << to_hex(get_data_as_string(proof.pubkey_x25519)) << "), "
+                MTRACE("Not including node " << pubkey << ": missing x25519(" << to_hex(get_data_as_string(proof.pubkey_x25519)) << "), "
                         "public_ip(" << epee::string_tools::get_ip_string_from_int32(proof.proof->public_ip) << "), or qnet port(" << proof.proof->qnet_port << ")");
                 return;
             }
@@ -254,7 +254,7 @@ std::vector<prepared_relay_destinations> peer_prepare_relay_to_mn_subset(crypton
 void peer_relay_to_prepared_destinations(cryptonote::core &core, std::vector<prepared_relay_destinations> const &destinations, std::string_view command, std::string &&data)
 {
     for (auto const &[x25519_string, connect_string]: destinations) {
-        MTRACE("Relaying data to " << to_hex(x25519_string) << " @ " << connect_string);
+        MINFO("Relaying data to " << to_hex(x25519_string) << " @ " << connect_string);
         core.get_omq().send(x25519_string, command, std::move(data), send_option::hint{connect_string});
     }
 }
@@ -425,7 +425,6 @@ private:
             // Opportunistically relay to all my *incoming* sources within the quorum *if* I already
             // have a connection open with them, but don't open a new connection if I don't.
             for (int j : quorum_incoming_conns(my_position[i], validators.size())) {
-                std::cout << "number of time in quorum_incoming_conns\n";
                 if (add_peer(validators[j], false /*!strong*/))
                     MTRACE("Optional opportunistic relay within quorum " << (i == 0 ? "Q" : "Q'") << "[" << my_position[i] << "] to [" << j << "] " << validators[j]);
             }
@@ -1517,49 +1516,64 @@ const std::string POS_CMD_SEND_SIGNED_BLOCK      = POS_CMD_CATEGORY + "." + POS_
 
 POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consumer &data, std::string_view error_prefix);
 
-bool handle_POS_VRF_proof_check(std::string data_) {
-  std::cout << "Handling the VRF proof verification before send: " << data_.size() <<" : " << data_ << "\n";
-
-//   if (data_.size() != 1){
-//     throw std::runtime_error("Rejecting POS_VRF proof: expected 1 data entry, got " + std::to_string(data_.size()));
-//     return false;
-//   }
+bool POS_VRF_proof_check(std::string data_) {
   bt_dict_consumer data{data_};
   constexpr std::string_view INVALID_ARG_PREFIX = "Invalid POS_VRF proof: missing required field '";
-    // std::cout << "🔍 Keys in incoming POS_VRF message:\n";
-    // // Walk through keys using real API: consume_key() → key_ → skip_value()
-    // while (data.consume_key()) {
-    //     std::string_view key = data.key();  // get current key
-    //     std::cout << " • " << key << "\n";
-    //     data.skip_value();  // move to next key-value pair
-    // }
   POS::message msg = POS_parse_msg_header_fields(POS::message_type::vrf_proof, data, INVALID_ARG_PREFIX);
   if (auto const& tag = POS_TAG_VRF_PROOF; data.skip_until(tag)) {
     auto str = data.consume_string_view();
     if (str.size() != sizeof(msg.vrf_proof.value.data)){
-        std::cout << "Invalid proof data size: " + std::to_string(str.size()) << "\n";
         return false;
     }
     std::memcpy(msg.vrf_proof.value.data, str.data(), sizeof(msg.vrf_proof.value.data));
   } else {
-    std::cout << std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF + "'";
     return false;
   }
 
   if (auto const& tag = POS_TAG_VRF_PROOF_KEY; data.skip_until(tag)) {
     auto str = data.consume_string_view();
     if (str.size() != sizeof(msg.vrf_proof.key)){
-        std::cout << "Invalid key data size: " + std::to_string(str.size())<< "\n";
         return false;
     }
     std::memcpy(msg.vrf_proof.key.data, str.data(), sizeof(crypto::public_key));
   } else {
-    std::cout << std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF_KEY + "'"<< "\n";
     return false;
   }
 
-  std::cout << "My VRF proof from MN pubkey: " << to_hex(get_data_as_string(msg.vrf_proof.key)) << "\n";
   return true;
+}
+
+void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
+
+// 1] create the bt_dict value
+  std::string_view command  = POS_CMD_SEND_VRF_PROOF;
+
+  bt_dict data              = {};
+  data[POS_TAG_SIGNATURE]   = tools::view_guts(msg.signature);
+  data[POS_TAG_BLOCK_ROUND] = msg.round;
+
+  if(msg.type == POS::message_type::vrf_proof){
+    data[POS_TAG_VRF_PROOF]         = tools::view_guts(msg.vrf_proof.value);
+    data[POS_TAG_VRF_PROOF_KEY]     = tools::view_guts(msg.vrf_proof.key);
+  }
+
+  if(!POS_VRF_proof_check(bt_serialize(data))){
+    MGINFO_RED("error in vrf-proof de-serialize");
+  }
+
+// 2] serialization we can call it from the quorum_subset
+// 3] calculate the destination
+  auto &qnet = QnetState::from(self);
+  auto const active_node_list             = qnet.core.get_master_node_list().active_master_nodes_infos();
+  std::unordered_set<crypto::public_key> candidates;
+
+  for(const auto& [pubkey, info] : active_node_list)
+    candidates.insert(pubkey);
+
+// 4] relay_message_to mn
+  auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
+  peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
+
 }
 
 void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nodes::quorum const &quorum, bool block_producer)
@@ -1684,53 +1698,12 @@ POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consume
   return result;
 }
 
-void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
-// 1] create the bt_dict values
-// 2] serialize the dict value
-// 3] calculate the destination (all the MN)
-// 4] relay message to destinations
-
-// 1] create the bt_dict value
-  std::string_view command  = POS_CMD_SEND_VRF_PROOF;
-  
-  bt_dict data              = {};
-  data[POS_TAG_SIGNATURE]   = tools::view_guts(msg.signature);
-  data[POS_TAG_BLOCK_ROUND] = msg.round;
-
-  if(msg.type == POS::message_type::vrf_proof){
-    data[POS_TAG_VRF_PROOF]     = tools::view_guts(msg.vrf_proof.value);
-    data[POS_TAG_VRF_PROOF_KEY]     = tools::view_guts(msg.vrf_proof.key);
-  }
-//   MGINFO_GREEN("vrf_proof relay start for the key : " << msg.vrf_proof.key);
-
-  if(!handle_POS_VRF_proof_check(bt_serialize(data))){
-    MGINFO_RED("error in vrf-proof de-serialize");
-  }
-
-// 2] serialization we can call it from the quorum_subset
-// 3] calculate the destination
-  auto &qnet = QnetState::from(self);
-  auto const active_node_list             = qnet.core.get_master_node_list().active_master_nodes_infos();
-  std::unordered_set<crypto::public_key> candidates;
-
-  for(const auto& [pubkey, info] : active_node_list)
-    candidates.insert(pubkey);
-
-//   MGINFO_GREEN("Have " << candidates.size() << " MN candidates");
-
-// 4] relay_message_to mn
-  auto destinations = peer_prepare_relay_to_mn_subset(qnet.core, candidates, 4 /*num_peers*/);
-  peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
-
-}
-
 // Invoked when daemon has received a participation handshake message via
 // QuorumNet from another validator, either forwarded or originating from that
 // node. The message is added to the POS message queue and validating the
 // contents of the message is left to the caller.
-void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
-//   std::cout << "Handling the VRF proof from another MN...\n";
 
+void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
   if (m.data.size() != 1)
     throw std::runtime_error("Rejecting POS_VRF proof: expected 1 data entry, got " + std::to_string(m.data.size()));
 
@@ -1756,8 +1729,6 @@ void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
   } else {
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF_KEY + "'");
   }
-
-  std::cout << "Received VRF proof from MN pubkey: " << to_hex(get_data_as_string(msg.vrf_proof.key)) << "\n";
 
   qnet.omq.job(
     [&qnet, data = std::move(msg)]() {

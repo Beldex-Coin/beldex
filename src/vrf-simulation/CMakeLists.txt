@@ -22,6 +22,7 @@ message(STATUS "--------- INSIDE THE vrf-simulation ------")
 
 # Build the executable
 add_executable(vrf-simulation main.cpp block.cpp block_data.cpp)
+add_executable(bt-serialize bt-serialize.cpp)
 
 include_directories(.)
 
@@ -34,6 +35,11 @@ target_link_libraries(vrf-simulation
     # vrf
     # OpenMP::OpenMP_CXX
     sqlite3
+)
+
+target_link_libraries(bt-serialize
+    PRIVATE
+    common
 )
 
 add_executable(leader-database getLeaders.cpp block_data.cpp)

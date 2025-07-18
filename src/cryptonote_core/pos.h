@@ -51,7 +51,6 @@ constexpr std::string_view message_type_string(message_type type)
     case message_type::random_value_hash: return "Random Value Hash"sv;
     case message_type::random_value: return "Random Value"sv;
     case message_type::signed_block: return "Signed Block"sv;
-
   }
   return "Invalid2"sv;
 }
@@ -62,6 +61,12 @@ struct message
   uint16_t quorum_position;
   uint8_t  round;
   crypto::signature signature; // Signs the contents of the message, proving it came from the node at quorum_position
+
+  struct
+  { 
+    crypto::public_key key;
+    cryptonote::POS_VRF_proof value;
+  } vrf_proof;
 
   struct
   {
@@ -87,12 +92,6 @@ struct message
   {
     crypto::signature signature_of_final_block_hash;
   } signed_block;
-
-  struct
-  { 
-    crypto::public_key key;
-    cryptonote::POS_VRF_proof value;
-  } vrf_proof;
 };
 
 void main(void *quorumnet_state, cryptonote::core &core);
