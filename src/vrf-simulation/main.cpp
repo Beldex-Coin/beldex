@@ -164,7 +164,7 @@ void generateOutputAndStore(Block& block, const std::vector<KeyPair>& keyPairs, 
 
         mpf_t fraction;
         mpf_init(fraction);
-        int response = verify_vrf_output_with_threshold(output, fraction, tau, W);
+        int response = verify_vrf_output_and_get_fraction(output, fraction, tau, W);
         if (response == 0) {
             mpf_class fraction_cpp(fraction);
             // #pragma omp critical

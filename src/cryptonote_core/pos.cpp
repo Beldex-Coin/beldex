@@ -34,6 +34,7 @@ enum struct round_state
 
   prepare_for_round,
   send_and_wait_for_vrf_proofs,
+  prepare_vrf_quorum,
   wait_for_round,
 
   send_and_wait_for_handshakes,
@@ -59,7 +60,8 @@ constexpr std::string_view round_state_string(round_state state)
     case round_state::prepare_for_round: return "Prepare For Round"sv;
     
     case round_state::send_and_wait_for_vrf_proofs: return "Send & Wait For vrf proofs"sv;
-    
+    case round_state::prepare_vrf_quorum: return "Prepare vrf quorum"sv;
+
     case round_state::wait_for_round: return "Wait For Round"sv;
 
     case round_state::send_and_wait_for_handshakes: return "Send & Wait For Handshakes"sv;
@@ -1398,7 +1400,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
 
       bool missing_handshakes = timed_out && !all_handshakes;
       MGINFO_GREEN(log_prefix(context) << "Collected masternodes proofs ");
-      return round_state::wait_for_round;
+      return round_state::prepare_vrf_quorum;
     }
     else
     {
@@ -1406,6 +1408,77 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       return round_state::send_and_wait_for_vrf_proofs;
     }
 
+  }
+
+  return round_state::prepare_vrf_quorum;
+}
+
+round_state prepare_vrf_quorum(round_context &context, cryptonote::Blockchain const &blockchain)
+{
+  auto const &quorum = context.transient.vrf_proof.wait.data;
+
+  std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates;
+  MGINFO_MAGENTA(log_prefix(context) << "Received proof quorum size : " << quorum.size());
+  for (const auto &[pubkey, proof]  : quorum)
+  {
+    if(!proof.has_value())
+    {
+      MGINFO_RED("The Given public key does't have the proof: " << pubkey);
+      continue;
+    }
+
+    MGINFO_MAGENTA(log_prefix(context) << "Public Key: " << pubkey);
+
+    // verify the proof and findout output
+    
+    // get the alpha value from the previous two blocks
+    const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
+    const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+
+    unsigned char pk[32];
+    std::memcpy(pk, pubkey.data, sizeof(pk));
+
+    unsigned char output[64];
+
+    int err = vrf_verify(output, pk, proof.value().data, alpha_bytes, sizeof(alpha.data));
+    if (err != 0) {
+      MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << pubkey);
+      continue;
+    }
+
+    // verify with threshold
+    auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
+    double W = static_cast<double>(activeList.size());
+    double tau = W * 80 / 100.0;
+
+    bool isValid = verify_vrf_output_with_threshold(output, tau, W);
+    if(!isValid)
+    {
+      MDEBUG(log_prefix(context) << "doen't passed the threshold condition " << pubkey);
+      continue;
+    }
+
+    // store into eligible list with output(it's a vector of pair)
+
+    std::array<unsigned char, 64> output_array;
+    std::memcpy(output_array.data(), output, 64);  // Copy the data
+
+    vrf_quorum_candidates.emplace_back(std::make_pair(pubkey, output_array));
+  }
+
+  MGINFO_MAGENTA(log_prefix(context) << "vrf_quorum_candidates size : " << vrf_quorum_candidates.size());
+
+  // sorting the list with ascending order based on the fraction value
+  std::sort(vrf_quorum_candidates.begin(), vrf_quorum_candidates.end(),
+      [](const auto& a, const auto& b) {
+          return a.second < b.second;
+      });
+
+  // that is the final qourum 0 -> w[0] , 1....n -> v[n]
+  int i = 0;
+  for(const auto &[pubkey, outputV] : vrf_quorum_candidates)
+  {
+    MGINFO_BLUE(log_prefix(context) << "v[" << i  << " ]:" << pubkey);
   }
 
   return round_state::wait_for_round;
@@ -1953,6 +2026,10 @@ void POS::main(void *quorumnet_state, cryptonote::core &core)
 
       case round_state::send_and_wait_for_vrf_proofs:
         context.state = send_and_wait_for_vrf_proofs(context, quorumnet_state, key, blockchain);
+        break;
+
+      case round_state::prepare_vrf_quorum:
+        context.state = prepare_vrf_quorum(context, blockchain);
         break;
 
       case round_state::wait_for_round:

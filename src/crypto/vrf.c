@@ -1,9 +1,11 @@
 #include <sodium.h>
+#include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
 #include <gmp.h>
 #include "vrf.h"
+
 
 
 // Function to convert unsigned char[64] to a hex string
@@ -443,7 +445,7 @@ vrf_verify(unsigned char output[64],
 }
 
 // verify the outout of the vrf beta with the threshld: y/2^|y| < taw/W
-int verify_vrf_output_with_threshold(unsigned char output[64],
+int verify_vrf_output_and_get_fraction(unsigned char output[64],
 								mpf_t fraction,
 								double tau,
 								double W
@@ -476,6 +478,40 @@ int verify_vrf_output_with_threshold(unsigned char output[64],
 	} 
 
 	return 0;
+}
+
+// verify the outout of the vrf beta with the threshld: y/2^|y| < taw/W
+bool verify_vrf_output_with_threshold(unsigned char output[64],
+								double tau,
+								double W
+								)
+{
+	// Define an mpf_t variable for the fraction result
+	mpf_t fraction;
+	mpf_init(fraction);
+
+	// Compute fraction
+	compute_fraction(output, fraction);
+
+	// Print result
+	// gmp_printf("Fraction: %.50Ff\n", fraction);
+
+	double p = tau / W;
+	
+	// Define an mpf_t variable for threshold and set it to `p`
+	mpf_t threshold;
+	mpf_init(threshold);
+	mpf_set_d(threshold, p);  // Convert double p to GMP floating-point
+
+	// gmp_printf("Threshold: %.50Ff\n", threshold);
+
+	// Compare fraction with threshold
+	if (mpf_cmp(fraction, threshold) > 0) {
+		// printf("Fraction is greater than %.12f\n", p);
+		return false;
+	} 
+
+	return true;
 }
 
 // int 
