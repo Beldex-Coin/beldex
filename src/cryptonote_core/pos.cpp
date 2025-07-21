@@ -1145,6 +1145,7 @@ void clear_round_data(round_context &context)
   memwipe(old_random_value.data, sizeof(old_random_value));
   memwipe(old_random_values_array.data(), old_random_values_array.size() * sizeof(old_random_values_array[0]));
   context.prepare_for_round = {};
+  context.prepare_vrf_quorum = {};
 }
 
 round_state goto_wait_for_next_block_and_clear_round_data(round_context &context)
