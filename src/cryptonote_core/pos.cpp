@@ -1479,6 +1479,7 @@ round_state prepare_vrf_quorum(round_context &context, cryptonote::Blockchain co
   for(const auto &[pubkey, outputV] : vrf_quorum_candidates)
   {
     MGINFO_BLUE(log_prefix(context) << "v[" << i  << " ]:" << pubkey);
+    i++;
   }
 
   return round_state::wait_for_round;
