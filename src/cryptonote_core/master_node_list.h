@@ -792,6 +792,7 @@ namespace master_nodes
                                               std::vector<crypto::hash> const &POS_entropy,
                                               uint8_t POS_round);
 
+  master_nodes::quorum generate_POS_VRF_quorum(std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates);
   // The POS entropy is generated for the next block after the top_block passed in.
   std::vector<crypto::hash> get_POS_entropy_for_next_block(cryptonote::BlockchainDB const &db, cryptonote::block const &top_block, uint8_t POS_round);
   std::vector<crypto::hash> get_POS_entropy_for_next_block(cryptonote::BlockchainDB const &db, crypto::hash const &top_hash, uint8_t POS_round);

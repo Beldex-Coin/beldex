@@ -174,7 +174,7 @@ struct round_context
 
   struct
   {
-    std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates;
+    master_nodes::quorum quorum;               // The block producer/validator participating in the VRF next round
   } prepare_vrf_quorum;
   struct
   {
@@ -1422,6 +1422,8 @@ round_state prepare_vrf_quorum(round_context &context, cryptonote::Blockchain co
   auto const &quorum = context.transient.vrf_proof.wait.data;
 
   MGINFO_MAGENTA(log_prefix(context) << "Received proof quorum size : " << quorum.size());
+  std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates;
+  
   for (const auto &[pubkey, proof]  : quorum)
   {
     if(!proof.has_value())
@@ -1466,24 +1468,15 @@ round_state prepare_vrf_quorum(round_context &context, cryptonote::Blockchain co
     std::array<unsigned char, 64> output_array;
     std::memcpy(output_array.data(), output, 64);  // Copy the data
 
-    context.prepare_vrf_quorum.vrf_quorum_candidates.emplace_back(std::make_pair(pubkey, output_array));
+    vrf_quorum_candidates.emplace_back(std::make_pair(pubkey, output_array));
   }
 
-  MGINFO_MAGENTA(log_prefix(context) << "vrf_quorum_candidates size : " << context.prepare_vrf_quorum.vrf_quorum_candidates.size());
+  MGINFO_MAGENTA(log_prefix(context) << "vrf_quorum_candidates size : " << vrf_quorum_candidates.size());
 
-  // sorting the list with ascending order based on the fraction value
-  std::sort(context.prepare_vrf_quorum.vrf_quorum_candidates.begin(), context.prepare_vrf_quorum.vrf_quorum_candidates.end(),
-      [](const auto& a, const auto& b) {
-          return a.second < b.second;
-      });
+  context.prepare_vrf_quorum.quorum = master_nodes::generate_POS_VRF_quorum(vrf_quorum_candidates);
 
   // that is the final qourum 0 -> w[0] , 1....n -> v[n]
-  int i = 0;
-  for(const auto &[pubkey, outputV] : context.prepare_vrf_quorum.vrf_quorum_candidates)
-  {
-    MGINFO_BLUE(log_prefix(context) << "v[" << i  << " ]:" << pubkey);
-    i++;
-  }
+  MGINFO_BLUE(log_prefix(context) << " Generated VRF Quorum "<< context.prepare_vrf_quorum.quorum);
 
   return round_state::wait_for_round;
 }

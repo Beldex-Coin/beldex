@@ -1879,6 +1879,31 @@ namespace master_nodes
     return result;
   }
 
+  master_nodes::quorum generate_POS_VRF_quorum(std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates)
+  {
+    master_nodes::quorum result = {};
+
+    // Sort in ascending order based on the array contents (lexicographically)
+    std::sort(vrf_quorum_candidates.begin(), vrf_quorum_candidates.end(),
+        [](const auto& a, const auto& b) {
+            return a.second < b.second; // array supports operator<
+        });
+
+    // First one is the worker
+    result.workers.push_back(vrf_quorum_candidates[0].first);
+
+    // Reserve space for validators (excluding the worker)
+    int vrf_validator_size = vrf_quorum_candidates.size() - 1;
+    result.validators.reserve(vrf_validator_size);
+
+    // Insert validators (skip the first element which is the worker)
+    for (size_t i = 1; i < vrf_quorum_candidates.size(); i++) {
+        result.validators.push_back(vrf_quorum_candidates[i].first);
+    }
+
+    return result;
+  }
+
   static void generate_other_quorums(master_node_list::state_t &state, std::vector<pubkey_and_mninfo> const &active_mnode_list, cryptonote::network_type nettype, hf hf_version)
   {
     assert(state.block_hash != crypto::null_hash);
