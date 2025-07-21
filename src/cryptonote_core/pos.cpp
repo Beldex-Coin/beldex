@@ -174,6 +174,10 @@ struct round_context
 
   struct
   {
+    std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates;
+  } prepare_vrf_quorum;
+  struct
+  {
     struct
     {
       POS_send_stage<cryptonote::POS_VRF_proof> send;
@@ -1417,7 +1421,6 @@ round_state prepare_vrf_quorum(round_context &context, cryptonote::Blockchain co
 {
   auto const &quorum = context.transient.vrf_proof.wait.data;
 
-  std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates;
   MGINFO_MAGENTA(log_prefix(context) << "Received proof quorum size : " << quorum.size());
   for (const auto &[pubkey, proof]  : quorum)
   {
@@ -1463,20 +1466,20 @@ round_state prepare_vrf_quorum(round_context &context, cryptonote::Blockchain co
     std::array<unsigned char, 64> output_array;
     std::memcpy(output_array.data(), output, 64);  // Copy the data
 
-    vrf_quorum_candidates.emplace_back(std::make_pair(pubkey, output_array));
+    context.prepare_vrf_quorum.vrf_quorum_candidates.emplace_back(std::make_pair(pubkey, output_array));
   }
 
-  MGINFO_MAGENTA(log_prefix(context) << "vrf_quorum_candidates size : " << vrf_quorum_candidates.size());
+  MGINFO_MAGENTA(log_prefix(context) << "vrf_quorum_candidates size : " << context.prepare_vrf_quorum.vrf_quorum_candidates.size());
 
   // sorting the list with ascending order based on the fraction value
-  std::sort(vrf_quorum_candidates.begin(), vrf_quorum_candidates.end(),
+  std::sort(context.prepare_vrf_quorum.vrf_quorum_candidates.begin(), context.prepare_vrf_quorum.vrf_quorum_candidates.end(),
       [](const auto& a, const auto& b) {
           return a.second < b.second;
       });
 
   // that is the final qourum 0 -> w[0] , 1....n -> v[n]
   int i = 0;
-  for(const auto &[pubkey, outputV] : vrf_quorum_candidates)
+  for(const auto &[pubkey, outputV] : context.prepare_vrf_quorum.vrf_quorum_candidates)
   {
     MGINFO_BLUE(log_prefix(context) << "v[" << i  << " ]:" << pubkey);
     i++;
