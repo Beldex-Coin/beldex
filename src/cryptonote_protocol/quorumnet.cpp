@@ -1919,7 +1919,7 @@ void setup_endpoints(cryptonote::core& core, void* obj) {
 
         omq.add_category(POS_CMD_CATEGORY, Access{AuthLevel::none, true /*remote mn*/, true /*local mn*/}, 1 /*reserved thread*/)
             .add_command(POS_CMD_VRF_PROOF, [&qnet](Message& m) { handle_POS_VRF_proof(m, qnet); })
-            .add_command(POS_CMD_BLOCK_TEMPLATE, [&qnet](Message& m) { handle_vrf_POS_block_template(m, qnet); })
+            .add_command(POS_CMD_VRF_BLOCK_TEMPLATE, [&qnet](Message& m) { handle_vrf_POS_block_template(m, qnet); })
             .add_command(POS_CMD_VALIDATOR_BIT, [&qnet](Message& m) { handle_POS_participation_bit_or_bitset(m, qnet, false /*bitset*/); })
             .add_command(POS_CMD_VALIDATOR_BITSET, [&qnet](Message& m) { handle_POS_participation_bit_or_bitset(m, qnet, true /*bitset*/); })
             .add_command(POS_CMD_BLOCK_TEMPLATE, [&qnet](Message& m) { handle_POS_block_template(m, qnet); })

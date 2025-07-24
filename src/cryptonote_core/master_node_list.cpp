@@ -1883,6 +1883,11 @@ namespace master_nodes
   {
     master_nodes::quorum result = {};
 
+    if (vrf_quorum_candidates.empty()) {
+      MGINFO_RED("Generate_POS_VRF_quorum was called with empty candidate list. Returning empty quorum.");
+      return result;
+    }
+
     // Sort in ascending order based on the array contents (lexicographically)
     std::sort(vrf_quorum_candidates.begin(), vrf_quorum_candidates.end(),
         [](const auto& a, const auto& b) {
