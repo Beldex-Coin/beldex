@@ -387,6 +387,7 @@ namespace cryptonote
      * @return true if block template filled in successfully, else false
      */
     bool create_next_POS_block_template(block& b, const master_nodes::payout& block_producer, uint8_t round, uint16_t validator_bitset, uint64_t& height);
+    // bool create_next_vrf_POS_block_template(block_vrf& b, const master_nodes::payout& block_producer, uint8_t round, uint16_t validator_bitset, uint64_t& height);
 
     /**
      * @brief checks if a block is known about with a given hash

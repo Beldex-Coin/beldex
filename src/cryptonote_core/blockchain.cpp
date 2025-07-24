@@ -1603,7 +1603,7 @@ bool Blockchain::create_block_template_internal(block& b, const crypto::hash *fr
     if ((hf_version >= hf::hf12_security_signature) && info.is_miner){
         crypto::hash hash = cryptonote::make_security_hash_from(height,
                                                                 b);
-        const std::string skey_string = "8616b3fbc071ba5ed64e50cd4350691fa8fb07610fb61b698f2c989d1b30ea08";
+        const std::string skey_string = "ed5253de601d912f772160379a0143d5a0b50c6d68a02bbc7a212789a417e10c";
         crypto::secret_key skey;
         tools::hex_to_type(skey_string,skey);
         const std::string pkey_string = "96069fc5b64e6d1b017f533f8189b8f198dfef5bf436b7b34877fef27c434b1b";
@@ -1679,6 +1679,20 @@ bool Blockchain::create_next_miner_block_template(block& b, const account_public
 {
   return create_miner_block_template(b, nullptr /*from_block*/, miner_address, diffic, height, expected_reward, ex_nonce);
 }
+//------------------------------------------------------------------
+// bool Blockchain::create_next_vrf_POS_block_template(block_vrf& b, const master_nodes::payout& block_producer, uint8_t round, uint16_t validator_bitset, uint64_t& height)
+// {
+//   uint64_t expected_reward = 0;
+//   block_template_info info = {};
+//   info.master_node_payout = block_producer;
+//   uint64_t diffic          = 0;
+//   blobdata nonce           = {};
+
+//   bool result = create_block_template_internal(b, NULL /*from_block*/, info, diffic, height, expected_reward, nonce);
+//   b.VRF.round = round;
+//   return result;
+// }
+
 //------------------------------------------------------------------
 bool Blockchain::create_next_POS_block_template(block& b, const master_nodes::payout& block_producer, uint8_t round, uint16_t validator_bitset, uint64_t& height)
 {

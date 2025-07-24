@@ -459,6 +459,83 @@ namespace cryptonote
       field(ar, "signatures", b.signatures);
   }
 
+  struct POS_vrf_header
+  {
+    std::vector<POS_VRF_proof> proof;
+    uint8_t            round;
+  };
+
+  template <typename Archive>
+  void serialize_value(Archive& ar, POS_vrf_header& p)
+  {
+    auto obj = ar.begin_object();
+    serialization::field(ar, "vrf_proofs", p.proof);
+    if (p.proof.size() > MAX_TX_PER_BLOCK)
+      throw std::invalid_argument{"too many proofs in block"};
+    serialization::field(ar, "round", p.round);
+  }
+  struct block_vrf_header
+  {
+    hf major_version = hf::hf7;
+    uint8_t minor_version = 0;
+    uint64_t timestamp;
+    crypto::hash  prev_id;
+    uint32_t nonce;
+    POS_vrf_header VRF = {};
+  };
+
+  template <class Archive>
+  void serialize_value(Archive& ar, block_vrf_header& b) {
+    using namespace serialization;
+    field(ar, "major_version", b.major_version);
+    field_varint(ar, "minor_version", b.minor_version);
+    field_varint(ar, "timestamp", b.timestamp);
+    field(ar, "prev_id", b.prev_id);
+    field(ar, "nonce", b.nonce);
+    if (b.major_version >= hf::hf17_POS)
+      field(ar, "VRF", b.VRF);
+  }
+
+  struct block_vrf: public block_vrf_header
+  {
+  private:
+    // hash cache
+    mutable std::atomic<bool> hash_valid{false};
+    void copy_hash(const block &b) { bool v = b.is_hash_valid(); hash = b.hash; set_hash_valid(v); }
+
+  public:
+    block_vrf() = default;
+    block_vrf(const block_vrf& b);
+    block_vrf(block_vrf&& b);
+    block_vrf& operator=(const block_vrf& b);
+    block_vrf& operator=(block_vrf&& b);
+    void invalidate_hashes() { set_hash_valid(false); }
+    bool is_hash_valid() const;
+    void set_hash_valid(bool v) const;
+
+    transaction miner_tx;
+    std::vector<crypto::hash> tx_hashes;
+
+    // hash cache
+    mutable crypto::hash hash;
+    std::vector<master_nodes::quorum_signature> signatures;
+  };
+
+  template <class Archive>
+  void serialize_value(Archive& ar, block_vrf& b) {
+    auto _obj = ar.begin_object();
+    if constexpr (Archive::is_deserializer)
+      b.set_hash_valid(false);
+
+    serialization::value(ar, static_cast<block_vrf_header&>(b));
+    field(ar, "miner_tx", b.miner_tx);
+    field(ar, "tx_hashes", b.tx_hashes);
+    if (b.tx_hashes.size() > MAX_TX_PER_BLOCK)
+      throw std::invalid_argument{"too many txs in block"};
+    if (b.major_version >= hf::hf17_POS)
+      field(ar, "signatures", b.signatures);
+  }
+
   /************************************************************************/
   /*                                                                      */
   /************************************************************************/

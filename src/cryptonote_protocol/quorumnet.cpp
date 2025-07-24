@@ -1491,7 +1491,7 @@ const std::string POS_TAG_SIGNATURE         = "s";
 
 // Extra fields are intentionally given tags after the common header fields.
 const std::string POS_TAG_VRF_PROOF             = "v";
-const std::string POS_TAG_VRF_PROOF_KEY         = "x";
+const std::string POS_TAG_PUB_KEY               = "x";
 const std::string POS_TAG_BLOCK_TEMPLATE        = "t";
 const std::string POS_TAG_VALIDATOR_BITSET      = "u";
 const std::string POS_TAG_RANDOM_VALUE          = "v";
@@ -1500,6 +1500,7 @@ const std::string POS_TAG_FINAL_BLOCK_SIGNATURE = "z";
 
 const std::string POS_CMD_CATEGORY               = "POS";
 const std::string POS_CMD_VRF_PROOF              = "vrf_proof";
+const std::string POS_CMD_VRF_BLOCK_TEMPLATE     = "vrf_block_template";
 const std::string POS_CMD_VALIDATOR_BITSET       = "validator_bitset";
 const std::string POS_CMD_VALIDATOR_BIT          = "validator_bit";
 const std::string POS_CMD_BLOCK_TEMPLATE         = "block_template";
@@ -1507,6 +1508,7 @@ const std::string POS_CMD_RANDOM_VALUE_HASH      = "random_value_hash";
 const std::string POS_CMD_RANDOM_VALUE           = "random_value";
 const std::string POS_CMD_SIGNED_BLOCK           = "signed_block";
 const std::string POS_CMD_SEND_VRF_PROOF         = POS_CMD_CATEGORY + "." + POS_CMD_VRF_PROOF;
+const std::string POS_CMD_SEND_VRF_BLOCK_TEMPLATE = POS_CMD_CATEGORY + "." + POS_CMD_VRF_BLOCK_TEMPLATE;
 const std::string POS_CMD_SEND_VALIDATOR_BITSET  = POS_CMD_CATEGORY + "." + POS_CMD_VALIDATOR_BITSET;
 const std::string POS_CMD_SEND_VALIDATOR_BIT     = POS_CMD_CATEGORY + "." + POS_CMD_VALIDATOR_BIT;
 const std::string POS_CMD_SEND_BLOCK_TEMPLATE    = POS_CMD_CATEGORY + "." + POS_CMD_BLOCK_TEMPLATE;
@@ -1530,7 +1532,7 @@ bool POS_VRF_proof_check(std::string data_) {
     return false;
   }
 
-  if (auto const& tag = POS_TAG_VRF_PROOF_KEY; data.skip_until(tag)) {
+  if (auto const& tag = POS_TAG_PUB_KEY; data.skip_until(tag)) {
     auto str = data.consume_string_view();
     if (str.size() != sizeof(msg.vrf_proof.key)){
         return false;
@@ -1554,7 +1556,7 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
 
   if(msg.type == POS::message_type::vrf_proof){
     data[POS_TAG_VRF_PROOF]         = tools::view_guts(msg.vrf_proof.value);
-    data[POS_TAG_VRF_PROOF_KEY]     = tools::view_guts(msg.vrf_proof.key);
+    data[POS_TAG_PUB_KEY]     = tools::view_guts(msg.vrf_proof.key);
   }
 
   if(!POS_VRF_proof_check(bt_serialize(data))){
@@ -1591,6 +1593,12 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
   {
     command                        = POS_CMD_SEND_BLOCK_TEMPLATE;
     data[POS_TAG_BLOCK_TEMPLATE] = msg.block_template.blob;
+  }
+  else if (msg.type == POS::message_type::vrf_block_template)
+  {
+    command                        = POS_CMD_SEND_VRF_BLOCK_TEMPLATE;
+    data[POS_TAG_BLOCK_TEMPLATE] = msg.vrf_block_template.blob;
+    data[POS_TAG_PUB_KEY]     = tools::view_guts(msg.vrf_block_template.key);
   }
   else
   {
@@ -1675,7 +1683,7 @@ POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consume
   POS::message result = {};
   result.type           = type;
 
-  if (type != POS::message_type::block_template && type != POS::message_type::vrf_proof)
+  if (type != POS::message_type::block_template && type != POS::message_type::vrf_proof && type != POS::message_type::vrf_block_template)
   {
     if (auto const &tag = POS_TAG_QUORUM_POSITION; data.skip_until(tag))
       result.quorum_position = data.consume_integer<int>();
@@ -1721,13 +1729,13 @@ void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF + "'");
   }
 
-  if (auto const& tag = POS_TAG_VRF_PROOF_KEY; data.skip_until(tag)) {
+  if (auto const& tag = POS_TAG_PUB_KEY; data.skip_until(tag)) {
     auto str = data.consume_string_view();
     if (str.size() != sizeof(msg.vrf_proof.key))
       throw std::invalid_argument("Invalid key data size: " + std::to_string(str.size()));
     std::memcpy(msg.vrf_proof.key.data, str.data(), sizeof(crypto::public_key));
   } else {
-    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF_KEY + "'");
+    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_PUB_KEY + "'");
   }
 
   qnet.omq.job(
@@ -1755,6 +1763,32 @@ void handle_POS_participation_bit_or_bitset(Message &m, QnetState& qnet, bool bi
       msg.handshakes.validator_bitset = data.consume_integer<uint16_t>();
     else
       throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
+  }
+
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
+}
+
+void handle_vrf_POS_block_template(Message &m, QnetState &qnet)
+{
+  if (m.data.size() != 1)
+      throw std::runtime_error("Rejecting VRF POS block template expected one data entry not "s + std::to_string(m.data.size()));
+
+  bt_dict_consumer data{m.data[0]};
+  std::string_view constexpr INVALID_ARG_PREFIX = "Invalid VRF POS block template: missing required field '"sv;
+  POS::message msg = POS_parse_msg_header_fields(POS::message_type::vrf_block_template, data, INVALID_ARG_PREFIX);
+
+  if (auto const &tag = POS_TAG_BLOCK_TEMPLATE; data.skip_until(tag))
+    msg.vrf_block_template.blob = data.consume_string_view();
+  else
+    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
+
+  if (auto const& tag = POS_TAG_PUB_KEY; data.skip_until(tag)) {
+    auto str = data.consume_string_view();
+    if (str.size() != sizeof(msg.vrf_block_template.key))
+      throw std::invalid_argument("Invalid key data size: " + std::to_string(str.size()));
+    std::memcpy(msg.vrf_block_template.key.data, str.data(), sizeof(crypto::public_key));
+  } else {
+    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_PUB_KEY + "'");
   }
 
   qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
@@ -1885,6 +1919,7 @@ void setup_endpoints(cryptonote::core& core, void* obj) {
 
         omq.add_category(POS_CMD_CATEGORY, Access{AuthLevel::none, true /*remote mn*/, true /*local mn*/}, 1 /*reserved thread*/)
             .add_command(POS_CMD_VRF_PROOF, [&qnet](Message& m) { handle_POS_VRF_proof(m, qnet); })
+            .add_command(POS_CMD_BLOCK_TEMPLATE, [&qnet](Message& m) { handle_vrf_POS_block_template(m, qnet); })
             .add_command(POS_CMD_VALIDATOR_BIT, [&qnet](Message& m) { handle_POS_participation_bit_or_bitset(m, qnet, false /*bitset*/); })
             .add_command(POS_CMD_VALIDATOR_BITSET, [&qnet](Message& m) { handle_POS_participation_bit_or_bitset(m, qnet, true /*bitset*/); })
             .add_command(POS_CMD_BLOCK_TEMPLATE, [&qnet](Message& m) { handle_POS_block_template(m, qnet); })
