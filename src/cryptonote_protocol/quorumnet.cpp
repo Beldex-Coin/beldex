@@ -1599,6 +1599,7 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
     command                        = POS_CMD_SEND_VRF_BLOCK_TEMPLATE;
     data[POS_TAG_BLOCK_TEMPLATE] = msg.vrf_block_template.blob;
     data[POS_TAG_PUB_KEY]     = tools::view_guts(msg.vrf_block_template.key);
+    MGINFO_MAGENTA("POS VRF BLOCK TEMPLATE "<<command);
   }
   else
   {
@@ -1620,6 +1621,7 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
       case POS::message_type::block_template: break;
 
       case POS::message_type::vrf_proof: break;
+      case POS::message_type::vrf_block_template: break;
 
       case POS::message_type::handshake: /* FALLTHRU */
       case POS::message_type::handshake_bitset:
@@ -1776,7 +1778,7 @@ void handle_vrf_POS_block_template(Message &m, QnetState &qnet)
   bt_dict_consumer data{m.data[0]};
   std::string_view constexpr INVALID_ARG_PREFIX = "Invalid VRF POS block template: missing required field '"sv;
   POS::message msg = POS_parse_msg_header_fields(POS::message_type::vrf_block_template, data, INVALID_ARG_PREFIX);
-
+  MGINFO_MAGENTA("HANDLE VRF POS BLOCK TEMPLATE");
   if (auto const &tag = POS_TAG_BLOCK_TEMPLATE; data.skip_until(tag))
     msg.vrf_block_template.blob = data.consume_string_view();
   else

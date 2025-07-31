@@ -67,8 +67,8 @@ constexpr std::string_view round_state_string(round_state state)
     case round_state::send_and_wait_for_vrf_proofs: return "Send & Wait For vrf proofs"sv;
     case round_state::prepare_vrf_quorum: return "Prepare vrf quorum"sv;
 
-    case round_state::send_vrf_block_template: return "Send Block Template"sv;
-    case round_state::wait_for_vrf_block_template: return "Wait For Block Template"sv;
+    case round_state::send_vrf_block_template: return "Send Vrf Block Template"sv;
+    case round_state::wait_for_vrf_block_template: return "Wait For Vrf Block Template"sv;
 
     case round_state::wait_for_round: return "Wait For Round"sv;
 
@@ -433,8 +433,13 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
 
     case POS::message_type::vrf_block_template:
     {
-      key = &context.prepare_for_round.quorum.workers[0];
+      if(context.prepare_vrf_quorum.quorum.workers.empty()){
+        MDEBUG(log_prefix(context) << "The VRF quorum workers size is" << context.prepare_vrf_quorum.quorum.workers.size());
+        return false;
+      }
 
+      key = &context.prepare_vrf_quorum.quorum.workers[0];
+      MGINFO_MAGENTA("EXPECTED KEY " << context.prepare_vrf_quorum.quorum.workers[0] << " RECEIVED KEY " << msg.vrf_block_template.key << " with msg.quorum_position " << msg.quorum_position);
       if(*key != msg.vrf_block_template.key){
         MDEBUG(log_prefix(context) << "Expected blocktemplate from " << key <<" , but received " << msg.vrf_block_template.key);
         return false;
@@ -604,6 +609,11 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   if (std::string sig_check_err;
       !msg_signature_check(msg, context.wait_for_next_block.top_hash, context.prepare_for_round.quorum, &sig_check_err))
   {
+    if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers.empty()){
+      MWARNING(log_prefix(context) << "The VRF quorum workers size is " << context.prepare_vrf_quorum.quorum.workers.size());
+      return;
+    }
+
     if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers[0] != msg.vrf_block_template.key){
         MWARNING(log_prefix(context) << "Expected blocktemplate from " << context.prepare_vrf_quorum.quorum.workers[0] <<" , but received " << msg.vrf_block_template.key);
         return;
@@ -643,7 +653,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     }
 
     if (print_err)
-      MERROR(sig_check_err);
+      MERROR("Signature check fail: " << sig_check_err);
 
     return;
   }
@@ -699,6 +709,9 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     } 
     else 
     {
+      if(msg.type == POS::message_type::vrf_block_template){
+        MGINFO_GREEN(log_prefix(context) << "msg vrf pos blocks are trying to add in the wait list");
+      }
       auto &[entry, queued] = stage->queue.buffer[msg.quorum_position];
       if (queued == queueing_state::empty)
       {
@@ -754,6 +767,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     case POS::message_type::vrf_block_template:
     {
+      MGINFO_MAGENTA("CASE VRF BLOCK TEMPLATE");
       if (stage->msgs_received == 1)
         return;
 
@@ -1555,6 +1569,11 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
   // that is the final qourum 0 -> w[0] , 1....n -> v[n]
   MGINFO_BLUE(log_prefix(context) << " Generated VRF Quorum "<< context.prepare_vrf_quorum.quorum);
 
+  if (context.prepare_vrf_quorum.quorum.workers.empty())
+  {
+    MGINFO_RED(log_prefix(context) << "VRF Quorum is empty. No eligible participants. Skipping VRF round.");
+    return round_state::wait_for_round;
+  }
   //
   // NOTE: Quorum participation
   //
