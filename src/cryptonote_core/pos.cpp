@@ -132,6 +132,7 @@ struct POS_VRF_wait_stage
   POS::time_point end_time;     // Time at which the stage ends
 };
 
+
 template <typename T>
 struct POS_send_stage
 {
@@ -187,6 +188,7 @@ struct round_context
     size_t                my_quorum_position;
     std::string           node_name;
   } prepare_vrf_quorum;
+  
   struct
   {
     struct
@@ -202,9 +204,12 @@ struct round_context
 
     struct
     {
-      cryptonote::block block; // The block template with the best validator bitset and POS round applied to it.
-      POS_wait_stage stage;
-    } wait_for_vrf_block_template;
+      // cryptonote::block block; // The block template with the best validator bitset and POS round applied to it.
+      // POS_wait_stage stage;
+      std::unordered_map<crypto::public_key, std::optional<cryptonote::block>> data;
+      std::unordered_map<crypto::public_key, std::optional<cryptonote::POS_VRF_proof>> vrf_data;
+      POS_VRF_wait_stage stage;
+  } wait_for_vrf_block_template;
 
     struct
     {
@@ -552,6 +557,28 @@ void handle_messages_received_early_for_vrf_proof(POS_VRF_wait_stage &stage, voi
       }
   }
 }
+
+void handle_messages_received_early_for_vrf_block(POS_VRF_wait_stage &stage, void *quorumnet_state, cryptonote::Blockchain const &blockchain)
+{
+  if (!stage.queue.size())
+    return;
+
+  for (auto& [pubkey, entry] : stage.queue)
+  {
+    if(!blockchain.get_master_node_list().is_master_node(pubkey)){
+      MGINFO_RED(log_prefix(context) << "Received key is not a masternode" << pubkey);
+      continue;
+    }
+      auto& [msg, queued] = entry;
+      if (queued == queueing_state::received)
+      {
+        MGINFO_GREEN(log_prefix(context) << "wait listed proof is adding to context" << pubkey);
+          POS::handle_message(quorumnet_state, msg, true);
+          queued = queueing_state::processed;
+      }
+  }
+}
+
 // In POS, after the block template and validators are locked in, enforce that
 // all participating validators are doing their job in the stage.
 bool enforce_validator_participation_and_timeouts(round_context const &context,
@@ -650,6 +677,8 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
   POS_wait_stage *stage = nullptr;
   POS_VRF_wait_stage *vrf_stage = nullptr;
+  POS_VRF_wait_stage *vrf_block_stage = nullptr;
+
   switch(msg.type)
   {
     case POS::message_type::invalid:
@@ -659,7 +688,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     }
 
     case POS::message_type::vrf_proof:          vrf_stage = &context.transient.vrf_proof.wait.stage;              break;
-    case POS::message_type::vrf_block_template: stage     = &context.transient.wait_for_vrf_block_template.stage; break;
+    case POS::message_type::vrf_block_template: vrf_block_stage     = &context.transient.wait_for_vrf_block_template.stage; break;
     case POS::message_type::handshake:         stage = &context.transient.send_and_wait_for_handshakes.stage; break;
     case POS::message_type::handshake_bitset:  stage = &context.transient.wait_for_handshake_bitsets.stage;   break;
     case POS::message_type::block_template:    stage = &context.transient.wait_for_block_template.stage;      break;
@@ -696,6 +725,17 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
         queued = queueing_state::received;
       }
 
+    }
+    else if(msg.type == POS::message_type::vrf_block_template)
+    {
+        MGINFO_GREEN(log_prefix(context) << "msg vrf_blocks are trying to add in the wait list");
+        auto &[entry, queued] = vrf_block_stage->queue[msg.vrf_block_template.key];
+        if (queued == queueing_state::empty)
+      {
+        MGINFO_GREEN(log_prefix(context) << "Message received early " << msg_source_string(context, msg) << ", queueing until we're ready.");
+        entry  = std::move(msg);
+        queued = queueing_state::received;
+      }
     } 
     else 
     {
@@ -771,7 +811,9 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
         return;
       }
 
-      context.transient.wait_for_vrf_block_template.block = std::move(block);
+      context.transient.wait_for_vrf_block_template.data[msg.vrf_block_template.key] = std::move(block);
+      context.transient.wait_for_vrf_block_template.vrf_data[msg.vrf_block_template.key] = msg.vrf_block_template.value;
+
       MGINFO_YELLOW(log_prefix(context) << "Received block from the producer " << msg.vrf_block_template.key);
     }
     break;
@@ -1599,6 +1641,61 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
 
 }
 
+// sned Block template
+round_state send_block_template(round_context &context, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
+{
+  assert(context.prepare_for_round.participant == mn_type::producer);
+  std::vector<master_nodes::master_node_pubkey_info> list_state = blockchain.get_master_node_list().get_master_node_list_state({key.pub});
+
+  // Invariants
+  if (list_state.empty())
+  {
+    MWARNING(log_prefix(context) << "Block producer (us) is not available on the master node list, waiting until next round");
+    return goto_preparing_for_next_round(context);
+  }
+
+  std::shared_ptr<const master_nodes::master_node_info> info = list_state[0].info;
+  if (!info->is_active())
+  {
+    MWARNING(log_prefix(context) << "Block producer (us) is not an active master node, waiting until next round");
+    return goto_preparing_for_next_round(context);
+  }
+
+  // Block
+  cryptonote::block block = {};
+  {
+    uint64_t height                              = 0;
+    master_nodes::payout block_producer_payouts = master_nodes::master_node_info_to_payout(key.pub, *info);
+    if (!blockchain.create_next_POS_block_template(block,
+                                                     block_producer_payouts,
+                                                     context.prepare_for_round.round,
+                                                     context.transient.wait_for_handshake_bitsets.best_bitset,
+                                                     height))
+    {
+      MERROR(log_prefix(context) << "Failed to generate a block template, waiting until next round");
+      return goto_preparing_for_next_round(context);
+    }
+
+    if (context.wait_for_next_block.height != height)
+    {
+      MDEBUG(log_prefix(context) << "Block height changed whilst preparing block template for round " << +context.prepare_for_round.round << ", restarting POS stages");
+      return goto_wait_for_next_block_and_clear_round_data(context);
+    }
+  }
+
+  // Message
+  POS::message msg      = msg_init_from_context(context);
+  msg.type                = POS::message_type::block_template;
+  msg.block_template.blob = cryptonote::t_serializable_object_to_blob(block);
+  crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
+
+  // Send
+  MINFO(log_prefix(context) << "Validators are handshaken and ready, sending block template from producer (us) to validators.\n" << cryptonote::obj_to_json_str(block));
+  cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_for_round.quorum, true /*block_producer*/);
+  return goto_preparing_for_next_round(context);
+}
+
+
 round_state send_vrf_block_template(round_context &context, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
 {
   assert(context.prepare_vrf_quorum.participant == mn_type::producer);
@@ -1645,6 +1742,7 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
   msg.type                    = POS::message_type::vrf_block_template;
   msg.vrf_block_template.blob = cryptonote::t_serializable_object_to_blob(block);
   msg.vrf_block_template.key  = key.pub;
+  msg.vrf_block_template.value = context.transient.vrf_proof.wait.data[key.pub].value();
   crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
 
   // Send
@@ -1654,14 +1752,47 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
   return round_state::wait_for_round;
 }
 
+// Wait for the Block template
+round_state wait_for_block_template(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
+{
+  handle_messages_received_early_for(context.transient.wait_for_block_template.stage, quorumnet_state);
+  POS_wait_stage const &stage = context.transient.wait_for_block_template.stage;
+
+  assert(context.prepare_for_round.participant == mn_type::validator);
+  bool timed_out = POS::clock::now() >= context.transient.wait_for_block_template.stage.end_time;
+  bool received = context.transient.wait_for_block_template.stage.msgs_received == 1;
+  if (timed_out || received)
+  {
+    if (received)
+    {
+      cryptonote::block const &block = context.transient.wait_for_block_template.block;
+      MINFO(log_prefix(context) << "Valid block received: " << cryptonote::obj_to_json_str(context.transient.wait_for_block_template.block));
+
+      // Generate my random value and its hash
+      crypto::generate_random_bytes_thread_safe(sizeof(context.transient.random_value.send.data), context.transient.random_value.send.data.data);
+      context.transient.random_value_hashes.send.data = blake2b_hash(&context.transient.random_value.send.data, sizeof(context.transient.random_value.send.data));
+      return round_state::send_and_wait_for_random_value_hashes;
+    }
+    else
+    {
+      MINFO(log_prefix(context) << "Timed out, block template was not received");
+      return goto_preparing_for_next_round(context);
+    }
+  }
+
+  return round_state::wait_for_block_template;
+}
+
+
 round_state wait_for_vrf_block_template(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
 {
-  handle_messages_received_early_for(context.transient.wait_for_vrf_block_template.stage, quorumnet_state);
-  POS_wait_stage const &stage = context.transient.wait_for_vrf_block_template.stage;
+  handle_messages_received_early_for_vrf_block(context.transient.wait_for_vrf_block_template.stage, quorumnet_state, blockchain);
+  POS_VRF_wait_stage const &stage = context.transient.wait_for_vrf_block_template.stage;
 
   assert(context.prepare_vrf_quorum.participant == mn_type::validator);
   bool timed_out = POS::clock::now() >= context.transient.wait_for_vrf_block_template.stage.end_time;
-  bool received = context.transient.wait_for_vrf_block_template.stage.msgs_received == 1;
+  bool received = context.transient.wait_for_vrf_block_template.stage.msgs_received >= 1;
+  
   if (timed_out || received)
   {
     std::time_t block_template_time_t = std::chrono::system_clock::to_time_t(context.transient.wait_for_vrf_block_template.stage.end_time);
@@ -1672,9 +1803,90 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
 
     if (received)
     {
-      cryptonote::block const &block = context.transient.wait_for_vrf_block_template.block;
-      MGINFO_MAGENTA(log_prefix(context) << "Valid block received: " << cryptonote::obj_to_json_str(context.transient.wait_for_vrf_block_template.block));
-      return round_state::wait_for_round;
+
+      // std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates;
+      // std::vector<std::pair<crypto::public_key, cryptonote::block>> block_quorum_candidates;
+  
+      // To handle the received blocks and vrf's from different block producers
+      auto const &vrf_quorum_candidates = context.transient.wait_for_vrf_block_template.vrf_data;
+      auto const &block_quorum_candidates = context.transient.wait_for_vrf_block_template.data;
+
+
+      MGINFO_MAGENTA(log_prefix(context) << "Received block quorum size : " << vrf_quorum_candidates.size());
+      
+      
+      for (const auto &[pubkey, proof]  : vrf_quorum_candidates)
+      {
+        if(!proof.has_value())
+        {
+          MGINFO_RED("The Given public key does't have the proof: " << pubkey);
+          continue;
+        }
+
+        MGINFO_MAGENTA(log_prefix(context) << "Public Key: " << pubkey);
+
+        if (pubkey != context.prepare_vrf_quorum.quorum.workers[0])
+          {
+          // verify the proof and findout output
+    
+          // get the alpha value from the previous two blocks
+          const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
+          const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+
+          unsigned char pk[32];
+          std::memcpy(pk, pubkey.data, sizeof(pk));
+
+          unsigned char output[64];
+
+          int err = vrf_verify(output, pk, proof.value().data, alpha_bytes, sizeof(alpha.data));
+          if (err != 0) {
+            MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << pubkey);
+            continue;
+          }
+
+          // verify with threshold
+          auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
+          double W = static_cast<double>(activeList.size());
+          double tau = W * 80 / 100.0;
+
+          bool isValid = verify_vrf_output_with_threshold(output, tau, W);
+          if(!isValid)
+            {
+              MDEBUG(log_prefix(context) << "doen't passed the threshold condition " << pubkey);
+              continue;
+          }
+
+          // Add current worker to validator list and above verified MN to the worker
+          unsigned char curr_worker_pk[32];
+          std::memcpy(curr_worker_pk, context.prepare_vrf_quorum.quorum.workers[0].data, sizeof(pk));
+
+          unsigned char curr_worker_output[64];
+
+          err = vrf_verify(curr_worker_output, 
+                                curr_worker_pk, 
+                                context.transient.vrf_proof.wait.data[context.prepare_vrf_quorum.quorum.workers[0]].value().data, 
+                                alpha_bytes, sizeof(alpha.data));
+          if (err != 0) {
+            MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << pubkey);
+            continue;
+          }
+
+          if (std::memcmp(output, curr_worker_output, sizeof(output)) < 0)
+           {
+              context.prepare_vrf_quorum.quorum.validators.emplace_back(context.prepare_vrf_quorum.quorum.workers[0]);
+              context.prepare_vrf_quorum.quorum.workers[0] = pubkey;
+          }
+        }
+      
+      }
+      
+      if(context.transient.wait_for_vrf_block_template.data[context.prepare_vrf_quorum.quorum.workers[0]].has_value() &&  context.transient.wait_for_vrf_block_template.vrf_data[context.prepare_vrf_quorum.quorum.workers[0]].has_value())
+      {
+        cryptonote::block const &block = *context.transient.wait_for_vrf_block_template.data[context.prepare_vrf_quorum.quorum.workers[0]];
+        cryptonote::POS_VRF_proof &proof = *context.transient.wait_for_vrf_block_template.vrf_data[context.prepare_vrf_quorum.quorum.workers[0]];
+        MGINFO_MAGENTA(log_prefix(context) << "Valid block received: " << cryptonote::obj_to_json_str(*context.transient.wait_for_vrf_block_template.data[context.prepare_vrf_quorum.quorum.workers[0]]));
+        return round_state::wait_for_round;
+      }
     }
     else
     {
@@ -1686,6 +1898,7 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
 
   return round_state::wait_for_vrf_block_template;
 }
+
 
 round_state wait_for_round(round_context &context, cryptonote::Blockchain const &blockchain)
 {
@@ -1894,94 +2107,94 @@ round_state wait_for_handshake_bitsets(round_context &context, master_nodes::mas
   return round_state::wait_for_handshake_bitsets;
 }
 
-round_state send_block_template(round_context &context, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
-{
-  assert(context.prepare_for_round.participant == mn_type::producer);
-  std::vector<master_nodes::master_node_pubkey_info> list_state = blockchain.get_master_node_list().get_master_node_list_state({key.pub});
+// round_state send_block_template(round_context &context, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
+// {
+//   assert(context.prepare_for_round.participant == mn_type::producer);
+//   std::vector<master_nodes::master_node_pubkey_info> list_state = blockchain.get_master_node_list().get_master_node_list_state({key.pub});
 
-  // Invariants
-  if (list_state.empty())
-  {
-    MWARNING(log_prefix(context) << "Block producer (us) is not available on the master node list, waiting until next round");
-    return goto_preparing_for_next_round(context);
-  }
+//   // Invariants
+//   if (list_state.empty())
+//   {
+//     MWARNING(log_prefix(context) << "Block producer (us) is not available on the master node list, waiting until next round");
+//     return goto_preparing_for_next_round(context);
+//   }
 
-  std::shared_ptr<const master_nodes::master_node_info> info = list_state[0].info;
-  if (!info->is_active())
-  {
-    MWARNING(log_prefix(context) << "Block producer (us) is not an active master node, waiting until next round");
-    return goto_preparing_for_next_round(context);
-  }
+//   std::shared_ptr<const master_nodes::master_node_info> info = list_state[0].info;
+//   if (!info->is_active())
+//   {
+//     MWARNING(log_prefix(context) << "Block producer (us) is not an active master node, waiting until next round");
+//     return goto_preparing_for_next_round(context);
+//   }
 
-  // Block
-  cryptonote::block block = {};
-  {
-    uint64_t height                              = 0;
-    master_nodes::payout block_producer_payouts = master_nodes::master_node_info_to_payout(key.pub, *info);
-    if (!blockchain.create_next_POS_block_template(block,
-                                                     block_producer_payouts,
-                                                     context.prepare_for_round.round,
-                                                     context.transient.wait_for_handshake_bitsets.best_bitset,
-                                                     height))
-    {
-      MERROR(log_prefix(context) << "Failed to generate a block template, waiting until next round");
-      return goto_preparing_for_next_round(context);
-    }
+//   // Block
+//   cryptonote::block block = {};
+//   {
+//     uint64_t height                              = 0;
+//     master_nodes::payout block_producer_payouts = master_nodes::master_node_info_to_payout(key.pub, *info);
+//     if (!blockchain.create_next_POS_block_template(block,
+//                                                      block_producer_payouts,
+//                                                      context.prepare_for_round.round,
+//                                                      context.transient.wait_for_handshake_bitsets.best_bitset,
+//                                                      height))
+//     {
+//       MERROR(log_prefix(context) << "Failed to generate a block template, waiting until next round");
+//       return goto_preparing_for_next_round(context);
+//     }
 
-    if (context.wait_for_next_block.height != height)
-    {
-      MDEBUG(log_prefix(context) << "Block height changed whilst preparing block template for round " << +context.prepare_for_round.round << ", restarting POS stages");
-      return goto_wait_for_next_block_and_clear_round_data(context);
-    }
-  }
+//     if (context.wait_for_next_block.height != height)
+//     {
+//       MDEBUG(log_prefix(context) << "Block height changed whilst preparing block template for round " << +context.prepare_for_round.round << ", restarting POS stages");
+//       return goto_wait_for_next_block_and_clear_round_data(context);
+//     }
+//   }
 
-  // Message
-  POS::message msg      = msg_init_from_context(context);
-  msg.type                = POS::message_type::block_template;
-  msg.block_template.blob = cryptonote::t_serializable_object_to_blob(block);
-  crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
+//   // Message
+//   POS::message msg      = msg_init_from_context(context);
+//   msg.type                = POS::message_type::block_template;
+//   msg.block_template.blob = cryptonote::t_serializable_object_to_blob(block);
+//   crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
 
-  // Send
-  MINFO(log_prefix(context) << "Validators are handshaken and ready, sending block template from producer (us) to validators.\n" << cryptonote::obj_to_json_str(block));
-  cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_for_round.quorum, true /*block_producer*/);
-  return goto_preparing_for_next_round(context);
-}
+//   // Send
+//   MINFO(log_prefix(context) << "Validators are handshaken and ready, sending block template from producer (us) to validators.\n" << cryptonote::obj_to_json_str(block));
+//   cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_for_round.quorum, true /*block_producer*/);
+//   return goto_preparing_for_next_round(context);
+// }
 
-round_state wait_for_block_template(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
-{
-  handle_messages_received_early_for(context.transient.wait_for_block_template.stage, quorumnet_state);
-  POS_wait_stage const &stage = context.transient.wait_for_block_template.stage;
+// round_state wait_for_block_template(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
+// {
+//   handle_messages_received_early_for(context.transient.wait_for_block_template.stage, quorumnet_state);
+//   POS_wait_stage const &stage = context.transient.wait_for_block_template.stage;
 
-  assert(context.prepare_for_round.participant == mn_type::validator);
-  bool timed_out = POS::clock::now() >= context.transient.wait_for_block_template.stage.end_time;
-  bool received = context.transient.wait_for_block_template.stage.msgs_received == 1;
-  if (timed_out || received)
-  {
-    std::time_t block_template_time_t = std::chrono::system_clock::to_time_t(context.transient.wait_for_block_template.stage.end_time);
-    MGINFO_BLUE("block_template.end_time : " << std::put_time(std::gmtime(&block_template_time_t), "%F %T"));
+//   assert(context.prepare_for_round.participant == mn_type::validator);
+//   bool timed_out = POS::clock::now() >= context.transient.wait_for_block_template.stage.end_time;
+//   bool received = context.transient.wait_for_block_template.stage.msgs_received == 1;
+//   if (timed_out || received)
+//   {
+//     std::time_t block_template_time_t = std::chrono::system_clock::to_time_t(context.transient.wait_for_block_template.stage.end_time);
+//     MGINFO_BLUE("block_template.end_time : " << std::put_time(std::gmtime(&block_template_time_t), "%F %T"));
   
-    std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
-    MGINFO_BLUE("now_c (block_template): " << std::put_time(std::gmtime(&now_c), "%F %T"));
+//     std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+//     MGINFO_BLUE("now_c (block_template): " << std::put_time(std::gmtime(&now_c), "%F %T"));
 
-    if (received)
-    {
-      cryptonote::block const &block = context.transient.wait_for_block_template.block;
-      MINFO(log_prefix(context) << "Valid block received: " << cryptonote::obj_to_json_str(context.transient.wait_for_block_template.block));
+//     if (received)
+//     {
+//       cryptonote::block const &block = context.transient.wait_for_block_template.block;
+//       MINFO(log_prefix(context) << "Valid block received: " << cryptonote::obj_to_json_str(context.transient.wait_for_block_template.block));
 
-      // Generate my random value and its hash
-      crypto::generate_random_bytes_thread_safe(sizeof(context.transient.random_value.send.data), context.transient.random_value.send.data.data);
-      context.transient.random_value_hashes.send.data = blake2b_hash(&context.transient.random_value.send.data, sizeof(context.transient.random_value.send.data));
-      return round_state::send_and_wait_for_random_value_hashes;
-    }
-    else
-    {
-      MINFO(log_prefix(context) << "Timed out, block template was not received");
-      return goto_preparing_for_next_round(context);
-    }
-  }
+//       // Generate my random value and its hash
+//       crypto::generate_random_bytes_thread_safe(sizeof(context.transient.random_value.send.data), context.transient.random_value.send.data.data);
+//       context.transient.random_value_hashes.send.data = blake2b_hash(&context.transient.random_value.send.data, sizeof(context.transient.random_value.send.data));
+//       return round_state::send_and_wait_for_random_value_hashes;
+//     }
+//     else
+//     {
+//       MINFO(log_prefix(context) << "Timed out, block template was not received");
+//       return goto_preparing_for_next_round(context);
+//     }
+//   }
 
-  return round_state::wait_for_block_template;
-}
+//   return round_state::wait_for_block_template;
+// }
 
 round_state send_and_wait_for_random_value_hashes(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key)
 {

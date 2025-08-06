@@ -1655,6 +1655,9 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
         data[POS_TAG_RANDOM_VALUE] = tools::view_guts(msg.random_value.value);
       }
       break;
+
+      default:
+        break;
     }
   }
 

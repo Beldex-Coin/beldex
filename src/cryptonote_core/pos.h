@@ -46,7 +46,7 @@ constexpr std::string_view message_type_string(message_type type)
   {
     case message_type::invalid: return "Invalid"sv;
     case message_type::vrf_proof: return "Vrf Proof"sv;
-    case message_type::vrf_block_template: "Vrf Block Template"sv;
+    case message_type::vrf_block_template: return "Vrf Block Template"sv;
     case message_type::handshake: return "Handshake"sv;
     case message_type::handshake_bitset: return "Handshake Bitset"sv;
     case message_type::block_template: return "Block Template"sv;
@@ -74,6 +74,7 @@ struct message
   {
     std::string blob;
     crypto::public_key key;
+    cryptonote::POS_VRF_proof value;
   } vrf_block_template;
 
   struct
