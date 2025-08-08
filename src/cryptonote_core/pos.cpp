@@ -154,6 +154,11 @@ struct round_history
   master_nodes::quorum quorum;
 };
 
+struct VrfBlockEntry {
+    cryptonote::block block;
+    cryptonote::POS_VRF_proof proof;
+};
+
 struct round_context
 {
   // Store the recent history of quorums in the past to allow validating late
@@ -195,15 +200,16 @@ struct round_context
 
       struct
       {
-        std::unordered_map<crypto::public_key, std::optional<cryptonote::POS_VRF_proof>> data;
+        std::unordered_map<crypto::public_key, std::optional<cryptonote::POS_VRF_proof>> proofs;
         POS_VRF_wait_stage stage;
       } wait;
     } vrf_proof;
 
     struct
     {
-      cryptonote::block block; // The block template with the best validator bitset and POS round applied to it.
-      POS_wait_stage stage;
+      // cryptonote::block block; // The block template with the best validator bitset and POS round applied to it.
+      std::unordered_map<crypto::public_key, std::optional<VrfBlockEntry>> blocks;
+      POS_VRF_wait_stage stage;
     } wait_for_vrf_block_template;
 
     struct
@@ -323,7 +329,7 @@ crypto::hash msg_signature_hash(crypto::hash const &top_block_hash, POS::message
 
     case POS::message_type::vrf_proof:
     {
-      auto buf = tools::memcpy_le(top_block_hash.data, msg.round, msg.vrf_proof.value.data, msg.vrf_proof.key.data);
+      auto buf = tools::memcpy_le(top_block_hash.data, msg.round, msg.vrf_proof.proof.data, msg.vrf_proof.key.data);
       result   = blake2b_hash(buf.data(), buf.size());
     }
     break;
@@ -331,7 +337,7 @@ crypto::hash msg_signature_hash(crypto::hash const &top_block_hash, POS::message
     case POS::message_type::vrf_block_template:
     {
       crypto::hash block_hash = blake2b_hash(msg.vrf_block_template.blob.data(), msg.vrf_block_template.blob.size());
-      auto buf = tools::memcpy_le(msg.round, block_hash.data, msg.vrf_proof.key.data);
+      auto buf = tools::memcpy_le(msg.round, block_hash.data, msg.vrf_block_template.proof.data, msg.vrf_block_template.key.data);
       result   = blake2b_hash(buf.data(), buf.size());
     }
     break;
@@ -433,18 +439,18 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
 
     case POS::message_type::vrf_block_template:
     {
-      if(context.prepare_vrf_quorum.quorum.workers.empty()){
-        MDEBUG(log_prefix(context) << "The VRF quorum workers size is" << context.prepare_vrf_quorum.quorum.workers.size());
-        return false;
-      }
+      // if(context.prepare_vrf_quorum.quorum.workers.empty()){
+      //   MDEBUG(log_prefix(context) << "The VRF quorum workers size is" << context.prepare_vrf_quorum.quorum.workers.size());
+      //   return false;
+      // }
 
-      key = &context.prepare_vrf_quorum.quorum.workers[0];
-      MGINFO_MAGENTA("EXPECTED KEY " << context.prepare_vrf_quorum.quorum.workers[0] << " RECEIVED KEY " << msg.vrf_block_template.key << " with msg.quorum_position " << msg.quorum_position);
-      if(*key != msg.vrf_block_template.key){
-        MDEBUG(log_prefix(context) << "Expected blocktemplate from " << key <<" , but received " << msg.vrf_block_template.key);
-        return false;
-      }
-      
+      // key = &context.prepare_vrf_quorum.quorum.workers[0];
+      // MGINFO_MAGENTA("EXPECTED KEY " << context.prepare_vrf_quorum.quorum.workers[0] << " RECEIVED KEY " << msg.vrf_block_template.key << " with msg.quorum_position " << msg.quorum_position);
+      // if(*key != msg.vrf_block_template.key){
+      //   MDEBUG(log_prefix(context) << "Expected blocktemplate from " << key <<" , but received " << msg.vrf_block_template.key);
+      //   return false;
+      // }
+      key = &msg.vrf_block_template.key;
       if (msg.quorum_position != 0)
       {
         if (error) stream << log_prefix(context) << "Quorum position " << msg.quorum_position << " in VRF POS message indexes oob for " << POS::message_type_string(msg.type);
@@ -551,9 +557,16 @@ void handle_messages_received_early_for_vrf_proof(POS_VRF_wait_stage &stage, voi
       auto& [msg, queued] = entry;
       if (queued == queueing_state::received)
       {
-        MGINFO_GREEN(log_prefix(context) << "wait listed proof is adding to context" << pubkey);
+        if(context.state == round_state::wait_for_vrf_block_template){
+          MGINFO_GREEN(log_prefix(context) << "wait listed vrf block is adding to context" << pubkey);
+          POS::handle_message(quorumnet_state, msg);
+        }
+        else {
+          MGINFO_GREEN(log_prefix(context) << "wait listed proof is adding to context" << pubkey);
           POS::handle_message(quorumnet_state, msg, true);
-          queued = queueing_state::processed;
+        }
+
+        queued = queueing_state::processed;
       }
   }
 }
@@ -609,15 +622,15 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   if (std::string sig_check_err;
       !msg_signature_check(msg, context.wait_for_next_block.top_hash, context.prepare_for_round.quorum, &sig_check_err))
   {
-    if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers.empty()){
-      MWARNING(log_prefix(context) << "The VRF quorum workers size is " << context.prepare_vrf_quorum.quorum.workers.size());
-      return;
-    }
+    // if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers.empty()){
+    //   MWARNING(log_prefix(context) << "The VRF quorum workers size is " << context.prepare_vrf_quorum.quorum.workers.size());
+    //   return;
+    // }
 
-    if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers[0] != msg.vrf_block_template.key){
-        MWARNING(log_prefix(context) << "Expected blocktemplate from " << context.prepare_vrf_quorum.quorum.workers[0] <<" , but received " << msg.vrf_block_template.key);
-        return;
-    }
+    // if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers[0] != msg.vrf_block_template.key){
+    //     MWARNING(log_prefix(context) << "Expected blocktemplate from " << context.prepare_vrf_quorum.quorum.workers[0] <<" , but received " << msg.vrf_block_template.key);
+    //     return;
+    // }
 
     bool print_err    = true;
     size_t iterations = std::min(context.quorum_history.size(), context.quorum_history_index);
@@ -669,7 +682,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     }
 
     case POS::message_type::vrf_proof:          vrf_stage = &context.transient.vrf_proof.wait.stage;              break;
-    case POS::message_type::vrf_block_template: stage     = &context.transient.wait_for_vrf_block_template.stage; break;
+    case POS::message_type::vrf_block_template: vrf_stage = &context.transient.wait_for_vrf_block_template.stage; break;
     case POS::message_type::handshake:         stage = &context.transient.send_and_wait_for_handshakes.stage; break;
     case POS::message_type::handshake_bitset:  stage = &context.transient.wait_for_handshake_bitsets.stage;   break;
     case POS::message_type::block_template:    stage = &context.transient.wait_for_block_template.stage;      break;
@@ -706,12 +719,20 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
         queued = queueing_state::received;
       }
 
-    } 
+    }
+    else if(msg.type == POS::message_type::vrf_block_template)
+    {
+      MGINFO_GREEN(log_prefix(context) << "msg vrf pos blocks are trying to add in the wait list");
+      auto &[entry, queued] = vrf_stage->queue[msg.vrf_block_template.key];
+      if (queued == queueing_state::empty)
+      {
+        MGINFO_GREEN(log_prefix(context) << "Message received early " << msg_source_string(context, msg) << ", queueing until we're ready.");
+        entry  = std::move(msg);
+        queued = queueing_state::received;
+      }
+    }
     else 
     {
-      if(msg.type == POS::message_type::vrf_block_template){
-        MGINFO_GREEN(log_prefix(context) << "msg vrf pos blocks are trying to add in the wait list");
-      }
       auto &[entry, queued] = stage->queue.buffer[msg.quorum_position];
       if (queued == queueing_state::empty)
       {
@@ -756,37 +777,42 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     case POS::message_type::vrf_proof:
     {
       // MGINFO_GREEN(log_prefix(context) << "Adding the proof into context" << msg.vrf_proof.key);
-      auto &quorum = context.transient.vrf_proof.wait.data;
+      auto &quorum = context.transient.vrf_proof.wait.proofs;
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
 
-      // MGINFO_GREEN(log_prefix(context) << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.value.data);
-      value = msg.vrf_proof.value;
+      // MGINFO_GREEN(log_prefix(context) << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.proof.data);
+      value = msg.vrf_proof.proof;
     }
     break;
 
     case POS::message_type::vrf_block_template:
     {
       MGINFO_MAGENTA("CASE VRF BLOCK TEMPLATE");
-      if (stage->msgs_received == 1)
-        return;
+      // if (stage->msgs_received == 1)
+      //   return;
 
       cryptonote::block block = {};
       if (!cryptonote::t_serializable_object_from_blob(block, msg.vrf_block_template.blob))
       {
-        MTRACE(log_prefix(context) << "Received unparsable VRF POS block template blob");
+        MTRACE(log_prefix(context) << "Received unparsable POS VRF block template blob");
         return;
       }
 
       if (block.POS.round != context.prepare_for_round.round)
       {
-        MTRACE(log_prefix(context) << "Received POS block template specifying different round " << +block.POS.round
+        MTRACE(log_prefix(context) << "Received POS VRF block template specifying different round " << +block.POS.round
                                    << ", expected " << +context.prepare_for_round.round);
         return;
       }
 
-      context.transient.wait_for_vrf_block_template.block = std::move(block);
-      MGINFO_YELLOW(log_prefix(context) << "Received block from the producer " << msg.vrf_block_template.key);
+      if(context.prepare_vrf_quorum.participant == mn_type::producer && msg.vrf_block_template.key != context.prepare_vrf_quorum.quorum.workers[0]){
+        MGINFO_RED(log_prefix(context) << "Received VRF block from other producer " << msg.vrf_block_template.key << " so It will not transfer to other nodes");
+        return;
+      }
+
+      context.transient.wait_for_vrf_block_template.blocks[msg.vrf_block_template.key] = VrfBlockEntry{std::move(block), msg.vrf_block_template.proof};
+      MGINFO_YELLOW(log_prefix(context) << "Received VRF block from the producer " << msg.vrf_block_template.key);
     }
     break;
 
@@ -1352,8 +1378,8 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
     using namespace master_nodes;
     context.prepare_for_round.start_time                          = context.wait_for_next_block.round_0_start_time                + (context.prepare_for_round.round * POS_ROUND_TIME);
     context.transient.vrf_proof.wait.stage.end_time               = context.prepare_for_round.start_time                          + POS_WAIT_FOR_VRF_PROOF_DURATION;
-    context.transient.wait_for_vrf_block_template.stage.end_time = context.transient.vrf_proof.wait.stage.end_time           + POS_WAIT_FOR_VRF_BLOCK_TEMPLATE_DURATION;       
-    context.transient.send_and_wait_for_handshakes.stage.end_time = context.transient.wait_for_vrf_block_template.stage.end_time + POS_WAIT_FOR_HANDSHAKES_DURATION;
+    context.transient.wait_for_vrf_block_template.stage.end_time  = context.transient.vrf_proof.wait.stage.end_time               + POS_WAIT_FOR_VRF_BLOCK_TEMPLATE_DURATION;       
+    context.transient.send_and_wait_for_handshakes.stage.end_time = context.transient.wait_for_vrf_block_template.stage.end_time  + POS_WAIT_FOR_HANDSHAKES_DURATION;
     context.transient.wait_for_handshake_bitsets.stage.end_time   = context.transient.send_and_wait_for_handshakes.stage.end_time + POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION;
     context.transient.wait_for_block_template.stage.end_time      = context.transient.wait_for_handshake_bitsets.stage.end_time   + POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION;
     context.transient.random_value_hashes.wait.stage.end_time     = context.transient.wait_for_block_template.stage.end_time      + POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION;
@@ -1450,23 +1476,23 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
       const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
-      int err = vrf_prove(context.transient.vrf_proof.send.data.data, key.key_ed25519.data, alpha_bytes, sizeof(alpha.data));
+      int err = vrf_prove(context.transient.vrf_proof.send.data.data, key.key_ed25519.data, alpha_bytes, sizeof(crypto::hash));
       if (err != 0) {
             std::cerr << "vrf_prove() returned error for masternode " << key.pub << "\n";
             return round_state::prepare_for_round;
       }
       // unsigned char output[64];
-      // err = vrf_verify(output, reinterpret_cast<const unsigned char*>(key.pub.data), context.transient.vrf_proof.send.data.data, alpha_bytes, sizeof(alpha.data));
+      // err = vrf_verify(output, reinterpret_cast<const unsigned char*>(key.pub.data), context.transient.vrf_proof.send.data.data, alpha_bytes, sizeof(crypto::hash));
       // if (err != 0) {
       //       std::cerr << "Proof did not verify at pubkey:" << key.pub << "\n";
       //       return round_state::prepare_for_round;
       // }
       // MGINFO_GREEN(log_prefix(context) << "Output from the VRF proof:" << output);
-      msg.vrf_proof.value = context.transient.vrf_proof.send.data;
+      msg.vrf_proof.proof = context.transient.vrf_proof.send.data;
       msg.vrf_proof.key = key.pub;
-      // MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.value.data)));
+      // MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.proof.data)));
 
-      // MGINFO_GREEN(log_prefix(context) << "My msg.vrf_proof.value: " << msg.vrf_proof.value.data);
+      // MGINFO_GREEN(log_prefix(context) << "My msg.vrf_proof.proof: " << msg.vrf_proof.proof.data);
       crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
       handle_message(quorumnet_state, msg, true); // Add our own. We receive our own msg for the first time which also triggers us to relay.
     }
@@ -1477,7 +1503,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     handle_messages_received_early_for_vrf_proof(context.transient.vrf_proof.wait.stage, quorumnet_state, blockchain);
     POS_VRF_wait_stage const &stage = context.transient.vrf_proof.wait.stage;
 
-    auto const &quorum            = context.transient.vrf_proof.wait.data;
+    auto const &quorum            = context.transient.vrf_proof.wait.proofs;
     bool const timed_out          = POS::clock::now() >= stage.end_time;
         
     auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
@@ -1510,7 +1536,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
 
 round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node_keys const &key, cryptonote::Blockchain const &blockchain)
 {
-  auto const &quorum = context.transient.vrf_proof.wait.data;
+  auto const &quorum = context.transient.vrf_proof.wait.proofs;
 
   MGINFO_MAGENTA(log_prefix(context) << "Received proof quorum size : " << quorum.size());
   std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates;
@@ -1536,7 +1562,7 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
 
     unsigned char output[64];
 
-    int err = vrf_verify(output, pk, proof.value().data, alpha_bytes, sizeof(alpha.data));
+    int err = vrf_verify(output, pk, proof.value().data, alpha_bytes, sizeof(crypto::hash));
     if (err != 0) {
       MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << pubkey);
       continue;
@@ -1660,10 +1686,11 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
   }
 
   // Message
-  POS::message msg            = msg_init_from_context(context);
-  msg.type                    = POS::message_type::vrf_block_template;
-  msg.vrf_block_template.blob = cryptonote::t_serializable_object_to_blob(block);
-  msg.vrf_block_template.key  = key.pub;
+  POS::message msg              = msg_init_from_context(context);
+  msg.type                      = POS::message_type::vrf_block_template;
+  msg.vrf_block_template.blob   = cryptonote::t_serializable_object_to_blob(block);
+  msg.vrf_block_template.proof  = context.transient.vrf_proof.send.data;
+  msg.vrf_block_template.key    = key.pub;
   crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
 
   // Send
@@ -1675,24 +1702,92 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
 
 round_state wait_for_vrf_block_template(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
 {
-  handle_messages_received_early_for(context.transient.wait_for_vrf_block_template.stage, quorumnet_state);
-  POS_wait_stage const &stage = context.transient.wait_for_vrf_block_template.stage;
+  handle_messages_received_early_for_vrf_proof(context.transient.wait_for_vrf_block_template.stage, quorumnet_state, blockchain);
+  
+  POS_VRF_wait_stage const &stage = context.transient.wait_for_vrf_block_template.stage;
 
   assert(context.prepare_vrf_quorum.participant == mn_type::validator);
-  bool timed_out = POS::clock::now() >= context.transient.wait_for_vrf_block_template.stage.end_time;
-  bool received = context.transient.wait_for_vrf_block_template.stage.msgs_received == 1;
-  if (timed_out || received)
+  bool timed_out = POS::clock::now() >= stage.end_time;
+  // bool received = stage.msgs_received == 1;
+  if (timed_out)
   {
-    std::time_t block_template_time_t = std::chrono::system_clock::to_time_t(context.transient.wait_for_vrf_block_template.stage.end_time);
+    std::time_t block_template_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
     MGINFO_BLUE("block_template.end_time : " << std::put_time(std::gmtime(&block_template_time_t), "%F %T"));
   
     std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
     MGINFO_BLUE("now_c (block_template): " << std::put_time(std::gmtime(&now_c), "%F %T"));
 
-    if (received)
+    if (stage.msgs_received != 0)
     {
-      cryptonote::block const &block = context.transient.wait_for_vrf_block_template.block;
-      MGINFO_MAGENTA(log_prefix(context) << "Valid block received: " << cryptonote::obj_to_json_str(context.transient.wait_for_vrf_block_template.block));
+      // get the alpha value from the previous two blocks
+      const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
+      const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+
+      // verify with threshold
+      auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
+      double W = static_cast<double>(activeList.size());
+      double tau = W * 80 / 100.0;
+      
+      // Get output for the current worker
+      unsigned char curr_worker_pk[32];
+      std::memcpy(curr_worker_pk, context.prepare_vrf_quorum.quorum.workers[0].data, sizeof(curr_worker_pk));
+
+      unsigned char curr_worker_output[64];
+
+      int err = vrf_verify(curr_worker_output, 
+                                curr_worker_pk, 
+                                context.transient.vrf_proof.wait.proofs[context.prepare_vrf_quorum.quorum.workers[0]].value().data, 
+                                alpha_bytes, sizeof(crypto::hash));
+      if (err != 0) {
+        MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << context.prepare_vrf_quorum.quorum.workers[0]);
+        return round_state::wait_for_round;
+      }
+
+      for(const auto &[pubkey, blockProof] : context.transient.wait_for_vrf_block_template.blocks)
+      {
+        if (blockProof) {
+          const auto &block = blockProof->block;
+          const auto &proof = blockProof->proof;
+
+          // Use `pubkey`, `block`, and `proof` here
+
+          if (pubkey != context.prepare_vrf_quorum.quorum.workers[0]){
+            // get the outPut and checks with the current owner and replace if it is less then the current owner output
+            unsigned char pk[32];
+            std::memcpy(pk, pubkey.data, sizeof(pk));
+
+            unsigned char output[64];
+
+            int err = vrf_verify(output, pk, proof.data, alpha_bytes, sizeof(crypto::hash));
+            if (err != 0) {
+              MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << pubkey);
+              continue;
+            }
+
+            bool isValid = verify_vrf_output_with_threshold(output, tau, W);
+            if(!isValid)
+              {
+                MDEBUG(log_prefix(context) << "doen't passed the threshold condition " << pubkey);
+                continue;
+            }
+
+            if (std::memcmp(output, curr_worker_output, sizeof(output)) < 0) {
+              context.prepare_vrf_quorum.quorum.validators.emplace_back(context.prepare_vrf_quorum.quorum.workers[0]);
+              context.prepare_vrf_quorum.quorum.workers[0] = pubkey;
+              std::memcpy(curr_worker_output, output, sizeof(curr_worker_output));
+            }
+          }
+        }
+      }
+
+      if (const auto& blockProofOpt = context.transient.wait_for_vrf_block_template.blocks[context.prepare_vrf_quorum.quorum.workers[0]]; blockProofOpt)
+      {
+        // auto& [block, proof] = *blockProofOpt;
+        cryptonote::block block = blockProofOpt->block;
+
+        MGINFO_MAGENTA(log_prefix(context) << "Valid VRF block received from: " << context.prepare_vrf_quorum.quorum.workers[0]);
+        MGINFO_MAGENTA(log_prefix(context) << "Valid VRF block received: " << cryptonote::obj_to_json_str(block));
+      }
       return round_state::wait_for_round;
     }
     else

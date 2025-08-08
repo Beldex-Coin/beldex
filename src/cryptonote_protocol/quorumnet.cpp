@@ -1524,10 +1524,10 @@ bool POS_VRF_proof_check(std::string data_) {
   POS::message msg = POS_parse_msg_header_fields(POS::message_type::vrf_proof, data, INVALID_ARG_PREFIX);
   if (auto const& tag = POS_TAG_VRF_PROOF; data.skip_until(tag)) {
     auto str = data.consume_string_view();
-    if (str.size() != sizeof(msg.vrf_proof.value.data)){
+    if (str.size() != sizeof(msg.vrf_proof.proof.data)){
         return false;
     }
-    std::memcpy(msg.vrf_proof.value.data, str.data(), sizeof(msg.vrf_proof.value.data));
+    std::memcpy(msg.vrf_proof.proof.data, str.data(), sizeof(msg.vrf_proof.proof.data));
   } else {
     return false;
   }
@@ -1555,7 +1555,7 @@ void POS_relay_vrf_proof_to_mn(void *self, POS::message const &msg){
   data[POS_TAG_BLOCK_ROUND] = msg.round;
 
   if(msg.type == POS::message_type::vrf_proof){
-    data[POS_TAG_VRF_PROOF]         = tools::view_guts(msg.vrf_proof.value);
+    data[POS_TAG_VRF_PROOF]         = tools::view_guts(msg.vrf_proof.proof);
     data[POS_TAG_PUB_KEY]     = tools::view_guts(msg.vrf_proof.key);
   }
 
@@ -1596,9 +1596,10 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
   }
   else if (msg.type == POS::message_type::vrf_block_template)
   {
-    command                        = POS_CMD_SEND_VRF_BLOCK_TEMPLATE;
+    command                      = POS_CMD_SEND_VRF_BLOCK_TEMPLATE;
     data[POS_TAG_BLOCK_TEMPLATE] = msg.vrf_block_template.blob;
-    data[POS_TAG_PUB_KEY]     = tools::view_guts(msg.vrf_block_template.key);
+    data[POS_TAG_VRF_PROOF]      = tools::view_guts(msg.vrf_block_template.proof);
+    data[POS_TAG_PUB_KEY]        = tools::view_guts(msg.vrf_block_template.key);
     MGINFO_MAGENTA("POS VRF BLOCK TEMPLATE "<<command);
   }
   else
@@ -1670,12 +1671,16 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
   }
   else
   {
+    MGINFO_MAGENTA("POS pear list creation start...: "<< command);
+    MGINFO_BLUE("Quorum size : " <<  quorum.workers.size() + quorum.validators.size());
     peer_info peer_list{qnet,
                         quorum_type::POS,
                         &quorum,
                         true /*opportunistic*/,
                         std::move(relay_exclude),
                         include_block_producer /*include_workers*/};
+
+    MGINFO_MAGENTA("POS pear list creation end: "<< command);
     peer_list.relay_to_peers(command, data);
   }
 }
@@ -1724,9 +1729,9 @@ void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
 
   if (auto const& tag = POS_TAG_VRF_PROOF; data.skip_until(tag)) {
     auto str = data.consume_string_view();
-    if (str.size() != sizeof(msg.vrf_proof.value.data))
+    if (str.size() != sizeof(msg.vrf_proof.proof.data))
       throw std::invalid_argument("Invalid proof data size: " + std::to_string(str.size()));
-    std::memcpy(msg.vrf_proof.value.data, str.data(), sizeof(msg.vrf_proof.value.data));
+    std::memcpy(msg.vrf_proof.proof.data, str.data(), sizeof(msg.vrf_proof.proof.data));
   } else {
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF + "'");
   }
@@ -1783,6 +1788,15 @@ void handle_vrf_POS_block_template(Message &m, QnetState &qnet)
     msg.vrf_block_template.blob = data.consume_string_view();
   else
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
+
+  if (auto const& tag = POS_TAG_VRF_PROOF; data.skip_until(tag)) {
+    auto str = data.consume_string_view();
+    if (str.size() != sizeof(msg.vrf_block_template.proof.data))
+      throw std::invalid_argument("Invalid proof data size: " + std::to_string(str.size()));
+    std::memcpy(msg.vrf_block_template.proof.data, str.data(), sizeof(msg.vrf_block_template.proof.data));
+  } else {
+    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_VRF_PROOF + "'");
+  }
 
   if (auto const& tag = POS_TAG_PUB_KEY; data.skip_until(tag)) {
     auto str = data.consume_string_view();
