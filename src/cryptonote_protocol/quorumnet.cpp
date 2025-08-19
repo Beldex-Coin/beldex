@@ -415,6 +415,12 @@ private:
             }
 
             auto &validators = (*qit)->validators;
+            
+            //checks quroum validator's size to prevent crash
+            if (!get_matrix(validators.size())) {
+                MGINFO_RED(" Unsupported validator size " << validators.size() << ". Skipping to prevent crash.");
+                continue;
+            }
 
             // Relay to all my outgoing targets within the quorum (connecting if not already connected)
             for (int j : quorum_outgoing_conns(my_position[i], validators.size())) {
@@ -1783,7 +1789,7 @@ void handle_vrf_POS_block_template(Message &m, QnetState &qnet)
   bt_dict_consumer data{m.data[0]};
   std::string_view constexpr INVALID_ARG_PREFIX = "Invalid VRF POS block template: missing required field '"sv;
   POS::message msg = POS_parse_msg_header_fields(POS::message_type::vrf_block_template, data, INVALID_ARG_PREFIX);
-  MGINFO_MAGENTA("HANDLE VRF POS BLOCK TEMPLATE");
+
   if (auto const &tag = POS_TAG_BLOCK_TEMPLATE; data.skip_until(tag))
     msg.vrf_block_template.blob = data.consume_string_view();
   else
@@ -1807,6 +1813,7 @@ void handle_vrf_POS_block_template(Message &m, QnetState &qnet)
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_PUB_KEY + "'");
   }
 
+  MGINFO_MAGENTA("HANDLE VRF POS BLOCK TEMPLATE from " << msg.vrf_block_template.key);
   qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
 }
 
