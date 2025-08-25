@@ -443,18 +443,18 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
 
     case POS::message_type::vrf_block_template:
     {
-      if(context.prepare_vrf_quorum.quorum.workers.empty()){
-        MDEBUG(log_prefix(context) << "The VRF quorum workers size is" << context.prepare_vrf_quorum.quorum.workers.size());
-        return false;
-      }
+      // if(context.prepare_vrf_quorum.quorum.workers.empty()){
+      //   MDEBUG(log_prefix(context) << "The VRF quorum workers size is" << context.prepare_vrf_quorum.quorum.workers.size());
+      //   return false;
+      // }
 
-      key = &context.prepare_vrf_quorum.quorum.workers[0];
-      MGINFO_MAGENTA("EXPECTED KEY " << context.prepare_vrf_quorum.quorum.workers[0] << " RECEIVED KEY " << msg.vrf_block_template.key << " with msg.quorum_position " << msg.quorum_position);
-      if(*key != msg.vrf_block_template.key){
-        MDEBUG(log_prefix(context) << "Expected block template from " << key <<" , but received " << msg.vrf_block_template.key);
-        return false;
-      }
-      // key = &msg.vrf_block_template.key;
+      // key = &context.prepare_vrf_quorum.quorum.workers[0];
+      // MGINFO_MAGENTA("EXPECTED KEY " << context.prepare_vrf_quorum.quorum.workers[0] << " RECEIVED KEY " << msg.vrf_block_template.key << " with msg.quorum_position " << msg.quorum_position);
+      // if(*key != msg.vrf_block_template.key){
+      //   MDEBUG(log_prefix(context) << "Expected block template from " << key <<" , but received " << msg.vrf_block_template.key);
+      //   return false;
+      // }
+      key = &msg.vrf_block_template.key;
       if (msg.quorum_position != 0)
       {
         if (error) stream << log_prefix(context) << "Quorum position " << msg.quorum_position << " in VRF POS message indexes oob for " << POS::message_type_string(msg.type);
@@ -626,15 +626,15 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   if (std::string sig_check_err;
       !msg_signature_check(msg, context.wait_for_next_block.top_hash, context.prepare_for_round.quorum, &sig_check_err))
   {
-    if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers.empty()){
-      MWARNING(log_prefix(context) << "The VRF quorum workers size is " << context.prepare_vrf_quorum.quorum.workers.size());
-      return;
-    }
+    // if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers.empty()){
+    //   MWARNING(log_prefix(context) << "The VRF quorum workers size is " << context.prepare_vrf_quorum.quorum.workers.size());
+    //   return;
+    // }
 
-    if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers[0] != msg.vrf_block_template.key){
-        MWARNING(log_prefix(context) << "Expected blocktemplate from " << context.prepare_vrf_quorum.quorum.workers[0] <<" , but received " << msg.vrf_block_template.key);
-        return;
-    }
+    // if(context.state == round_state::wait_for_vrf_block_template && context.prepare_vrf_quorum.quorum.workers[0] != msg.vrf_block_template.key){
+    //     MWARNING(log_prefix(context) << "Expected blocktemplate from " << context.prepare_vrf_quorum.quorum.workers[0] <<" , but received " << msg.vrf_block_template.key);
+    //     return;
+    // }
 
     bool print_err    = true;
     size_t iterations = std::min(context.quorum_history.size(), context.quorum_history_index);
@@ -793,8 +793,8 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     case POS::message_type::vrf_block_template:
     {
       MGINFO_MAGENTA("CASE for VRF BLOCK TEMPLATE add into my context");
-      if (vrf_stage->msgs_received == 1)
-        return;
+      // if (vrf_stage->msgs_received == 1)
+      //   return;
 
       cryptonote::block block = {};
       if (!cryptonote::t_serializable_object_from_blob(block, msg.vrf_block_template.blob))
@@ -810,11 +810,11 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
         return;
       }
 
-      if(context.prepare_vrf_quorum.quorum.workers.empty())
-      {
-        MGINFO_RED(log_prefix(context) << "Received empty workers");       
-        return;
-      }
+      // if(context.prepare_vrf_quorum.quorum.workers.empty())
+      // {
+      //   MGINFO_RED(log_prefix(context) << "Received empty workers");       
+      //   return;
+      // }
 
       if(context.prepare_vrf_quorum.participant == mn_type::producer && msg.vrf_block_template.key != context.prepare_vrf_quorum.quorum.workers[0]){
         MGINFO_RED(log_prefix(context) << "Received VRF block from other producer " << msg.vrf_block_template.key << " so It will not transfer to other nodes");
@@ -1745,8 +1745,8 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
 
   assert(context.prepare_vrf_quorum.participant == mn_type::validator);
   bool timed_out = POS::clock::now() >= stage.end_time;
-  bool received = stage.msgs_received == 1;
-  if (timed_out || received)
+  // bool received = stage.msgs_received == 1;
+  if (timed_out)
   {
     std::time_t block_template_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
     MGINFO_BLUE("block_template.end_time : " << std::put_time(std::gmtime(&block_template_time_t), "%F %T"));
@@ -1754,9 +1754,9 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
     std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
     MGINFO_BLUE("now_c (block_template): " << std::put_time(std::gmtime(&now_c), "%F %T"));
 
-    if (received)
+    if (stage.msgs_received >= 1)
     {
-      MGINFO_MAGENTA(log_prefix(context) << "Total VRF block received from new producer : " << stage.msgs_received);
+      MGINFO_MAGENTA(log_prefix(context) << "Total VRF block received from producers : " << stage.msgs_received);
       // get the alpha value from the previous two blocks
       const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
       const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
