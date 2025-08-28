@@ -1507,6 +1507,7 @@ const std::string POS_TAG_FINAL_BLOCK_SIGNATURE = "z";
 const std::string POS_CMD_CATEGORY               = "POS";
 const std::string POS_CMD_VRF_PROOF              = "vrf_proof";
 const std::string POS_CMD_VRF_BLOCK_TEMPLATE     = "vrf_block_template";
+const std::string POS_CMD_VRF_SIGNED_BLOCK       = "vrf_signed_block";
 const std::string POS_CMD_VALIDATOR_BITSET       = "validator_bitset";
 const std::string POS_CMD_VALIDATOR_BIT          = "validator_bit";
 const std::string POS_CMD_BLOCK_TEMPLATE         = "block_template";
@@ -1515,6 +1516,7 @@ const std::string POS_CMD_RANDOM_VALUE           = "random_value";
 const std::string POS_CMD_SIGNED_BLOCK           = "signed_block";
 const std::string POS_CMD_SEND_VRF_PROOF         = POS_CMD_CATEGORY + "." + POS_CMD_VRF_PROOF;
 const std::string POS_CMD_SEND_VRF_BLOCK_TEMPLATE = POS_CMD_CATEGORY + "." + POS_CMD_VRF_BLOCK_TEMPLATE;
+const std::string POS_CMD_SEND_VRF_SIGNED_BLOCK  = POS_CMD_CATEGORY + "." + POS_CMD_VRF_SIGNED_BLOCK;
 const std::string POS_CMD_SEND_VALIDATOR_BITSET  = POS_CMD_CATEGORY + "." + POS_CMD_VALIDATOR_BITSET;
 const std::string POS_CMD_SEND_VALIDATOR_BIT     = POS_CMD_CATEGORY + "." + POS_CMD_VALIDATOR_BIT;
 const std::string POS_CMD_SEND_BLOCK_TEMPLATE    = POS_CMD_CATEGORY + "." + POS_CMD_BLOCK_TEMPLATE;
@@ -1606,7 +1608,17 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
     data[POS_TAG_BLOCK_TEMPLATE] = msg.vrf_block_template.blob;
     data[POS_TAG_VRF_PROOF]      = tools::view_guts(msg.vrf_block_template.proof);
     data[POS_TAG_PUB_KEY]        = tools::view_guts(msg.vrf_block_template.key);
-    MGINFO_MAGENTA("POS VRF BLOCK TEMPLATE "<<command);
+    MGINFO_MAGENTA("POS VRF BLOCK TEMPLATE " << command);
+  }
+  else if (msg.type == POS::message_type::vrf_signed_block)
+  {
+    include_block_producer       = msg.type == POS::message_type::vrf_signed_block;
+    relay_exclude.insert(msg.vrf_signed_block.key);
+
+    command                      = POS_CMD_SEND_VRF_SIGNED_BLOCK;
+    data[POS_TAG_PUB_KEY]        = tools::view_guts(msg.vrf_signed_block.key);
+    data[POS_TAG_FINAL_BLOCK_SIGNATURE] = tools::view_guts(msg.vrf_signed_block.signature_of_vrf_final_block_hash);
+    // MGINFO_MAGENTA("POS VRF SIGNED BLOCK " << command  << " " << msg.vrf_signed_block.key);
   }
   else
   {
@@ -1629,6 +1641,8 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
 
       case POS::message_type::vrf_proof: break;
       case POS::message_type::vrf_block_template: break;
+
+      case POS::message_type::vrf_signed_block: break;
 
       case POS::message_type::handshake: /* FALLTHRU */
       case POS::message_type::handshake_bitset:
@@ -1675,7 +1689,7 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
     auto destinations = peer_prepare_relay_to_quorum_subset(qnet.core, &quorum_ptr, &quorum_ptr + 1, 4 /*num_peers*/);
     peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
   }
-  else if (msg.type == POS::message_type::vrf_block_template && quorum.validators.size() < 7)
+  else if (msg.type == POS::message_type::vrf_block_template && msg.type == POS::message_type::vrf_signed_block && quorum.validators.size() < 7)
   {
     master_nodes::quorum const *quorum_ptr = &quorum;
     auto destinations = peer_prepare_relay_to_quorum_subset(qnet.core, &quorum_ptr, &quorum_ptr + 1, quorum.validators.size() /*num_peers*/);
@@ -1683,7 +1697,7 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
   }
   else
   {
-    MGINFO_MAGENTA("POS pear list creation start...: "<< command);
+    // MGINFO_MAGENTA("POS pear list creation start...: "<< command);
     MGINFO_BLUE("Quorum size : " <<  quorum.workers.size() + quorum.validators.size());
     peer_info peer_list{qnet,
                         quorum_type::POS,
@@ -1692,7 +1706,7 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
                         std::move(relay_exclude),
                         include_block_producer /*include_workers*/};
 
-    MGINFO_MAGENTA("POS pear list creation end: "<< command);
+    MGINFO_MAGENTA("POS pear list creation done for : "<< command);
     peer_list.relay_to_peers(command, data);
   }
 }
@@ -1702,7 +1716,7 @@ POS::message POS_parse_msg_header_fields(POS::message_type type, bt_dict_consume
   POS::message result = {};
   result.type           = type;
 
-  if (type != POS::message_type::block_template && type != POS::message_type::vrf_proof && type != POS::message_type::vrf_block_template)
+  if (type != POS::message_type::block_template && type != POS::message_type::vrf_proof && type != POS::message_type::vrf_block_template && type != POS::message_type::vrf_signed_block)
   {
     if (auto const &tag = POS_TAG_QUORUM_POSITION; data.skip_until(tag))
       result.quorum_position = data.consume_integer<int>();
@@ -1820,6 +1834,35 @@ void handle_vrf_POS_block_template(Message &m, QnetState &qnet)
   }
 
   MGINFO_MAGENTA("HANDLE VRF POS BLOCK TEMPLATE from " << msg.vrf_block_template.key);
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
+}
+
+void handle_vrf_POS_signed_block(Message &m, QnetState &qnet)
+{
+  if (m.data.size() != 1)
+      throw std::runtime_error("Rejecting POS VRF signed block expected one data entry not "s + std::to_string(m.data.size()));
+
+  std::string_view constexpr INVALID_ARG_PREFIX = "Invalid POS VRF signed block: missing required field '"sv;
+  bt_dict_consumer data{m.data[0]};
+  POS::message msg = POS_parse_msg_header_fields(POS::message_type::vrf_signed_block, data, INVALID_ARG_PREFIX);
+
+  if (auto const& tag = POS_TAG_PUB_KEY; data.skip_until(tag)) {
+    auto str = data.consume_string_view();
+    if (str.size() != sizeof(msg.vrf_signed_block.key))
+      throw std::invalid_argument("Invalid key data size: " + std::to_string(str.size()));
+    std::memcpy(msg.vrf_signed_block.key.data, str.data(), sizeof(crypto::public_key));
+  } else {
+    throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + POS_TAG_PUB_KEY + "'");
+  }
+
+  if (auto const &tag = POS_TAG_FINAL_BLOCK_SIGNATURE; data.skip_until(tag)) {
+    auto sig_str                                   = data.consume_string_view();
+    msg.vrf_signed_block.signature_of_vrf_final_block_hash = convert_string_view_bytes_to_signature(sig_str);
+  } else {
+    throw std::invalid_argument("Invalid POS VRF signed block: missing required field '"s + tag + "'");
+  }
+
+//   MGINFO_MAGENTA("HANDLE VRF POS BLOCK SIGNATURE from " << msg.vrf_signed_block.key);
   qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
 }
 
@@ -1949,6 +1992,7 @@ void setup_endpoints(cryptonote::core& core, void* obj) {
         omq.add_category(POS_CMD_CATEGORY, Access{AuthLevel::none, true /*remote mn*/, true /*local mn*/}, 1 /*reserved thread*/)
             .add_command(POS_CMD_VRF_PROOF, [&qnet](Message& m) { handle_POS_VRF_proof(m, qnet); })
             .add_command(POS_CMD_VRF_BLOCK_TEMPLATE, [&qnet](Message& m) { handle_vrf_POS_block_template(m, qnet); })
+            .add_command(POS_CMD_VRF_SIGNED_BLOCK, [&qnet](Message& m) { handle_vrf_POS_signed_block(m, qnet); })
             .add_command(POS_CMD_VALIDATOR_BIT, [&qnet](Message& m) { handle_POS_participation_bit_or_bitset(m, qnet, false /*bitset*/); })
             .add_command(POS_CMD_VALIDATOR_BITSET, [&qnet](Message& m) { handle_POS_participation_bit_or_bitset(m, qnet, true /*bitset*/); })
             .add_command(POS_CMD_BLOCK_TEMPLATE, [&qnet](Message& m) { handle_POS_block_template(m, qnet); })

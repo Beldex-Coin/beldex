@@ -41,6 +41,9 @@ enum struct round_state
 
   send_vrf_block_template,
   wait_for_vrf_block_template,
+
+  send_vrf_signed_blocks,
+  wait_for_vrf_signed_blocks,
   
   wait_for_round,
 
@@ -73,6 +76,9 @@ constexpr std::string_view round_state_string(round_state state)
 
     case round_state::send_vrf_block_template: return "Send Vrf Block Template"sv;
     case round_state::wait_for_vrf_block_template: return "Wait For Vrf Block Template"sv;
+
+    case round_state::send_vrf_signed_blocks: return "Send Vrf signed blocks"sv;
+    case round_state::wait_for_vrf_signed_blocks: return "Wait For Vrf signed blocks"sv;
 
     case round_state::wait_for_round: return "Wait For Round"sv;
 
@@ -211,10 +217,22 @@ struct round_context
 
     struct
     {
-      // cryptonote::block block; // The block template with the best validator bitset and POS round applied to it.
+      cryptonote::block block; // The block template from the lowest output producer
       std::unordered_map<crypto::public_key, std::optional<VrfBlockEntry>> blocks;
       POS_VRF_wait_stage stage;
     } wait_for_vrf_block_template;
+
+    struct
+    {
+      POS_send_stage<crypto::signature> send;
+      cryptonote::block final_block;
+
+      struct
+      {
+        std::unordered_map<crypto::public_key, std::optional<crypto::signature>> signature;
+        POS_VRF_wait_stage stage;
+      } wait;
+    } send_and_wait_for_vrf_signed_block;
 
     struct
     {
@@ -346,6 +364,14 @@ crypto::hash msg_signature_hash(crypto::hash const &top_block_hash, POS::message
     }
     break;
 
+    case POS::message_type::vrf_signed_block:
+    {
+      crypto::signature const &final_signature = msg.vrf_signed_block.signature_of_vrf_final_block_hash;
+      auto buf = tools::memcpy_le(top_block_hash.data, msg.vrf_signed_block.key.data, msg.round, final_signature.c.data, final_signature.r.data);
+      result   = blake2b_hash(buf.data(), buf.size());
+    }
+    break;
+
     case POS::message_type::handshake:
     {
       auto buf = tools::memcpy_le(top_block_hash.data, msg.quorum_position, msg.round);
@@ -463,6 +489,12 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
     }
     break;
 
+    case POS::message_type::vrf_signed_block:
+    {
+      key = &msg.vrf_signed_block.key;
+    }
+    break;
+
     case POS::message_type::handshake: [[fallthrough]];
     case POS::message_type::handshake_bitset: [[fallthrough]];
     case POS::message_type::random_value_hash: [[fallthrough]];
@@ -561,13 +593,15 @@ void handle_messages_received_early_for_vrf_proof(POS_VRF_wait_stage &stage, voi
       auto& [msg, queued] = entry;
       if (queued == queueing_state::received)
       {
-        if(context.state == round_state::wait_for_vrf_block_template){
-          MGINFO_GREEN(log_prefix(context) << "wait listed vrf block is adding to context" << pubkey);
-          POS::handle_message(quorumnet_state, msg);
-        }
-        else {
+        if (context.state == round_state::send_and_wait_for_vrf_proofs)
+        {
           MGINFO_GREEN(log_prefix(context) << "wait listed proof is adding to context" << pubkey);
           POS::handle_message(quorumnet_state, msg, true);
+        }
+        else 
+        {
+          MGINFO_GREEN(log_prefix(context) << "wait listed vrf block/vrf block signature is adding to context" << pubkey);
+          POS::handle_message(quorumnet_state, msg);
         }
 
         queued = queueing_state::processed;
@@ -611,7 +645,7 @@ bool enforce_validator_participation_and_timeouts(round_context const &context,
 void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool all_mn)
 {
   MGINFO_GREEN(log_prefix(context) << "Handle message called....: " << message_type_string(msg.type));
-  if (context.state < round_state::wait_for_round && context.state != round_state::send_and_wait_for_vrf_proofs && context.state != round_state::wait_for_vrf_block_template)
+  if (context.state < round_state::wait_for_round && context.state != round_state::send_and_wait_for_vrf_proofs && context.state != round_state::wait_for_vrf_block_template && context.state != round_state::send_vrf_signed_blocks && context.state != round_state::wait_for_vrf_signed_blocks)
   {
     // TODO(doyle): Handle this better.
     // We are not ready for any messages because we haven't prepared for a round
@@ -687,6 +721,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     case POS::message_type::vrf_proof:          vrf_stage = &context.transient.vrf_proof.wait.stage;              break;
     case POS::message_type::vrf_block_template: vrf_stage = &context.transient.wait_for_vrf_block_template.stage; break;
+    case POS::message_type::vrf_signed_block:   vrf_stage = &context.transient.send_and_wait_for_vrf_signed_block.wait.stage; break;
     case POS::message_type::handshake:         stage = &context.transient.send_and_wait_for_handshakes.stage; break;
     case POS::message_type::handshake_bitset:  stage = &context.transient.wait_for_handshake_bitsets.stage;   break;
     case POS::message_type::block_template:    stage = &context.transient.wait_for_block_template.stage;      break;
@@ -701,6 +736,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     case POS::message_type::invalid:           assert("Invalid Code Path" != nullptr); return;
     case POS::message_type::vrf_proof:         msg_received_early = (context.state < round_state::send_and_wait_for_vrf_proofs);          break;
     case POS::message_type::vrf_block_template: msg_received_early = (context.state < round_state::wait_for_vrf_block_template);          break;
+    case POS::message_type::vrf_signed_block:  msg_received_early = (context.state < round_state::wait_for_vrf_signed_blocks);            break;
     case POS::message_type::handshake:         msg_received_early = (context.state < round_state::send_and_wait_for_handshakes);          break;
     case POS::message_type::handshake_bitset:  msg_received_early = (context.state < round_state::wait_for_handshake_bitsets);            break;
     case POS::message_type::block_template:    msg_received_early = (context.state < round_state::wait_for_block_template);               break;
@@ -728,6 +764,17 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     {
       MGINFO_GREEN(log_prefix(context) << "msg vrf pos blocks are trying to add in the wait list");
       auto &[entry, queued] = vrf_stage->queue[msg.vrf_block_template.key];
+      if (queued == queueing_state::empty)
+      {
+        MGINFO_GREEN(log_prefix(context) << "Message received early " << msg_source_string(context, msg) << ", queueing until we're ready.");
+        entry  = std::move(msg);
+        queued = queueing_state::received;
+      }
+    }
+    else if(msg.type == POS::message_type::vrf_signed_block)
+    {
+      MGINFO_GREEN(log_prefix(context) << "msg vrf signed block signature are trying to add in the wait list");
+      auto &[entry, queued] = vrf_stage->queue[msg.vrf_signed_block.key];
       if (queued == queueing_state::empty)
       {
         MGINFO_GREEN(log_prefix(context) << "Message received early " << msg_source_string(context, msg) << ", queueing until we're ready.");
@@ -780,7 +827,7 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     case POS::message_type::vrf_proof:
     {
-      // MGINFO_GREEN(log_prefix(context) << "Adding the proof into context" << msg.vrf_proof.key);
+      MGINFO_GREEN(log_prefix(context) << "Adding the proof into context" << msg.vrf_proof.key);
       auto &quorum = context.transient.vrf_proof.wait.proofs;
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
@@ -821,8 +868,47 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
         return;
       }
 
-      context.transient.wait_for_vrf_block_template.blocks[msg.vrf_block_template.key] = VrfBlockEntry{std::move(block), msg.vrf_block_template.proof};
+      auto& blocks = context.transient.wait_for_vrf_block_template.blocks;
+
+      auto it = blocks.find(msg.vrf_block_template.key);
+
+      //check the key is present or not.
+      if (it != blocks.end()) {
+          return;
+      }
+
+      blocks.emplace(
+          msg.vrf_block_template.key,
+          VrfBlockEntry{std::move(block), msg.vrf_block_template.proof}
+      );
       MGINFO_YELLOW(log_prefix(context) << "Received VRF block from the producer " << msg.vrf_block_template.key);
+    }
+    break;
+
+    case POS::message_type::vrf_signed_block:
+    {
+      MGINFO_GREEN("CASE for VRF SIGNED BLOCK add into my context " << msg.vrf_signed_block.key);
+      // NOTE: The block template with the final random value inserted but no
+      // Master Node signatures. (Master Node signatures are added in one shot
+      // after this stage has timed out and all signatures are collected).
+      cryptonote::block const &final_block_no_signatures = context.transient.send_and_wait_for_vrf_signed_block.final_block;
+      crypto::hash const final_block_hash                = cryptonote::get_block_hash(final_block_no_signatures);
+
+      // assert(msg.quorum_position < context.prepare_for_round.quorum.validators.size());
+      crypto::public_key const &validator_key = msg.vrf_signed_block.key;
+      if (!crypto::check_signature(final_block_hash, validator_key, msg.vrf_signed_block.signature_of_vrf_final_block_hash))
+      {
+        MGINFO_RED(log_prefix(context) << "Dropping " << msg_source_string(context, msg)
+                                   << ". VRF Signature signing final block hash "
+                                   << msg.vrf_signed_block.signature_of_vrf_final_block_hash
+                                   << " does not validate with the Master Node");
+        return;
+      }
+
+      auto &quorum    = context.transient.send_and_wait_for_vrf_signed_block.wait.signature;
+      auto &signature = quorum[validator_key];
+      if (signature) return;
+      signature = msg.vrf_signed_block.signature_of_vrf_final_block_hash;
     }
     break;
 
@@ -949,12 +1035,10 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   if (quorumnet_state){
     if(all_mn)
       cryptonote::quorumnet_POS_relay_vrf_proof_to_mn(quorumnet_state, msg);
-    else if (msg.type == POS::message_type::vrf_block_template)
+    else if (msg.type == POS::message_type::vrf_block_template || msg.type == POS::message_type::vrf_signed_block)
     {
-      if(context.prepare_vrf_quorum.participant == mn_type::producer)
-            cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_vrf_quorum.quorum, context.prepare_vrf_quorum.participant == mn_type::producer);
-      else
-        return;
+      // MGINFO_CYAN("Relay message to quorum " << message_type_string(msg.type));
+      cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_vrf_quorum.quorum, context.prepare_vrf_quorum.participant == mn_type::producer);
     }
     else
       cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_for_round.quorum, context.prepare_for_round.participant == mn_type::producer);
@@ -1394,7 +1478,8 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
     context.prepare_for_round.start_time                          = context.wait_for_next_block.round_0_start_time                + (context.prepare_for_round.round * POS_ROUND_TIME);
     context.transient.vrf_proof.wait.stage.end_time               = context.prepare_for_round.start_time                          + POS_WAIT_FOR_VRF_PROOF_DURATION;
     context.transient.wait_for_vrf_block_template.stage.end_time  = context.transient.vrf_proof.wait.stage.end_time               + POS_WAIT_FOR_VRF_BLOCK_TEMPLATE_DURATION;       
-    context.transient.send_and_wait_for_handshakes.stage.end_time = context.transient.wait_for_vrf_block_template.stage.end_time  + POS_WAIT_FOR_HANDSHAKES_DURATION;
+    context.transient.send_and_wait_for_vrf_signed_block.wait.stage.end_time = context.transient.wait_for_vrf_block_template.stage.end_time + POS_WAIT_FOR_VRF_SIGNED_BLOCK;
+    context.transient.send_and_wait_for_handshakes.stage.end_time = context.transient.send_and_wait_for_vrf_signed_block.wait.stage.end_time  + POS_WAIT_FOR_HANDSHAKES_DURATION;
     context.transient.wait_for_handshake_bitsets.stage.end_time   = context.transient.send_and_wait_for_handshakes.stage.end_time + POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION;
     context.transient.wait_for_block_template.stage.end_time      = context.transient.wait_for_handshake_bitsets.stage.end_time   + POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION;
     context.transient.random_value_hashes.wait.stage.end_time     = context.transient.wait_for_block_template.stage.end_time      + POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION;
@@ -1734,7 +1819,7 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
   MGINFO_MAGENTA(log_prefix(context) << "Validators are handshaken and ready, sending block template from producer (us) to validators.\n" << cryptonote::obj_to_json_str(block));
   cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_vrf_quorum.quorum, true /*block_producer*/);
   // return goto_preparing_for_next_round(context);
-  return round_state::wait_for_round;
+  return round_state::wait_for_vrf_signed_blocks;
 }
 
 round_state wait_for_vrf_block_template(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
@@ -1822,22 +1907,74 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
       if (const auto& blockProofOpt = context.transient.wait_for_vrf_block_template.blocks[context.prepare_vrf_quorum.quorum.workers[0]]; blockProofOpt)
       {
         // auto& [block, proof] = *blockProofOpt;
-        cryptonote::block block = blockProofOpt->block;
+        // cryptonote::block block = blockProofOpt->block;
+        context.transient.wait_for_vrf_block_template.block = blockProofOpt->block;
 
         MGINFO_MAGENTA(log_prefix(context) << "Valid VRF block received from: " << context.prepare_vrf_quorum.quorum.workers[0]);
-        MGINFO_MAGENTA(log_prefix(context) << "Valid VRF block received: " << cryptonote::obj_to_json_str(block));
+        MGINFO_MAGENTA(log_prefix(context) << "Valid VRF block received: " << cryptonote::obj_to_json_str(context.transient.wait_for_vrf_block_template.block));
       }
-      return round_state::wait_for_round;
+      return round_state::send_vrf_signed_blocks;
     }
     else
     {
-      MGINFO_RED
-      (log_prefix(context) << "Timed out, VRF block template was not received");
+      MGINFO_RED(log_prefix(context) << "Timed out, VRF block template was not received");
       return round_state::wait_for_round;
     }
   }
 
   return round_state::wait_for_vrf_block_template;
+}
+
+round_state send_vrf_signed_blocks(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
+{
+  MGINFO_CYAN(log_prefix(context) << __func__);
+  if (context.transient.send_and_wait_for_vrf_signed_block.send.one_time_only())
+  {
+    context.transient.send_and_wait_for_vrf_signed_block.final_block = std::move(context.transient.wait_for_vrf_block_template.block);
+    cryptonote::block &final_block             = context.transient.send_and_wait_for_vrf_signed_block.final_block;
+
+    // Generate the signature of the final block 
+    crypto::hash const &final_block_hash = cryptonote::get_block_hash(final_block);
+    crypto::generate_signature(final_block_hash, key.pub, key.key, context.transient.send_and_wait_for_vrf_signed_block.send.data);
+
+    MGINFO_MAGENTA(log_prefix(context) << "Block final signature is constructed " << context.transient.send_and_wait_for_vrf_signed_block.send.data);
+
+    // Message
+    POS::message msg         = msg_init_from_context(context);
+    msg.type                 = POS::message_type::vrf_signed_block;
+    msg.vrf_signed_block.key = key.pub;
+    msg.vrf_signed_block.signature_of_vrf_final_block_hash = context.transient.send_and_wait_for_vrf_signed_block.send.data;
+    crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
+    handle_message(quorumnet_state, msg); // Add our own. We receive our own msg for the first time which also triggers us to relay.
+  }
+
+  return round_state::wait_for_vrf_signed_blocks;
+}
+
+round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
+{
+  // MGINFO_CYAN(log_prefix(context) << __func__);
+  handle_messages_received_early_for_vrf_proof(context.transient.send_and_wait_for_vrf_signed_block.wait.stage, quorumnet_state, blockchain);
+  
+  POS_VRF_wait_stage const &stage = context.transient.send_and_wait_for_vrf_signed_block.wait.stage;
+  bool timed_out = POS::clock::now() >= stage.end_time;
+
+  if(timed_out){
+    std::time_t vrf_signed_blocks_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
+    MGINFO_BLUE("vrf_signed_blocks.end_time : " << std::put_time(std::gmtime(&vrf_signed_blocks_time_t), "%F %T"));
+  
+    std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
+    MGINFO_BLUE("now_c (vrf_signed_blocks): " << std::put_time(std::gmtime(&now_c), "%F %T"));
+
+    MGINFO_MAGENTA(log_prefix(context) <<"Size of the signatures: " << context.transient.send_and_wait_for_vrf_signed_block.wait.signature.size());
+    for(const auto &[pubkey, signature] : context.transient.send_and_wait_for_vrf_signed_block.wait.signature)
+    {
+      MGINFO_MAGENTA(log_prefix(context) <<"pubkey :" << pubkey << ", signature: " << *signature);
+    }
+    return round_state::wait_for_round;
+  }
+
+  return round_state::wait_for_vrf_signed_blocks;
 }
 
 round_state wait_for_round(round_context &context, cryptonote::Blockchain const &blockchain)
@@ -1849,7 +1986,7 @@ round_state wait_for_round(round_context &context, cryptonote::Blockchain const 
     return goto_wait_for_next_block_and_clear_round_data(context);
   }
 
-  auto start_time = context.transient.wait_for_vrf_block_template.stage.end_time;
+  auto start_time = context.transient.send_and_wait_for_vrf_signed_block.wait.stage.end_time;
   if (auto now = POS::clock::now(); now < start_time)
   {
     for (static uint64_t last_height = 0; last_height != context.wait_for_next_block.height; last_height = context.wait_for_next_block.height)
@@ -2406,6 +2543,14 @@ void POS::main(void *quorumnet_state, cryptonote::core &core)
 
       case round_state::wait_for_vrf_block_template:
         context.state = wait_for_vrf_block_template(context, node_list, quorumnet_state, key, blockchain);
+        break;
+
+      case round_state::send_vrf_signed_blocks:
+        context.state = send_vrf_signed_blocks(context, node_list, quorumnet_state, key, blockchain);
+        break;
+      
+      case round_state::wait_for_vrf_signed_blocks:
+        context.state = wait_for_vrf_signed_blocks(context, node_list, quorumnet_state, key, blockchain);
         break;
 
       case round_state::wait_for_round:

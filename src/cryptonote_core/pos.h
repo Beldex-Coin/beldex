@@ -32,6 +32,7 @@ enum struct message_type : uint8_t
   invalid,
   vrf_proof,
   vrf_block_template,
+  vrf_signed_block,
   handshake,
   handshake_bitset,
   block_template,
@@ -47,6 +48,7 @@ constexpr std::string_view message_type_string(message_type type)
     case message_type::invalid: return "Invalid"sv;
     case message_type::vrf_proof: return "Vrf Proof"sv;
     case message_type::vrf_block_template: return "Vrf Block Template"sv;
+    case message_type::vrf_signed_block: return "Vrf signed Block"sv;
     case message_type::handshake: return "Handshake"sv;
     case message_type::handshake_bitset: return "Handshake Bitset"sv;
     case message_type::block_template: return "Block Template"sv;
@@ -76,6 +78,12 @@ struct message
     crypto::public_key key;
     cryptonote::POS_VRF_proof proof;
   } vrf_block_template;
+
+  struct
+  {
+    crypto::public_key key;
+    crypto::signature signature_of_vrf_final_block_hash;
+  } vrf_signed_block;
 
   struct
   {

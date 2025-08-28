@@ -19,9 +19,10 @@ namespace master_nodes {
   inline constexpr size_t POS_QUORUM_NUM_VALIDATORS     = 7;
   inline constexpr size_t POS_BLOCK_REQUIRED_SIGNATURES = 6;  // A block must have exactly N signatures to be considered properly
 #else
-  inline constexpr auto POS_ROUND_TIME                                   = 90s;
-  inline constexpr auto POS_WAIT_FOR_VRF_PROOF_DURATION                  = 20s;
+  inline constexpr auto POS_ROUND_TIME                                   = 120s;
+  inline constexpr auto POS_WAIT_FOR_VRF_PROOF_DURATION                  = 30s;
   inline constexpr auto POS_WAIT_FOR_VRF_BLOCK_TEMPLATE_DURATION         = 10s;
+  inline constexpr auto POS_WAIT_FOR_VRF_SIGNED_BLOCK                    = 20s;
   inline constexpr auto POS_WAIT_FOR_HANDSHAKES_DURATION                 = 10s;
   inline constexpr auto POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION = 10s;
   inline constexpr auto POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION             = 10s;
