@@ -407,6 +407,12 @@ namespace cryptonote
     POS_header POS = {};
   };
 
+  struct quorum_vrf_sig {
+    crypto::signature signature;
+    crypto::public_key pub_key;
+    POS_VRF_proof proof;
+  };
+
   struct block: public block_header
   {
   private:
@@ -430,6 +436,7 @@ namespace cryptonote
     // hash cache
     mutable crypto::hash hash;
     std::vector<master_nodes::quorum_signature> signatures;
+    std::vector<quorum_vrf_sig> vrf_signatures;
   };
 
   template <class Archive>
