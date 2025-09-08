@@ -986,10 +986,10 @@ namespace tools
     return hex_tx_keys(ptx.tx_key, ptx.additional_tx_keys);
   }
   //------------------------------------------------------------------------------------------------------------------------------
-  template<typename Ts, typename Tu>
+  template<typename Ts, typename Tu, typename Tk, typename Ta>
   void wallet_rpc_server::fill_response(std::vector<wallet::pending_tx> &ptx_vector,
-      bool get_tx_key, Ts& tx_key, Tu &amount, Tu &fee, std::string &multisig_txset, std::string &unsigned_txset, bool do_not_relay, bool flash,
-      Ts &tx_hash, bool get_tx_hex, Ts &tx_blob, bool get_tx_metadata, Ts &tx_metadata)
+      bool get_tx_key, Ts& tx_key, Tu &amount, Ta &amounts_by_dest, Tu &fee, std::string &multisig_txset, std::string &unsigned_txset, bool do_not_relay, bool flash,
+      Ts &tx_hash, bool get_tx_hex, Ts &tx_blob, bool get_tx_metadata, Ts &tx_metadata, Tk &spent_key_images)
   {
     for (const auto & ptx : ptx_vector)
     {
@@ -1000,6 +1000,24 @@ namespace tools
       // Compute amount leaving wallet in tx. By convention dests does not include change outputs
       fill(amount, total_amount(ptx));
       fill(fee, ptx.fee);
+      
+      // add amounts by destination
+      tools::wallet_rpc::amounts_list abd;
+      for (const auto& dst : ptx.dests)
+        abd.amounts.push_back(dst.amount);
+      fill(amounts_by_dest, abd);
+
+      // add spent key images
+      tools::wallet_rpc::key_image_list key_image_list;
+      bool all_are_txin_to_key = std::all_of(ptx.tx.vin.begin(), ptx.tx.vin.end(), [&](const cryptonote::txin_v& s_e) -> bool
+      {
+        CHECKED_GET_SPECIFIC_VARIANT(s_e, cryptonote::txin_to_key, in, false);
+        key_image_list.key_images.push_back(tools::type_to_hex(in.k_image));
+        return true;
+      });
+      THROW_WALLET_EXCEPTION_IF(!all_are_txin_to_key, error::unexpected_txin_type, ptx.tx);
+      fill(spent_key_images, key_image_list);
+
     }
 
     if (m_wallet->multisig())
@@ -1050,7 +1068,7 @@ namespace tools
       if (!hf_version)
         throw wallet_rpc_error{error_code::HF_QUERY_FAILED, tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED};
       cryptonote::beldex_construct_tx_params tx_params = tools::wallet2::construct_params(*hf_version, cryptonote::txtype::standard, priority);
-      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, cryptonote::TX_OUTPUT_DECOYS, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices, tx_params);
+      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, cryptonote::TX_OUTPUT_DECOYS, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices, tx_params, req.subtract_fee_from_outputs);
 
       if (ptx_vector.empty())
         throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "No transaction created"};
@@ -1059,8 +1077,8 @@ namespace tools
       if (ptx_vector.size() != 1)
         throw wallet_rpc_error{error_code::TX_TOO_LARGE, "Transaction would be too large.  try /transfer_split."};
 
-      fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
-          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata);
+      fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.amounts_by_dest, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
+          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata, res.spent_key_images);
     }
     return res;
   }
@@ -1125,6 +1143,7 @@ namespace tools
                    req.get_tx_key,
                    res.tx_key,
                    res.amount,
+                   res.amounts_by_dest,
                    res.fee,
                    res.multisig_txset,
                    res.unsigned_txset,
@@ -1134,7 +1153,8 @@ namespace tools
                    req.get_tx_hex,
                    res.tx_blob,
                    req.get_tx_metadata,
-                   res.tx_metadata);
+                   res.tx_metadata,
+                   res.spent_key_images);
     return res;
   }
   //------------------------------------------------------------------------------------------------------------------------------
@@ -1165,8 +1185,8 @@ namespace tools
       if (ptx_vector.empty())
         throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "No transaction created"};
 
-      fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
-          res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list);
+      fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.amounts_by_dest_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
+          res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list, res.spent_key_images_list);
     }
     return res;
   }
@@ -1405,8 +1425,8 @@ namespace tools
 
     std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_unmixable_sweep_transactions();
 
-    fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
-          res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list);
+    fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.amounts_by_dest_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
+          res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list, res.spent_key_images_list);
 
     return {};
   }
@@ -1444,8 +1464,8 @@ namespace tools
       uint32_t priority = convert_priority(req.priority);
       std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_all(req.below_amount, dsts[0].addr, dsts[0].is_subaddress, req.outputs, cryptonote::TX_OUTPUT_DECOYS, req.unlock_time, priority, extra, req.account_index, subaddr_indices);
 
-      fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
-            res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list);
+      fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.amounts_by_dest_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
+            res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list, res.spent_key_images_list);
     }
     return res;
   }
@@ -1484,8 +1504,8 @@ namespace tools
       if (ptx.selected_transfers.size() > 1)
         throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "The transaction uses multiple inputs, which is not supposed to happen"};
 
-      fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
-          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata);
+      fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.amounts_by_dest, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
+          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata, res.spent_key_images);
     }
     return res;
   }
@@ -3050,8 +3070,8 @@ namespace {
 
     std::vector<tools::wallet2::pending_tx> ptx_vector = {stake_result.ptx};
 
-    fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
-          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata);
+    fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.amounts_by_dest, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
+          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata, res.spent_key_images);
 
     return res;
   }
@@ -3076,8 +3096,8 @@ namespace {
       throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, register_result.msg};
 
     std::vector<tools::wallet2::pending_tx> ptx_vector = {register_result.ptx};
-    fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
-          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata);
+    fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.amounts_by_dest, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
+          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata, res.spent_key_images);
 
     return res;
   }
@@ -3165,6 +3185,7 @@ namespace {
                            req.get_tx_key,
                            res.tx_key,
                            res.amount,
+                           res.amounts_by_dest,
                            res.fee,
                            res.multisig_txset,
                            res.unsigned_txset,
@@ -3174,7 +3195,8 @@ namespace {
                            req.get_tx_hex,
                            res.tx_blob,
                            req.get_tx_metadata,
-                           res.tx_metadata);
+                           res.tx_metadata,
+                           res.spent_key_images);
 
     return res;
   }
@@ -3199,6 +3221,7 @@ namespace {
                            req.get_tx_key,
                            res.tx_key,
                            res.amount,
+                           res.amounts_by_dest,
                            res.fee,
                            res.multisig_txset,
                            res.unsigned_txset,
@@ -3208,7 +3231,8 @@ namespace {
                            req.get_tx_hex,
                            res.tx_blob,
                            req.get_tx_metadata,
-                           res.tx_metadata);
+                           res.tx_metadata,
+                           res.spent_key_images);
 
     return res;
   }
@@ -3248,6 +3272,7 @@ namespace {
                            req.get_tx_key,
                            res.tx_key,
                            res.amount,
+                           res.amounts_by_dest,
                            res.fee,
                            res.multisig_txset,
                            res.unsigned_txset,
@@ -3257,7 +3282,8 @@ namespace {
                            req.get_tx_hex,
                            res.tx_blob,
                            req.get_tx_metadata,
-                           res.tx_metadata);
+                           res.tx_metadata,
+                           res.spent_key_images);
 
     return res;
   }

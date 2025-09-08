@@ -208,7 +208,7 @@ bool NodeRPCProxy::refresh_dynamic_base_fee_cache(uint64_t grace_blocks) const
       {"grace_blocks", grace_blocks}
     };
     try {
-      auto res = m_http_client.json_rpc("get_base_fee_estimate", req_params);
+      auto res = m_http_client.json_rpc("get_fee_estimate", req_params);
       m_dynamic_base_fee_estimate = {res.at("fee_per_byte").get<uint64_t>(), res.at("fee_per_output").get<uint64_t>()};
       m_dynamic_base_fee_estimate_cached_height = height;
       m_dynamic_base_fee_estimate_grace_blocks = grace_blocks;

@@ -502,8 +502,8 @@ bool rpc_command_executor::show_status() {
         my_mn_active = state["active"].get<bool>();
         my_decomm_remaining = state["earned_downtime_blocks"].get<uint64_t>();
         my_mn_last_uptime = state["last_uptime_proof"].get<uint64_t>();
-        my_reason_all = state["last_decommission_reason_consensus_all"].get<uint16_t>();
-        my_reason_any = state["last_decommission_reason_consensus_any"].get<uint16_t>();
+        my_reason_all = state.value<uint16_t>("last_decommission_reason_consensus_all", 0);
+        my_reason_any = state.value<uint16_t>("last_decommission_reason_consensus_any", 0);
       }
     }
   }
@@ -652,7 +652,7 @@ bool rpc_command_executor::print_connections() {
       "Remote Host", "Type", "Peer id", "Recv/Sent (inactive,sec)", "State", "Livetime(sec)",
       "Down (kB/sec)", "Down(now)", "Up (kB/s)", "Up(now)");
 
-  for (auto& info : conns)
+  for (auto& info : conns["connections"])
   {
     std::string address = info["incoming"].get<bool>() ? "INC " : "OUT ";
     address += info["ip"].get<std::string_view>();
@@ -771,9 +771,8 @@ bool rpc_command_executor::set_log_level(int8_t level) {
   auto maybe_level = try_running([this, &level] { return invoke<SET_LOG_LEVEL>(json{{"level", level}}); }, "Failed to set log categories");
   if (!maybe_level)
     return false;
-  auto& level_response = *maybe_level;
 
-  tools::success_msg_writer() << "Log level is now " << level_response["level"].get<uint64_t>();
+  tools::success_msg_writer() << "Log level is now " << std::to_string(level);
   return true;
 }
 
@@ -1380,7 +1379,7 @@ bool rpc_command_executor::print_blockchain_dynamic_stats(uint64_t nblocks)
     return false;
   auto& hfinfo = *maybe_hf;
 
-  auto maybe_fees = try_running([this] { return invoke<GET_BASE_FEE_ESTIMATE>(json{}); }, "Failed to retrieve current fee info");
+  auto maybe_fees = try_running([this] { return invoke<GET_FEE_ESTIMATE>(json{}); }, "Failed to retrieve current fee info");
   if (!maybe_fees)
       return false;
   auto& feres = *maybe_fees;
@@ -1399,7 +1398,7 @@ bool rpc_command_executor::print_blockchain_dynamic_stats(uint64_t nblocks)
   int target = safe_int(info, "target");
   tools::msg_writer() << "Height: " << height << ", diff " << difficulty << ", cum. diff " << cumulative_difficulty
       << ", target " << target << " sec" << ", dyn fee " << cryptonote::print_money(safe_uint64(feres, "fee_per_byte")) << "/" << (hfinfo["enabled"].get<bool>() ? "byte" : "kB")
-      << " + " << cryptonote::print_money(safe_uint64(feres, "fee_per_byte")) << "/out";
+      << " + " << cryptonote::print_money(safe_uint64(feres, "fee_per_output")) << "/out";
 
   if (nblocks > 0)
   {
@@ -2537,7 +2536,7 @@ bool rpc_command_executor::prepare_registration(bool force_registration)
 
     auto& registration = *maybe_registration;
 
-    tools::success_msg_writer() << registration["registration_cmd"];
+    tools::success_msg_writer() << registration["registration_cmd"].get<std::string>();
   }
 
   return true;
@@ -2599,7 +2598,8 @@ bool rpc_command_executor::version()
 
 bool rpc_command_executor::test_trigger_uptime_proof()
 {
-  return invoke<TEST_TRIGGER_UPTIME_PROOF>(json{{}}, "Failed to trigger uptime proof");
+  tools::success_msg_writer() << invoke<TEST_TRIGGER_UPTIME_PROOF>(json{{}}, "Failed to trigger uptime proof");
+    return true;
 }
 
 }// namespace daemonize

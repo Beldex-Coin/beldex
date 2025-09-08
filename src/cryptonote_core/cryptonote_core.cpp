@@ -1318,7 +1318,7 @@ namespace cryptonote
         }
         catch (const std::exception &e)
         {
-          MERROR_VER("Exception in handle_incoming_tx_pre: " << e.what());
+          MERROR_VER("Exception in parse_incoming_tx_pre: " << e.what());
           info.tvc.m_verifivation_failed = true;
         }
       });

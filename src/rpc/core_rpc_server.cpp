@@ -787,19 +787,20 @@ namespace cryptonote::rpc {
           bns["update"] = true;
         else if (x.is_renewing())
           bns["renew"] = true;
-        auto bns_bin = json_binary_proxy{bns, format};
-        bns_bin["name_hash"] = x.name_hash;
+        // ✅ Always store name_hash as hex string (RPC-compatible)
+        bns["name_hash"] = oxenc::to_hex(std::string_view{x.name_hash.data, sizeof(x.name_hash.data)});
         if (!x.encrypted_bchat_value.empty())
-          bns_bin["value_bchat"] = x.encrypted_bchat_value;
+          bns["value_bchat"] = oxenc::to_hex(x.encrypted_bchat_value);
         if (!x.encrypted_wallet_value.empty())
-          bns_bin["value_wallet"] = x.encrypted_wallet_value;
+          bns["value_wallet"] = oxenc::to_hex(x.encrypted_wallet_value);
         if (!x.encrypted_belnet_value.empty())
-          bns_bin["value_belnet"] = x.encrypted_belnet_value;
+          bns["value_belnet"] = oxenc::to_hex(x.encrypted_belnet_value);
         if (!x.encrypted_eth_addr_value.empty())
-          bns_bin["value_eth_addr"] = x.encrypted_eth_addr_value;
+          bns["value_eth_addr"] = oxenc::to_hex(x.encrypted_eth_addr_value);
         _load_owner(bns, "owner", x.owner);
         _load_owner(bns, "backup_owner", x.backup_owner);
-      }
+        set("bns", std::move(bns));
+    }
 
       // Ignore these fields:
       void operator()(const tx_extra_padding&) {}
@@ -1034,17 +1035,20 @@ namespace cryptonote::rpc {
       if (get.request.tx_extra_raw)
         e_bin["tx_extra_raw"] = std::string_view{reinterpret_cast<const char*>(tx.extra.data()), tx.extra.size()};
 
-      // Clear it because we don't want/care about it in the RPC output (we already got it more
-      // usefully from the above).
-      tx.extra.clear();
-
       {
+        // Serialize *without* extra because we don't want/care about it in the RPC output (we
+        // already have all the extra info in more useful form from the other bits of this
+        // code).
+        std::vector<uint8_t> saved_extra;
+        std::swap(tx.extra, saved_extra);
+
         serialization::json_archiver ja{
           get.is_bt() ? json_binary_proxy::fmt::bt : json_binary_proxy::fmt::hex};
 
         serialize(ja, tx);
         auto dumped = std::move(ja).json();
         e.update(dumped);
+        std::swap(saved_extra, tx.extra);
       }
 
       if (extra)
@@ -1065,10 +1069,10 @@ namespace cryptonote::rpc {
         const auto& meta = ptx_it->second.meta;
         e["in_pool"] = true;
         e["weight"] = meta.weight;
-        e["relayed"] = (bool) ptx_it->second.meta.relayed;
-        e["received_timestamp"] = ptx_it->second.meta.receive_time;
+        e["relayed"] = (bool) meta.relayed;
+        e["received_timestamp"] = meta.receive_time;
         e["flash"] = ptx_it->second.flash;
-        if (meta.double_spend_seen) e["double_spend_seen"] = true;
+        e["double_spend_seen"] = meta.double_spend_seen ? true : false;
         if (meta.do_not_relay) e["do_not_relay"] = true;
         if (meta.last_relayed_time) e["last_relayed_time"] = meta.last_relayed_time;
         if (meta.kept_by_block) e["kept_by_block"] = (bool) meta.kept_by_block;
@@ -1202,7 +1206,7 @@ namespace cryptonote::rpc {
     {
       tx.response["status"] = STATUS_FAILED;
       auto reason = print_tx_verification_context(tvc);
-      LOG_PRINT_L0("[on_send_raw_tx]: " << (tvc.m_verifivation_failed ? "tx verification failed" : "Failed to process tx") << reason);
+      LOG_PRINT_L0("[on_submit_transaction]: " << (tvc.m_verifivation_failed ? "tx verification failed" : "Failed to process tx") << reason);
       tx.response["reason"] = std::move(reason);
       tx.response["reason_codes"] = tx_verification_failure_codes(tvc);
       return;
@@ -1727,6 +1731,15 @@ namespace cryptonote::rpc {
     uint64_t end_height = get_block_headers_range.request.end_height;
     if (start_height >= bc_height || end_height >= bc_height || start_height > end_height)
       throw rpc_error{ERROR_TOO_BIG_HEIGHT, "Invalid start/end heights."};
+    
+    if (end_height - start_height >= GET_BLOCK_HEADERS_RANGE::MAX_COUNT)
+        throw rpc_error{
+            ERROR_TOO_BIG_HEIGHT,
+            "Invalid start/end heights: requested range of " + 
+            std::to_string(end_height - start_height + 1) + 
+            " blocks exceeds limit " + 
+            std::to_string(GET_BLOCK_HEADERS_RANGE::MAX_COUNT)};
+            
     std::vector<block_header_response> headers;
     for (uint64_t h = start_height; h <= end_height; ++h)
     {
@@ -2103,22 +2116,22 @@ namespace cryptonote::rpc {
     }
   }
   //------------------------------------------------------------------------------------------------------------------------------
-  void core_rpc_server::invoke(GET_BASE_FEE_ESTIMATE& get_base_fee_estimate, rpc_context context)
+  void core_rpc_server::invoke(GET_FEE_ESTIMATE& get_fee_estimate, rpc_context context)
   {
-    PERF_TIMER(on_get_base_fee_estimate);
+    PERF_TIMER(on_get_fee_estimate);
     //TODO handle bootstrap daemon in new RPC format
-    //if (use_bootstrap_daemon_if_necessary<GET_BASE_FEE_ESTIMATE>(req, res))
+    //if (use_bootstrap_daemon_if_necessary<GET_FEE_ESTIMATE>(req, res))
       //return res;
 
-    auto fees = m_core.get_blockchain_storage().get_dynamic_base_fee_estimate(get_base_fee_estimate.request.grace_blocks);
-    get_base_fee_estimate.response["fee_per_byte"] = fees.first;
-    get_base_fee_estimate.response["fee_per_output"] = fees.second;
-    get_base_fee_estimate.response["flash_fee_fixed"] = beldex::FLASH_BURN_FIXED;
+    auto fees = m_core.get_blockchain_storage().get_dynamic_base_fee_estimate(get_fee_estimate.request.grace_blocks);
+    get_fee_estimate.response["fee_per_byte"] = fees.first;
+    get_fee_estimate.response["fee_per_output"] = fees.second;
+    get_fee_estimate.response["flash_fee_fixed"] = beldex::FLASH_BURN_FIXED;
     constexpr auto flash_percent =  beldex::FLASH_MINER_TX_FEE_PERCENT +  beldex::FLASH_BURN_TX_FEE_PERCENT_OLD;
-    get_base_fee_estimate.response["flash_fee_per_byte"] = fees.first * flash_percent / 100;
-    get_base_fee_estimate.response["flash_fee_per_output"] = fees.second * flash_percent / 100;
-    get_base_fee_estimate.response["quantization_mask"] = Blockchain::get_fee_quantization_mask();
-    get_base_fee_estimate.response["status"] = STATUS_OK;
+    get_fee_estimate.response["flash_fee_per_byte"] = fees.first * flash_percent / 100;
+    get_fee_estimate.response["flash_fee_per_output"] = fees.second * flash_percent / 100;
+    get_fee_estimate.response["quantization_mask"] = Blockchain::get_fee_quantization_mask();
+    get_fee_estimate.response["status"] = STATUS_OK;
   }
   //------------------------------------------------------------------------------------------------------------------------------
   void core_rpc_server::invoke(GET_ALTERNATE_CHAINS& get_alternate_chains, rpc_context context)

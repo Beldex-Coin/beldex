@@ -13,7 +13,7 @@ namespace cryptonote::rpc {
   void parse_request(BANNED& banned, rpc_input in);
   void parse_request(FLUSH_CACHE& flush_cache, rpc_input in);
   void parse_request(FLUSH_TRANSACTION_POOL& flush_transaction_pool, rpc_input in);
-  void parse_request(GET_BASE_FEE_ESTIMATE& get_base_fee_estimate, rpc_input in);
+  void parse_request(GET_FEE_ESTIMATE& get_fee_estimate, rpc_input in);
   void parse_request(GET_BLOCK& get_block, rpc_input in);
   void parse_request(GET_BLOCK_HASH& bh, rpc_input in);
   void parse_request(GET_BLOCK_HEADERS_RANGE& get_block_headers_range, rpc_input in);
@@ -32,6 +32,7 @@ namespace cryptonote::rpc {
   void parse_request(GET_MN_STATE_CHANGES& get_mn_state_changes, rpc_input in);
   void parse_request(GET_STAKING_REQUIREMENT& get_staking_requirement, rpc_input in);
   void parse_request(GET_TRANSACTIONS& get, rpc_input in);
+  void parse_request(GET_TRANSACTION_POOL& get, rpc_input in);
   void parse_request(GET_TRANSACTION_POOL_STATS& pstats, rpc_input in);
   void parse_request(HARD_FORK_INFO& hfinfo, rpc_input in);
   void parse_request(IN_PEERS& in_peers, rpc_input in);

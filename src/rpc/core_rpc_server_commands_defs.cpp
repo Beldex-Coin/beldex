@@ -839,12 +839,12 @@ void to_json(nlohmann::json& j, const BNS_OWNERS_TO_NAMES::response_entry& r)
 // KV_SERIALIZE_MAP_CODE_END()
 
 
-// KV_SERIALIZE_MAP_CODE_BEGIN(GET_BASE_FEE_ESTIMATE::request)
+// KV_SERIALIZE_MAP_CODE_BEGIN(GET_FEE_ESTIMATE::request)
 //   KV_SERIALIZE(grace_blocks)
 // KV_SERIALIZE_MAP_CODE_END()
 
 
-// KV_SERIALIZE_MAP_CODE_BEGIN(GET_BASE_FEE_ESTIMATE::response)
+// KV_SERIALIZE_MAP_CODE_BEGIN(GET_FEE_ESTIMATE::response)
 //   KV_SERIALIZE(status)
 //   KV_SERIALIZE(fee_per_byte)
 //   KV_SERIALIZE(fee_per_output)

@@ -326,7 +326,23 @@ bool command_parser_executor::set_log_level(const std::vector<std::string>& args
   }
   else
   {
-    return m_executor.set_log_categories(args.front());
+    static std::unordered_map<std::string, std::string> level_map = {
+      {"WARNING", "*:WARNING"}, {"INFO", "*:INFO"}, {"DEBUG", "*:DEBUG"}, {"TRACE", "*:TRACE"},
+      {"*WARNING", "*:WARNING"}, {"*INFO", "*:INFO"}, {"*DEBUG", "*:DEBUG"}, {"*TRACE", "*:TRACE"},
+      {":WARNING", "*:WARNING"}, {":INFO", "*:INFO"}, {":DEBUG", "*:DEBUG"}, {":TRACE", "*:TRACE"} 
+    };
+
+    std::string input = args[0];
+    std::transform(input.begin(), input.end(), input.begin(), ::toupper);
+
+    auto it = level_map.find(input);
+    if (it != level_map.end()) 
+      return m_executor.set_log_categories(it->second);
+
+    if (args[0].find(':') != std::string::npos) return m_executor.set_log_categories(args.front());
+    
+    std::cout << "Invalid log level. Use: 0-4, WARNING/INFO/DEBUG/TRACE, or category:level format" << std::endl;
+    return true;
   }
 }
 

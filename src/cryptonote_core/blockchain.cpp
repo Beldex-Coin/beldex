@@ -5062,7 +5062,7 @@ bool Blockchain::calc_batched_governance_reward(uint64_t height, uint64_t &rewar
 
   if(height == 742425)
   {
-    reward = 850000000 * beldex::COIN; //mint 8.5 billion bdx governance in this block
+    reward = 8500000000 * beldex::COIN; //mint 8.5 billion bdx governance in this block
     return true;
   }
   // Ignore governance reward and payout instead the last
