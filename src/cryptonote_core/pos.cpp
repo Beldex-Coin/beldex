@@ -1807,6 +1807,11 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
     }
   }
 
+  // Check
+  cryptonote::block_vrf block_vrf = block;
+
+  // MGINFO_MAGENTA("cryptonote::obj_to_json_str(block) : " << cryptonote::obj_to_json_str(block_vrf));
+
   // Message
   POS::message msg              = msg_init_from_context(context);
   msg.type                      = POS::message_type::vrf_block_template;
