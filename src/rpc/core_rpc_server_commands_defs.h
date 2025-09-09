@@ -81,6 +81,7 @@ namespace cryptonote {
 namespace master_nodes {
   void to_json(nlohmann::json& j, const key_image_blacklist_entry& b);
   void to_json(nlohmann::json& j, const quorum_signature& s);
+  void to_json(nlohmann::json& j, const quorum_vrf_signature& s);
 }
 
 /// Namespace for core RPC commands.  Every RPC commands gets defined here (including its name(s),

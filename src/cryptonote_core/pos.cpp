@@ -166,7 +166,7 @@ struct round_history
 
 struct VrfBlockEntry {
     cryptonote::block block;
-    cryptonote::POS_VRF_proof proof;
+    crypto::vrf_proof proof;
 };
 
 struct round_context
@@ -206,11 +206,11 @@ struct round_context
   {
     struct
     {
-      POS_send_stage<cryptonote::POS_VRF_proof> send;
+      POS_send_stage<crypto::vrf_proof> send;
 
       struct
       {
-        std::unordered_map<crypto::public_key, std::optional<cryptonote::POS_VRF_proof>> proofs;
+        std::unordered_map<crypto::public_key, std::optional<crypto::vrf_proof>> proofs;
         POS_VRF_wait_stage stage;
       } wait;
     } vrf_proof;

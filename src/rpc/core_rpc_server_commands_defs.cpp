@@ -50,6 +50,16 @@ namespace master_nodes {
       {"signature", tools::type_to_hex(s.signature)},
     };
   };
+
+  void to_json(nlohmann::json& j, const quorum_vrf_signature& s)
+  {
+    j = nlohmann::json
+    {
+      {"pubkey", tools::type_to_hex(s.pubkey)},
+      {"proof", tools::type_to_hex(s.proof)},
+      {"signature", tools::type_to_hex(s.signature)},
+    };
+  };
 }
 
 namespace cryptonote::rpc {
