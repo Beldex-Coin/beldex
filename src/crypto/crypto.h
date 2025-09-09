@@ -99,6 +99,13 @@ namespace crypto {
     operator bool() const { return memcmp(data, null().data, sizeof(data)); }
   };
 
+  struct alignas(size_t) vrf_proof {
+    unsigned char data[80];
+    static constexpr vrf_proof null() { return {0}; }
+    /// Returns true if non-null
+    operator bool() const { return memcmp(data, null().data, sizeof(data)); }
+  };
+
   struct alignas(size_t) ed25519_secret_key_ {
     // 64 = crypto_sign_ed25519_SECRETKEYBYTES (but we don't depend on libsodium header here)
     unsigned char data[64];

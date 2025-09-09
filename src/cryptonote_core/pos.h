@@ -69,14 +69,14 @@ struct message
   struct
   { 
     crypto::public_key key;
-    cryptonote::POS_VRF_proof proof;
+    crypto::vrf_proof proof;
   } vrf_proof;
 
   struct
   {
     std::string blob;
     crypto::public_key key;
-    cryptonote::POS_VRF_proof proof;
+    crypto::vrf_proof proof;
   } vrf_block_template;
 
   struct
