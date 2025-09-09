@@ -1815,6 +1815,10 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
   msg.vrf_block_template.key    = key.pub;
   crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
 
+  // Store own block for the producer node
+  context.transient.send_and_wait_for_vrf_signed_block.final_block = block;
+  context.transient.send_and_wait_for_vrf_signed_block.wait.signature[key.pub] = std::nullopt;
+
   // Send
   MGINFO_MAGENTA(log_prefix(context) << "Validators are handshaken and ready, sending block template from producer (us) to validators.\n" << cryptonote::obj_to_json_str(block));
   cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_vrf_quorum.quorum, true /*block_producer*/);
@@ -1866,6 +1870,7 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
         return round_state::wait_for_round;
       }
 
+      crypto::public_key &original_worker = context.prepare_vrf_quorum.quorum.workers[0];
       for(const auto &[pubkey, blockProof] : context.transient.wait_for_vrf_block_template.blocks)
       {
         if (blockProof) {
@@ -1894,24 +1899,28 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
               continue;
             }
 
+            // Keep original worker[0] intact
             if (std::memcmp(output, curr_worker_output, sizeof(output)) < 0) {
               MGINFO_MAGENTA(log_prefix(context) << "Valid VRF block received from new producer : " << pubkey);
-              context.prepare_vrf_quorum.quorum.validators.emplace_back(context.prepare_vrf_quorum.quorum.workers[0]);
-              context.prepare_vrf_quorum.quorum.workers[0] = pubkey;
+                            
+              // Add old worker to validators
+              context.prepare_vrf_quorum.quorum.validators.emplace_back(original_worker);
+              original_worker = pubkey;
               std::memcpy(curr_worker_output, output, sizeof(curr_worker_output));
             }
           }
         }
       }
 
-      if (const auto& blockProofOpt = context.transient.wait_for_vrf_block_template.blocks[context.prepare_vrf_quorum.quorum.workers[0]]; blockProofOpt)
+      if (const auto& blockProofOpt = context.transient.wait_for_vrf_block_template.blocks[original_worker]; blockProofOpt)
       {
         // auto& [block, proof] = *blockProofOpt;
         // cryptonote::block block = blockProofOpt->block;
         context.transient.wait_for_vrf_block_template.block = blockProofOpt->block;
 
-        MGINFO_MAGENTA(log_prefix(context) << "Valid VRF block received from: " << context.prepare_vrf_quorum.quorum.workers[0]);
-        MGINFO_MAGENTA(log_prefix(context) << "Valid VRF block received: " << cryptonote::obj_to_json_str(context.transient.wait_for_vrf_block_template.block));
+        context.transient.send_and_wait_for_vrf_signed_block.final_block = blockProofOpt->block;
+        MGINFO_MAGENTA(log_prefix(context) << "Final VRF block locked from winning producer: "<< original_worker);
+        MGINFO_MAGENTA(log_prefix(context) << "Final VRF block content: " << cryptonote::obj_to_json_str(context.transient.wait_for_vrf_block_template.block));
       }
       return round_state::send_vrf_signed_blocks;
     }
