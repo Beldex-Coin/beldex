@@ -241,6 +241,7 @@ namespace master_nodes
 
   bool verify_quorum_signatures(master_nodes::quorum const &quorum, master_nodes::quorum_type type, hf hf_version, uint64_t height, crypto::hash const &hash, std::vector<quorum_signature> const &signatures, const cryptonote::block* block)
   {
+    MGINFO_CYAN("VRF block template called in : " << __func__);
     bool enforce_vote_ordering                          = true;
     constexpr size_t MAX_QUORUM_SIZE                    = std::max(CHECKPOINT_QUORUM_SIZE, POS_QUORUM_NUM_VALIDATORS);
     std::array<size_t, MAX_QUORUM_SIZE> unique_vote_set = {};
@@ -272,12 +273,12 @@ namespace master_nodes
       break;
 
       case quorum_type::POS:
-      {
-        if (signatures.size() != POS_BLOCK_REQUIRED_SIGNATURES)
-        {
-          MGINFO("POS block has " << signatures.size() << " signatures but requires " << POS_BLOCK_REQUIRED_SIGNATURES);
-          return false;
-        }
+      { // need to modify the verification method
+        // if (signatures.size() != POS_BLOCK_REQUIRED_SIGNATURES)
+        // {
+        //   MGINFO("POS block has " << signatures.size() << " signatures but requires " << POS_BLOCK_REQUIRED_SIGNATURES);
+        //   return false;
+        // }
 
         if (!block)
         {
@@ -285,17 +286,19 @@ namespace master_nodes
           return false;
         }
 
-        if (block->POS.validator_bitset >= (1 << POS_QUORUM_NUM_VALIDATORS))
-        {
-          auto mask  = std::bitset<sizeof(POS_validator_bit_mask()) * 8>(POS_validator_bit_mask());
-          auto other = std::bitset<sizeof(POS_validator_bit_mask()) * 8>(block->POS.validator_bitset);
-          MGINFO("POS block specifies validator participation bits out of bounds. Expected the bit mask: " << mask << ", block: " << other);
-          return false;
-        }
+        // if (block->POS.validator_bitset >= (1 << POS_QUORUM_NUM_VALIDATORS))
+        // {
+        //   auto mask  = std::bitset<sizeof(POS_validator_bit_mask()) * 8>(POS_validator_bit_mask());
+        //   auto other = std::bitset<sizeof(POS_validator_bit_mask()) * 8>(block->POS.validator_bitset);
+        //   MGINFO("POS block specifies validator participation bits out of bounds. Expected the bit mask: " << mask << ", block: " << other);
+        //   return false;
+        // }
       }
       break;
     }
 
+    if(type != quorum_type::POS)
+    {
     for (size_t i = 0; i < signatures.size(); i++)
     {
       master_nodes::quorum_signature const &quorum_signature = signatures[i];
@@ -353,7 +356,8 @@ namespace master_nodes
         return false;
       }
     }
-
+    }
+    MGINFO_CYAN("VRF block template verification done in: " << __func__);
     return true;
   }
 

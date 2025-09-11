@@ -72,7 +72,7 @@ namespace cryptonote {
   //-----------------------------------------------------------------------------------------------
   bool block_has_POS_components(block const &blk)
   {
-    bool signatures    = blk.signatures.size();
+    bool signatures    = blk.signatures.size() || blk.vrf_signatures.size();
     auto hf_version    = blk.major_version;
     bool result =
         (hf_version >= hf::hf17_POS && signatures) || block_header_has_POS_components(blk);

@@ -1302,10 +1302,12 @@ namespace master_nodes
                                       std::shared_ptr<const quorum> POS_quorum,
                                       std::vector<std::shared_ptr<const quorum>> &alt_POS_quorums)
   {
+    MGINFO_CYAN("VRF block template called in : " << __func__);
     std::string_view block_type = alt_block ? "alt block "sv : "block "sv;
     uint64_t height             = cryptonote::get_block_height(block);
     crypto::hash hash           = cryptonote::get_block_hash(block);
 
+    MGINFO_CYAN("miner_block : " << miner_block);
     if (miner_block)
     {
       if (cryptonote::block_has_POS_components(block))
@@ -1339,6 +1341,7 @@ namespace master_nodes
     {
       if (!cryptonote::block_has_POS_components(block))
       {
+        MGINFO_CYAN("POS components is false");
         if (log_errors) MGINFO("Miner " << block_type << "received but only POS blocks are permitted\n" << dump_POS_block_data(block, POS_quorum.get()));
         return false;
       }
@@ -1376,6 +1379,7 @@ namespace master_nodes
         bool failed_quorum_verify = true;
         if (POS_quorum)
         {
+          MGINFO_CYAN("VRF block template called in 1: " << __func__);
           LOG_PRINT_L1("Verifying alt-block " << height << ":" << hash << " against main chain quorum");
           failed_quorum_verify = master_nodes::verify_quorum_signatures(*POS_quorum,
                                                                          quorum_type::POS,
@@ -1389,6 +1393,7 @@ namespace master_nodes
         // NOTE: Check alt POS quorums
         if (failed_quorum_verify)
         {
+          MGINFO_CYAN("VRF block template called in 2: " << __func__);
           LOG_PRINT_L1("Verifying alt-block " << height << ":" << hash << " against alt chain quorum(s)");
           for (auto const &alt_quorum : alt_POS_quorums)
           {
@@ -1420,6 +1425,7 @@ namespace master_nodes
           return false;
         }
 
+        MGINFO_CYAN("VRF block template called in 3: " << __func__);
         quorum_verified = master_nodes::verify_quorum_signatures(*POS_quorum,
                                                                   quorum_type::POS,
                                                                   block.major_version,
@@ -1479,6 +1485,7 @@ namespace master_nodes
 
   void master_node_list::verify_block(const cryptonote::block &block, bool alt_block, cryptonote::checkpoint_t const *checkpoint)
   {
+    MGINFO_CYAN("VRF block template called in : " << __func__);
     if (block.major_version < hf::hf9_master_nodes)
       return;
 
@@ -1557,6 +1564,8 @@ namespace master_nodes
                                 height,
                                 false /*include historical quorums*/,
                                 alt_block ? &alt_POS_quorums : nullptr);
+      
+      MGINFO_CYAN("VRF block template called for POS_quorum: " << POS_quorum);
     }
 
     if (m_blockchain.nettype() != cryptonote::network_type::FAKECHAIN)
@@ -1577,11 +1586,15 @@ namespace master_nodes
     {
       // NOTE: Verify as a POS block first if possible, then as a miner block.
       // This alt block could belong to a chain that is in an arbitrary state.
-      if (POS_hf)
+      if (POS_hf){
+        MGINFO_CYAN("VRF block template called in 1: " << __func__);
         result = verify_block_components(m_blockchain.nettype(), block, false /*miner_block*/, true /*alt_block*/, false /*log_errors*/, timings, POS_quorum, alt_POS_quorums);
+      }
 
-      if (!result)
+      if (!result){
+        MGINFO_CYAN("VRF block template called in 2: " << __func__);
         result = verify_block_components(m_blockchain.nettype(), block, true /*miner_block*/, true /*alt_block*/, false /*log_errors*/, timings, POS_quorum, alt_POS_quorums);
+      }
     }
     else
     {
@@ -1589,7 +1602,7 @@ namespace master_nodes
       //       Or, block specifies time after all the rounds have timed out
       bool miner_block = !POS_hf || !POS_quorum;
       // std::cout << "miner_block : " << miner_block << std::endl;
-
+      MGINFO_CYAN("VRF block template called in 3: " << __func__);
       result = verify_block_components(m_blockchain.nettype(),
                                        block,
                                        miner_block,
@@ -1606,6 +1619,7 @@ namespace master_nodes
 
   void master_node_list::block_add(const cryptonote::block& block, const std::vector<cryptonote::transaction>& txs, cryptonote::checkpoint_t const *checkpoint)
   {
+    MGINFO_CYAN("VRF block template called in : " << __func__);
     if (block.major_version < hf::hf9_master_nodes)
       return;
 
