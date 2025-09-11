@@ -56,9 +56,9 @@ namespace master_nodes
 
     quorum_vrf_signature() = default;
 
-    quorum_vrf_signature(const crypto::public_key &pub, const unsigned char data[80], const crypto::signature &sig)
-          : pubkey(pub), signature(sig) {
-            std::memcpy(proof.data, data, 80);
+    quorum_vrf_signature(const crypto::public_key &pub, const crypto::vrf_proof &data, const crypto::signature &sig)
+          : pubkey(pub), proof(data), signature(sig) {
+            // std::memcpy(proof, data, 80);
           }
 
     BEGIN_SERIALIZE_OBJECT()

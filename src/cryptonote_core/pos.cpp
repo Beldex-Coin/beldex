@@ -1479,12 +1479,12 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
     context.transient.vrf_proof.wait.stage.end_time               = context.prepare_for_round.start_time                          + POS_WAIT_FOR_VRF_PROOF_DURATION;
     context.transient.wait_for_vrf_block_template.stage.end_time  = context.transient.vrf_proof.wait.stage.end_time               + POS_WAIT_FOR_VRF_BLOCK_TEMPLATE_DURATION;       
     context.transient.send_and_wait_for_vrf_signed_block.wait.stage.end_time = context.transient.wait_for_vrf_block_template.stage.end_time + POS_WAIT_FOR_VRF_SIGNED_BLOCK;
-    context.transient.send_and_wait_for_handshakes.stage.end_time = context.transient.send_and_wait_for_vrf_signed_block.wait.stage.end_time  + POS_WAIT_FOR_HANDSHAKES_DURATION;
-    context.transient.wait_for_handshake_bitsets.stage.end_time   = context.transient.send_and_wait_for_handshakes.stage.end_time + POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION;
-    context.transient.wait_for_block_template.stage.end_time      = context.transient.wait_for_handshake_bitsets.stage.end_time   + POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION;
-    context.transient.random_value_hashes.wait.stage.end_time     = context.transient.wait_for_block_template.stage.end_time      + POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION;
-    context.transient.random_value.wait.stage.end_time            = context.transient.random_value_hashes.wait.stage.end_time     + POS_WAIT_FOR_RANDOM_VALUE_DURATION;
-    context.transient.signed_block.wait.stage.end_time            = context.transient.random_value.wait.stage.end_time            + POS_WAIT_FOR_SIGNED_BLOCK_DURATION;
+    // context.transient.send_and_wait_for_handshakes.stage.end_time = context.transient.send_and_wait_for_vrf_signed_block.wait.stage.end_time  + POS_WAIT_FOR_HANDSHAKES_DURATION;
+    // context.transient.wait_for_handshake_bitsets.stage.end_time   = context.transient.send_and_wait_for_handshakes.stage.end_time + POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION;
+    // context.transient.wait_for_block_template.stage.end_time      = context.transient.wait_for_handshake_bitsets.stage.end_time   + POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION;
+    // context.transient.random_value_hashes.wait.stage.end_time     = context.transient.wait_for_block_template.stage.end_time      + POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION;
+    // context.transient.random_value.wait.stage.end_time            = context.transient.random_value_hashes.wait.stage.end_time     + POS_WAIT_FOR_RANDOM_VALUE_DURATION;
+    // context.transient.signed_block.wait.stage.end_time            = context.transient.random_value.wait.stage.end_time            + POS_WAIT_FOR_SIGNED_BLOCK_DURATION;
   }
 
   std::vector<crypto::hash> const entropy = master_nodes::get_POS_entropy_for_next_block(blockchain.get_db(), context.wait_for_next_block.top_hash, context.prepare_for_round.round);
@@ -1698,7 +1698,7 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
   if (context.prepare_vrf_quorum.quorum.workers.empty())
   {
     MGINFO_RED(log_prefix(context) << "VRF Quorum is empty. No eligible participants. Skipping VRF round.");
-    return round_state::wait_for_vrf_round;
+    return goto_wait_for_next_block_and_clear_round_data(context);
   }
 
   //
@@ -1761,7 +1761,7 @@ round_state wait_for_vrf_round(round_context &context, cryptonote::Blockchain co
   else
   {
     MGINFO_GREEN(log_prefix(context) << "Non-participant for VRF round, waiting for the normal POS round");
-    return round_state::wait_for_round;
+    return goto_preparing_for_next_round(context);
   }
 
 }
@@ -1867,7 +1867,7 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
                                 alpha_bytes, sizeof(crypto::hash));
       if (err != 0) {
         MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << context.prepare_vrf_quorum.quorum.workers[0]);
-        return round_state::wait_for_round;
+        return goto_preparing_for_next_round(context); // need to add proper logiv for the failed scenario
       }
 
       crypto::public_key &original_worker = context.prepare_vrf_quorum.quorum.workers[0];
@@ -1927,7 +1927,7 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
     else
     {
       MGINFO_RED(log_prefix(context) << "Timed out, VRF block template was not received");
-      return round_state::wait_for_round;
+      return goto_preparing_for_next_round(context);
     }
   }
 
@@ -1954,15 +1954,22 @@ round_state send_vrf_signed_blocks(round_context &context, master_nodes::master_
     msg.vrf_signed_block.key = key.pub;
     msg.vrf_signed_block.signature_of_vrf_final_block_hash = context.transient.send_and_wait_for_vrf_signed_block.send.data;
     crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
-    handle_message(quorumnet_state, msg); // Add our own. We receive our own msg for the first time which also triggers us to relay.
+
+    // Only send to the producer
+    master_nodes::quorum quorum_workers;
+    quorum_workers.workers = context.prepare_vrf_quorum.quorum.workers;
+    MGINFO_MAGENTA(log_prefix(context) <<"VRF Quorum_workers : "<< quorum_workers);
+    cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, quorum_workers, false /*block_producer*/);
+    // handle_message(quorumnet_state, msg); // Add our own. We receive our own msg for the first time which also triggers us to relay.
   }
 
-  return round_state::wait_for_vrf_signed_blocks;
+  return goto_preparing_for_next_round(context);
 }
 
-round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
+round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain, cryptonote::core &core)
 {
   // MGINFO_CYAN(log_prefix(context) << __func__);
+  assert(context.prepare_vrf_quorum.participant == mn_type::producer);
   handle_messages_received_early_for_vrf_proof(context.transient.send_and_wait_for_vrf_signed_block.wait.stage, quorumnet_state, blockchain);
   
   POS_VRF_wait_stage const &stage = context.transient.send_and_wait_for_vrf_signed_block.wait.stage;
@@ -1976,11 +1983,85 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
     MGINFO_BLUE("now_c (vrf_signed_blocks): " << std::put_time(std::gmtime(&now_c), "%F %T"));
 
     MGINFO_MAGENTA(log_prefix(context) <<"Size of the signatures: " << context.transient.send_and_wait_for_vrf_signed_block.wait.signature.size());
-    for(const auto &[pubkey, signature] : context.transient.send_and_wait_for_vrf_signed_block.wait.signature)
+
+    // Collect proofs and signatures
+    auto const &quorum_vrf_proofs = context.transient.vrf_proof.wait.proofs;
+    auto const &quorum_vrf_block_signature = context.transient.send_and_wait_for_vrf_signed_block.wait.signature;
+
+    std::vector<crypto::public_key> availablePubkey;
+    availablePubkey.reserve(quorum_vrf_block_signature.size());
+
+    // Collect all pubkeys that have both proof + signature
+    for (const auto &[pubkey, signature] : quorum_vrf_block_signature)
     {
-      MGINFO_MAGENTA(log_prefix(context) <<"pubkey :" << pubkey << ", signature: " << *signature);
+        MGINFO_MAGENTA(log_prefix(context) << "pubkey: " << pubkey 
+                                           << ", has signature: " << *signature);
+
+        auto it_proof = quorum_vrf_proofs.find(pubkey);
+        if (it_proof != quorum_vrf_proofs.end() && it_proof->second)
+        {
+            availablePubkey.push_back(pubkey);
+        }
     }
-    return round_state::wait_for_round;
+
+    // Check quorum size
+    if (availablePubkey.size() < master_nodes::POS_BLOCK_REQUIRED_SIGNATURES)
+    {
+        MGINFO_RED("Not enough pubkeys with valid proof + signature. Found: "
+                   << availablePubkey.size() << " required: "
+                   << master_nodes::POS_BLOCK_REQUIRED_SIGNATURES);
+        return goto_preparing_for_next_round(context);
+    }
+
+    // Randomly select required number of pubkeys
+    std::array<crypto::public_key, master_nodes::POS_BLOCK_REQUIRED_SIGNATURES> selected = {};
+    std::sample(
+        availablePubkey.begin(),
+        availablePubkey.end(),
+        selected.begin(),
+        selected.size(),
+        tools::rng
+    );
+
+    // Build final block with selected signatures
+    cryptonote::block &final_block = context.transient.send_and_wait_for_vrf_signed_block.final_block;
+    for (size_t index = 0; index < master_nodes::POS_BLOCK_REQUIRED_SIGNATURES; index++)
+    {
+        const crypto::public_key &pubkey = selected[index];
+
+        // Safety check: make sure maps contain this pubkey
+        auto proof_it = quorum_vrf_proofs.find(pubkey);
+        auto sig_it   = quorum_vrf_block_signature.find(pubkey);
+
+        if (proof_it == quorum_vrf_proofs.end() || sig_it == quorum_vrf_block_signature.end())
+        {
+            MGINFO_RED("Selected pubkey missing proof or signature: " << pubkey);
+            return goto_preparing_for_next_round(context);
+        }
+
+        final_block.vrf_signatures.emplace_back(
+            pubkey,
+            *proof_it->second,
+            *sig_it->second
+        );
+    }
+
+    // Log final block
+    MGINFO_YELLOW(log_prefix(context)
+           << "final_block.vrf_signatures.size(): " << final_block.vrf_signatures.size()
+           << "\nFinal VRF signed block:\n"
+           << cryptonote::obj_to_json_str(final_block));
+
+    // Submit block
+    cryptonote::block_verification_context bvc = {};
+    if (!core.handle_block_found(final_block, bvc))
+    {
+        MGINFO_RED("Block rejected during handle_block_found");
+        return goto_preparing_for_next_round(context);
+    }
+
+    MGINFO_YELLOW("Final VRF signed block constructed and accepted");
+    return goto_wait_for_next_block_and_clear_round_data(context);
   }
 
   return round_state::wait_for_vrf_signed_blocks;
@@ -2559,7 +2640,7 @@ void POS::main(void *quorumnet_state, cryptonote::core &core)
         break;
       
       case round_state::wait_for_vrf_signed_blocks:
-        context.state = wait_for_vrf_signed_blocks(context, node_list, quorumnet_state, key, blockchain);
+        context.state = wait_for_vrf_signed_blocks(context, node_list, quorumnet_state, key, blockchain, core);
         break;
 
       case round_state::wait_for_round:
