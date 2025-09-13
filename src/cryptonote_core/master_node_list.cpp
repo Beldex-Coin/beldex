@@ -1600,7 +1600,10 @@ namespace master_nodes
     {
       // NOTE: No POS quorums are generated when the network has insufficient nodes to generate quorums
       //       Or, block specifies time after all the rounds have timed out
-      bool miner_block = !POS_hf || !POS_quorum;
+      bool is_pos_block = POS_quorum || block.vrf_signatures.size();
+      
+      MGINFO_CYAN("VRF block template is_pos_block: " << is_pos_block);
+      bool miner_block = !POS_hf || !is_pos_block;
       // std::cout << "miner_block : " << miner_block << std::endl;
       MGINFO_CYAN("VRF block template called in 3: " << __func__);
       result = verify_block_components(m_blockchain.nettype(),
@@ -1649,7 +1652,7 @@ namespace master_nodes
         for (size_t validator_index = 0; validator_index < master_nodes::POS_QUORUM_NUM_VALIDATORS; validator_index++)
         {
           uint16_t bit      = 1 << validator_index;
-          bool participated = block.POS.validator_bitset & bit;
+          bool participated = true;
           record_POS_participation(quorum->validators[validator_index], block_height, block.POS.round, participated);
         }
       }

@@ -315,7 +315,7 @@ std::string log_prefix(round_context const &context)
     result << "0";
   result << ": ";
 
-  if (context.prepare_for_round.node_name.size()) result << context.prepare_for_round.node_name << " ";
+  if (context.prepare_vrf_quorum.node_name.size()) result << context.prepare_vrf_quorum.node_name << " ";
   result << "'" << round_state_string(context.state) << "' ";
   return result.str();
 }
@@ -827,12 +827,11 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     case POS::message_type::vrf_proof:
     {
-      MGINFO_GREEN(log_prefix(context) << "Adding the proof into context" << msg.vrf_proof.key);
       auto &quorum = context.transient.vrf_proof.wait.proofs;
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
 
-      MGINFO_GREEN(log_prefix(context) << "The wait_listed vrf_proofs are added in to the context: " << msg.vrf_proof.key);
+      MGINFO_GREEN(log_prefix(context) << "Adding the proof into context: " << msg.vrf_proof.key);
       value = msg.vrf_proof.proof;
     }
     break;
@@ -1374,6 +1373,8 @@ round_state wait_for_next_block(uint64_t hf17_height, round_context &context, cr
   // NOTE: If already processing POS for height, wait for next height
   //
   uint64_t chain_height = blockchain.get_current_blockchain_height(true /*lock*/);
+  MGINFO_CYAN(log_prefix(context) << "chain_height : " << chain_height);
+  MGINFO_CYAN(log_prefix(context) << "context.wait_for_next_block.height : " << context.wait_for_next_block.height);
   if (context.wait_for_next_block.height == chain_height)
   {
     for (static uint64_t last_height = 0; last_height != chain_height; last_height = chain_height)
@@ -1572,8 +1573,8 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       // calculate vrf data here then asign to value
       // const unsigned char *skpk = reinterpret_cast<const unsigned char *>(key.key_ed25519.data);
 
-      // get the alpha value from the previous two blocks
-      const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
+      // get the alpha value from the previous one blocks
+      const crypto::hash& alpha = context.wait_for_next_block.top_hash;
       const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
       int err = vrf_prove(context.transient.vrf_proof.send.data.data, key.key_ed25519.data, alpha_bytes, sizeof(crypto::hash));
@@ -1592,7 +1593,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       msg.vrf_proof.key = key.pub;
       // MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.proof.data)));
 
-      // MGINFO_GREEN(log_prefix(context) << "My msg.vrf_proof.proof: " << msg.vrf_proof.proof.data);
+      MGINFO_YELLOW(log_prefix(context) << "My self Genenrated proof : " << msg.vrf_proof.proof.data);
       crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
       handle_message(quorumnet_state, msg, true); // Add our own. We receive our own msg for the first time which also triggers us to relay.
     }
@@ -1654,7 +1655,7 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
     // verify the proof and findout output
     
     // get the alpha value from the previous two blocks
-    const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
+    const crypto::hash& alpha = context.wait_for_next_block.top_hash;
     const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
     unsigned char pk[32];
@@ -1688,17 +1689,14 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
     vrf_quorum_candidates.emplace_back(std::make_pair(pubkey, output_array));
   }
 
-  MGINFO_MAGENTA(log_prefix(context) << "vrf_quorum_candidates size : " << vrf_quorum_candidates.size());
+  MGINFO_MAGENTA(log_prefix(context) << "vrf_quorum_candidates size(who are all passed the threshold) : " << vrf_quorum_candidates.size());
 
   context.prepare_vrf_quorum.quorum = master_nodes::generate_POS_VRF_quorum(vrf_quorum_candidates);
 
-  // that is the final qourum 0 -> w[0] , 1....n -> v[n]
-  MGINFO_BLUE(log_prefix(context) << " Generated VRF Quorum "<< context.prepare_vrf_quorum.quorum);
-
-  if (context.prepare_vrf_quorum.quorum.workers.empty())
+  if (context.prepare_vrf_quorum.quorum.workers.empty() || context.prepare_vrf_quorum.quorum.validators.size() < master_nodes::POS_BLOCK_REQUIRED_SIGNATURES)
   {
-    MGINFO_RED(log_prefix(context) << "VRF Quorum is empty. No eligible participants. Skipping VRF round.");
-    return goto_wait_for_next_block_and_clear_round_data(context);
+    MGINFO_RED(log_prefix(context) << "VRF Quorum is either empty or No eligible participants. Skipping current VRF round.");
+    return goto_preparing_for_next_round(context);
   }
 
   //
@@ -1726,6 +1724,9 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
       }
     }
   }
+
+  // that is the final qourum 0 -> w[0] , 1....n -> v[n]
+  MGINFO_BLUE(log_prefix(context) << " Generated VRF Quorum "<< context.prepare_vrf_quorum.quorum);
 
   return round_state::wait_for_vrf_round;
 
@@ -1820,7 +1821,7 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
   context.transient.send_and_wait_for_vrf_signed_block.wait.signature[key.pub] = std::nullopt;
 
   // Send
-  MGINFO_MAGENTA(log_prefix(context) << "Validators are handshaken and ready, sending block template from producer (us) to validators.\n" << cryptonote::obj_to_json_str(block));
+  MGINFO_MAGENTA(log_prefix(context) << "Sending block template from producer (us) to validators.\n" << cryptonote::obj_to_json_str(block));
   cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_vrf_quorum.quorum, true /*block_producer*/);
   // return goto_preparing_for_next_round(context);
   return round_state::wait_for_vrf_signed_blocks;
@@ -1847,7 +1848,7 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
     {
       MGINFO_MAGENTA(log_prefix(context) << "Total VRF block received from producers : " << stage.msgs_received);
       // get the alpha value from the previous two blocks
-      const crypto::hash& alpha = blockchain.get_block_id_by_height(context.wait_for_next_block.height - 2);
+      const crypto::hash& alpha = context.wait_for_next_block.top_hash;
       const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
       // verify with threshold
@@ -1867,7 +1868,7 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
                                 alpha_bytes, sizeof(crypto::hash));
       if (err != 0) {
         MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << context.prepare_vrf_quorum.quorum.workers[0]);
-        return goto_preparing_for_next_round(context); // need to add proper logiv for the failed scenario
+        return goto_preparing_for_next_round(context); // need to add proper logic for the failed scenario
       }
 
       crypto::public_key &original_worker = context.prepare_vrf_quorum.quorum.workers[0];
@@ -1937,6 +1938,8 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
 round_state send_vrf_signed_blocks(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
 {
   MGINFO_CYAN(log_prefix(context) << __func__);
+  assert(context.prepare_vrf_quorum.participant == mn_type::validator);
+
   if (context.transient.send_and_wait_for_vrf_signed_block.send.one_time_only())
   {
     context.transient.send_and_wait_for_vrf_signed_block.final_block = std::move(context.transient.wait_for_vrf_block_template.block);
@@ -1958,7 +1961,7 @@ round_state send_vrf_signed_blocks(round_context &context, master_nodes::master_
     // Only send to the producer
     master_nodes::quorum quorum_workers;
     quorum_workers.workers = context.prepare_vrf_quorum.quorum.workers;
-    MGINFO_MAGENTA(log_prefix(context) <<"VRF Quorum_workers : "<< quorum_workers);
+    MGINFO_MAGENTA(log_prefix(context) <<"We are a validator sending Signed-block to VRF Quorum_worker  : "<< quorum_workers);
     cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, quorum_workers, false /*block_producer*/);
     // handle_message(quorumnet_state, msg); // Add our own. We receive our own msg for the first time which also triggers us to relay.
   }
@@ -1973,9 +1976,11 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
   handle_messages_received_early_for_vrf_proof(context.transient.send_and_wait_for_vrf_signed_block.wait.stage, quorumnet_state, blockchain);
   
   POS_VRF_wait_stage const &stage = context.transient.send_and_wait_for_vrf_signed_block.wait.stage;
+
+  bool all_received = context.transient.send_and_wait_for_vrf_signed_block.wait.signature.size() >= context.transient.vrf_proof.wait.proofs.size();
   bool timed_out = POS::clock::now() >= stage.end_time;
 
-  if(timed_out){
+  if(timed_out || all_received){
     std::time_t vrf_signed_blocks_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
     MGINFO_BLUE("vrf_signed_blocks.end_time : " << std::put_time(std::gmtime(&vrf_signed_blocks_time_t), "%F %T"));
   
