@@ -337,6 +337,17 @@ POS::message msg_init_from_context(round_context const &context)
   return result;
 }
 
+//Generate a hash for the alpho for every round
+crypto::hash generate_hash_alpha(crypto::hash const &pre_block_hash, uint8_t const &round)
+{
+  crypto::hash result = {};
+
+  auto buf = tools::memcpy_le(pre_block_hash.data, round);
+  result   = blake2b_hash(buf.data(), buf.size());
+
+  return result;
+}
+
 // Generate the hash necessary for signing a message. All fields of the 'msg'
 // must have been set for the type of the message except the signature for the
 // hash to be generated correctly.
@@ -1574,7 +1585,7 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       // const unsigned char *skpk = reinterpret_cast<const unsigned char *>(key.key_ed25519.data);
 
       // get the alpha value from the previous one blocks
-      const crypto::hash& alpha = context.wait_for_next_block.top_hash;
+      const crypto::hash& alpha = generate_hash_alpha(context.wait_for_next_block.top_hash, context.prepare_for_round.round);
       const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
       int err = vrf_prove(context.transient.vrf_proof.send.data.data, key.key_ed25519.data, alpha_bytes, sizeof(crypto::hash));
@@ -1655,7 +1666,7 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
     // verify the proof and findout output
     
     // get the alpha value from the previous two blocks
-    const crypto::hash& alpha = context.wait_for_next_block.top_hash;
+    const crypto::hash& alpha = generate_hash_alpha(context.wait_for_next_block.top_hash, context.prepare_for_round.round);
     const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
     unsigned char pk[32];
@@ -1848,7 +1859,7 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
     {
       MGINFO_MAGENTA(log_prefix(context) << "Total VRF block received from producers : " << stage.msgs_received);
       // get the alpha value from the previous two blocks
-      const crypto::hash& alpha = context.wait_for_next_block.top_hash;
+      const crypto::hash& alpha = generate_hash_alpha(context.wait_for_next_block.top_hash, context.prepare_for_round.round);
       const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
       // verify with threshold
@@ -2064,6 +2075,15 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
         MGINFO_RED("Block rejected during handle_block_found");
         return goto_preparing_for_next_round(context);
     }
+
+    auto duration = POS::clock::now() - context.wait_for_next_block.round_0_start_time;
+      
+    auto mins = std::chrono::duration_cast<std::chrono::minutes>(duration);
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(duration - mins);
+      
+    MGINFO_GREEN("Overall block completion time since r0 start: "
+                 << mins.count() << " min "
+                 << secs.count() << " sec");
 
     MGINFO_YELLOW("Final VRF signed block constructed and accepted");
     return goto_wait_for_next_block_and_clear_round_data(context);
