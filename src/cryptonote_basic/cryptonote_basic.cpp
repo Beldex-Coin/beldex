@@ -83,7 +83,8 @@ block::block(const block& b) :
   block_header(b),
   miner_tx{b.miner_tx},
   tx_hashes{b.tx_hashes},
-  signatures{b.signatures}
+  signatures{b.signatures},
+  vrf_signatures{b.vrf_signatures}
 {
   copy_hash(b);
 }
@@ -92,7 +93,8 @@ block::block(block&& b) :
   block_header(std::move(b)),
   miner_tx{std::move(b.miner_tx)},
   tx_hashes{std::move(b.tx_hashes)},
-  signatures{std::move(b.signatures)}
+  signatures{std::move(b.signatures)},
+  vrf_signatures{b.vrf_signatures}
 {
   copy_hash(b);
 }
@@ -103,6 +105,7 @@ block& block::operator=(const block& b)
   miner_tx = b.miner_tx;
   tx_hashes = b.tx_hashes;
   signatures = b.signatures;
+  vrf_signatures = b.vrf_signatures;
   copy_hash(b);
   return *this;
 }
@@ -112,6 +115,7 @@ block& block::operator=(block&& b)
   miner_tx = std::move(b.miner_tx);
   tx_hashes = std::move(b.tx_hashes);
   signatures = std::move(b.signatures);
+  vrf_signatures = std::move(b.vrf_signatures);
   copy_hash(b);
   return *this;
 }
