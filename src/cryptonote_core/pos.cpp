@@ -1676,7 +1676,7 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
     bool isValid = verify_vrf_output_with_threshold(output, tau, W);
     if(!isValid)
     {
-      MDEBUG(log_prefix(context) << "doesn't passed the threshold condition " << pubkey);
+      MDEBUG(log_prefix(context) << "doen't passed the threshold condition " << pubkey);
       continue;
     }
 
@@ -1951,14 +1951,12 @@ round_state send_vrf_signed_blocks(round_context &context, master_nodes::master_
   return round_state::wait_for_vrf_signed_blocks;
 }
 
-
-round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain, cryptonote::core &core)
+round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
 {
   // MGINFO_CYAN(log_prefix(context) << __func__);
   handle_messages_received_early_for_vrf_proof(context.transient.send_and_wait_for_vrf_signed_block.wait.stage, quorumnet_state, blockchain);
   
   POS_VRF_wait_stage const &stage = context.transient.send_and_wait_for_vrf_signed_block.wait.stage;
-
   bool timed_out = POS::clock::now() >= stage.end_time;
 
   if(timed_out){
@@ -1973,151 +1971,11 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
     {
       MGINFO_MAGENTA(log_prefix(context) <<"pubkey :" << pubkey << ", signature: " << *signature);
     }
-
-    // Adding the signature and vrf entries to the final block
-    auto const &quorum_signatures   = context.transient.send_and_wait_for_vrf_signed_block.wait.signature;
-    auto const &quorum_vrf_proofs   = context.transient.vrf_proof.wait.proofs;
-
-    cryptonote::block &final_block = context.transient.signed_block.final_block;
-
-    // Step 1: Collect all valid VRF entries
-    std::vector<cryptonote::quorum_vrf_sig> valid_sig_entries;
-    valid_sig_entries.reserve(quorum_signatures.size());
-
-    for (const auto &entry : quorum_signatures)
-      {
-        const crypto::public_key &pub_key = entry.first;
-        const auto &sig_opt = entry.second;
-
-        auto it_proof = quorum_vrf_proofs.find(pub_key);
-        if (sig_opt && it_proof != quorum_vrf_proofs.end() && it_proof->second)
-          {
-            cryptonote::quorum_vrf_sig vrf_sig_entry{};
-            vrf_sig_entry.pub_key   = pub_key;
-            vrf_sig_entry.signature = *sig_opt;
-            vrf_sig_entry.proof     = *it_proof->second;
-
-            valid_sig_entries.emplace_back(std::move(vrf_sig_entry));
-          }
-      }
-
-    // Step 2: Compute required threshold = 2/3 of quorum size
-    size_t required = master_nodes::POS_BLOCK_REQUIRED_SIGNATURES;
-    if (required > valid_sig_entries.size())
-      // required = valid_sig_entries.size(); // fallback safety
-      return round_state::wait_for_round;
-
-    // Step 3: Randomly select required entries
-    std::vector<cryptonote::quorum_vrf_sig> selected;
-    selected.resize(required);
-
-    std::sample(valid_sig_entries.begin(),
-            valid_sig_entries.end(),
-            selected.begin(),
-            required,
-            tools::rng);
-
-    // Step 4: Insert into final_block.vrf_signatures
-    for (auto &vrf_entry : selected)
-      {
-        final_block.vrf_signatures.emplace_back(std::move(vrf_entry));
-      }
-
-    MDEBUG("Added " << required << " VRF signatures out of "
-              << valid_sig_entries.size() << " valid entries.");
-
-    // Propagate Final Block
-    MDEBUG(log_prefix(context) << "Final signed block constructed\n" << cryptonote::obj_to_json_str(final_block));
-    cryptonote::block_verification_context bvc = {};
-    if (!core.handle_block_found(final_block, bvc))
-      return goto_preparing_for_next_round(context);
-
-    MGINFO_YELLOW("Final signed block constructed");
-    return goto_wait_for_next_block_and_clear_round_data(context);
-
+    return round_state::wait_for_round;
   }
 
   return round_state::wait_for_vrf_signed_blocks;
 }
-
-
-// round_state send_and_wait_for_signed_blocks(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::core &core)
-// {
-//   assert(context.prepare_for_round.participant == mn_type::validator);
-
-//   //
-//   // NOTE: Send
-//   //
-//   if (context.transient.signed_block.send.one_time_only())
-//   {
-//     // Message
-//     POS::message msg                             = msg_init_from_context(context);
-//     msg.type                                       = POS::message_type::signed_block;
-//     msg.signed_block.signature_of_final_block_hash = context.transient.signed_block.send.data;
-//     crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
-//     handle_message(quorumnet_state, msg); // Add our own. We receive our own msg for the first time which also triggers us to relay.
-//   }
-
-//   //
-//   // NOTE: Wait
-//   //
-//   handle_messages_received_early_for(context.transient.signed_block.wait.stage, quorumnet_state);
-//   POS_wait_stage const &stage = context.transient.signed_block.wait.stage;
-
-//   auto const &quorum   = context.transient.signed_block.wait.data;
-//   bool const timed_out = POS::clock::now() >= stage.end_time;
-//   bool const all_received   = stage.bitset == context.transient.wait_for_handshake_bitsets.best_bitset;
-
-//   if (timed_out || all_received)
-//   {
-//     std::time_t signed_block_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
-//     MGINFO_BLUE("signed_block.end_time : " << std::put_time(std::gmtime(&signed_block_time_t), "%F %T"));
-      
-//     std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
-//     MGINFO_BLUE("now_c (signed_block): " << std::put_time(std::gmtime(&now_c), "%F %T"));
-
-//     if (!enforce_validator_participation_and_timeouts(context, stage, node_list, timed_out, all_received))
-//       return goto_preparing_for_next_round(context);
-
-//     // Select signatures randomly so we don't always just take the first N required signatures.
-//     // Then sort just the first N required signatures, so signatures are added
-//     // to the block in sorted order, but were chosen randomly.
-//     std::array<size_t, master_nodes::POS_QUORUM_NUM_VALIDATORS> indices = {};
-//     size_t indices_count = 0;
-
-//     // Pull out indices where we've received a signature
-//     for (size_t index = 0; index < quorum.size(); index++)
-//       if (quorum[index])
-//         indices[indices_count++] = index;
-
-//     // Random select from first 'N' POS_BLOCK_REQUIRED_SIGNATURES from indices_count entries.
-//     assert(indices_count >= master_nodes::POS_BLOCK_REQUIRED_SIGNATURES);
-//     std::array<size_t, master_nodes::POS_BLOCK_REQUIRED_SIGNATURES> selected = {};
-//     std::sample(indices.begin(), indices.begin() + indices_count, selected.begin(), selected.size(), tools::rng);
-
-//     // Add Signatures
-//     cryptonote::block &final_block = context.transient.signed_block.final_block;
-//     for (size_t index = 0; index < master_nodes::POS_BLOCK_REQUIRED_SIGNATURES; index++)
-//     {
-//       uint16_t validator_index = indices[index];
-//       auto const &signature    = quorum[validator_index];
-//       assert(signature);
-//       MDEBUG(log_prefix(context) << "Signature added: " << validator_index << ":" << context.prepare_for_round.quorum.validators[validator_index] << ", " << *signature);
-//       final_block.signatures.emplace_back(validator_index, *signature);
-//     }
-
-//     // Propagate Final Block
-//     MDEBUG(log_prefix(context) << "Final signed block constructed\n" << cryptonote::obj_to_json_str(final_block));
-//     cryptonote::block_verification_context bvc = {};
-//     if (!core.handle_block_found(final_block, bvc))
-//       return goto_preparing_for_next_round(context);
-
-//     MGINFO_YELLOW("Final signed block constructed");
-//     return goto_wait_for_next_block_and_clear_round_data(context);
-//   }
-
-//   return round_state::send_and_wait_for_signed_blocks;
-// }
 
 round_state wait_for_round(round_context &context, cryptonote::Blockchain const &blockchain)
 {
@@ -2692,7 +2550,7 @@ void POS::main(void *quorumnet_state, cryptonote::core &core)
         break;
       
       case round_state::wait_for_vrf_signed_blocks:
-        context.state = wait_for_vrf_signed_blocks(context, node_list, quorumnet_state, key, blockchain, core);
+        context.state = wait_for_vrf_signed_blocks(context, node_list, quorumnet_state, key, blockchain);
         break;
 
       case round_state::wait_for_round:
