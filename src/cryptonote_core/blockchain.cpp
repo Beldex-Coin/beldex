@@ -4255,6 +4255,7 @@ bool Blockchain::basic_block_checks(cryptonote::block const &blk, bool alt_block
 //      m_db->add_block()
 bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash& id, block_verification_context& bvc, checkpoint_t const *checkpoint, bool notify)
 {
+  MGINFO_CYAN("VRF block template called in : " << __func__);
   LOG_PRINT_L3("Blockchain::" << __func__);
 
   auto block_processing_start = std::chrono::steady_clock::now();

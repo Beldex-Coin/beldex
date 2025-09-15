@@ -1681,6 +1681,7 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
     // MGINFO_YELLOW(log_prefix(context) << "context.wait_for_next_block.top_hash: " << context.wait_for_next_block.top_hash);
     // MGINFO_YELLOW(log_prefix(context) << " context.prepare_for_round.round: " << static_cast<int>(context.prepare_for_round.round));
     // MGINFO_YELLOW(log_prefix(context) << "alpha Key: " << alpha);
+
     const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
     unsigned char pk[32];
@@ -2139,6 +2140,7 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
     //     MGINFO_YELLOW("VRF signature verified for " << key << " : signature is " << oxenc::to_hex(tools::view_guts(quorum_vrf_signature.signature)));
     //   }
     // }
+
     // Submit block
     cryptonote::block_verification_context bvc = {};
     if (!core.handle_block_found(final_block, bvc))

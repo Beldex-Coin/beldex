@@ -1302,6 +1302,7 @@ namespace master_nodes
                                       std::shared_ptr<const quorum> POS_quorum,
                                       std::vector<std::shared_ptr<const quorum>> &alt_POS_quorums, int active_mn)
   {
+    MGINFO_CYAN("VRF block template called in : " << __func__);
     std::string_view block_type = alt_block ? "alt block "sv : "block "sv;
     uint64_t height             = cryptonote::get_block_height(block);
     crypto::hash hash           = cryptonote::get_block_hash(block);
@@ -1378,6 +1379,7 @@ namespace master_nodes
         bool failed_quorum_verify = true;
         if (POS_quorum)
         {
+          MGINFO_CYAN("VRF block template called in 1: " << __func__);
           LOG_PRINT_L1("Verifying alt-block " << height << ":" << hash << " against main chain quorum");
           failed_quorum_verify = master_nodes::verify_quorum_signatures(*POS_quorum,
                                                                          quorum_type::POS,
@@ -1391,6 +1393,7 @@ namespace master_nodes
         // NOTE: Check alt POS quorums
         if (failed_quorum_verify)
         {
+          MGINFO_CYAN("VRF block template called in 2: " << __func__);
           LOG_PRINT_L1("Verifying alt-block " << height << ":" << hash << " against alt chain quorum(s)");
           for (auto const &alt_quorum : alt_POS_quorums)
           {
@@ -1422,6 +1425,7 @@ namespace master_nodes
           return false;
         }
 
+        MGINFO_CYAN("VRF block template called in 3: " << __func__);
         quorum_verified = master_nodes::verify_quorum_signatures(*POS_quorum,
                                                                   quorum_type::POS,
                                                                   block.major_version,
@@ -1481,6 +1485,7 @@ namespace master_nodes
 
   void master_node_list::verify_block(const cryptonote::block &block, bool alt_block, cryptonote::checkpoint_t const *checkpoint)
   {
+    MGINFO_CYAN("VRF block template called in : " << __func__);
     if (block.major_version < hf::hf9_master_nodes)
       return;
 
@@ -1599,7 +1604,7 @@ namespace master_nodes
       
       MGINFO_CYAN("Block template VRF signatures size: " << block.vrf_signatures.size());
       bool miner_block = !POS_hf || !is_pos_block;
-
+      
       result = verify_block_components(m_blockchain.nettype(),
                                        block,
                                        miner_block,

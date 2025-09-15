@@ -286,6 +286,7 @@ namespace master_nodes
 
   bool verify_quorum_signatures(master_nodes::quorum const &quorum, master_nodes::quorum_type type, hf hf_version, uint64_t height, crypto::hash const &hash, std::vector<quorum_signature> const &signatures, const cryptonote::block* block, int active_mn)
   {
+    MGINFO_CYAN("VRF block template called in : " << __func__);
     bool enforce_vote_ordering                          = true;
     constexpr size_t MAX_QUORUM_SIZE                    = std::max(CHECKPOINT_QUORUM_SIZE, POS_QUORUM_NUM_VALIDATORS);
     std::array<size_t, MAX_QUORUM_SIZE> unique_vote_set = {};
@@ -413,6 +414,7 @@ namespace master_nodes
         }
       }
     }
+
     MGINFO_CYAN("VRF block template verification done in: " << __func__);
     return true;
   }

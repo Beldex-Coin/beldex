@@ -2089,6 +2089,7 @@ namespace cryptonote
   //-----------------------------------------------------------------------------------------------
   bool core::handle_block_found(block& b, block_verification_context &bvc)
   {
+    MGINFO_CYAN("VRF block template called in : " << __func__);
     bvc = {};
     std::vector<block_complete_entry> blocks;
     m_miner.pause();
