@@ -254,7 +254,7 @@ std::vector<prepared_relay_destinations> peer_prepare_relay_to_mn_subset(crypton
 void peer_relay_to_prepared_destinations(cryptonote::core &core, std::vector<prepared_relay_destinations> const &destinations, std::string_view command, std::string &&data)
 {
     for (auto const &[x25519_string, connect_string]: destinations) {
-        MGINFO_CYAN("Relaying data to " << to_hex(x25519_string) << " @ " << connect_string);
+        MDEBUG("Relaying data to " << to_hex(x25519_string) << " @ " << connect_string);
         core.get_omq().send(x25519_string, command, std::move(data), send_option::hint{connect_string});
     }
 }

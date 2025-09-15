@@ -756,6 +756,11 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
     case POS::message_type::signed_block:      msg_received_early = (context.state < round_state::send_and_wait_for_signed_blocks);       break;
   }
 
+  if(msg.type == POS::message_type::vrf_proof && msg.round > context.prepare_for_round.round){
+    MGINFO_RED(log_prefix(context) << "msg vrf_proofs are received too early current round:" << +context.prepare_for_round.round << "received form round:" << +msg.round );
+    msg_received_early = true;
+  }
+
   if (msg_received_early) // Enqueue the message until we're ready to process it
   {
     // MGINFO_GREEN(log_prefix(context) << "msg_received_early is true");
@@ -838,6 +843,12 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     case POS::message_type::vrf_proof:
     {
+      if (msg.round != context.prepare_for_round.round)
+      {
+        MTRACE(log_prefix(context) << "Received VRF proof specifying different round " << +msg.round
+                                   << ", expected " << +context.prepare_for_round.round);
+        return;
+      }
       auto &quorum = context.transient.vrf_proof.wait.proofs;
       auto &value  = quorum[msg.vrf_proof.key];
       if (value) return;
@@ -1604,7 +1615,6 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       msg.vrf_proof.key = key.pub;
       // MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.proof.data)));
 
-      MGINFO_YELLOW(log_prefix(context) << "My self Genenrated proof : " << msg.vrf_proof.proof.data);
       crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
       handle_message(quorumnet_state, msg, true); // Add our own. We receive our own msg for the first time which also triggers us to relay.
     }
@@ -1667,6 +1677,10 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
     
     // get the alpha value from the previous two blocks
     const crypto::hash& alpha = generate_hash_alpha(context.wait_for_next_block.top_hash, context.prepare_for_round.round);
+
+    // MGINFO_YELLOW(log_prefix(context) << "context.wait_for_next_block.top_hash: " << context.wait_for_next_block.top_hash);
+    // MGINFO_YELLOW(log_prefix(context) << " context.prepare_for_round.round: " << static_cast<int>(context.prepare_for_round.round));
+    // MGINFO_YELLOW(log_prefix(context) << "alpha Key: " << alpha);
     const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
 
     unsigned char pk[32];
@@ -1772,7 +1786,7 @@ round_state wait_for_vrf_round(round_context &context, cryptonote::Blockchain co
   }
   else
   {
-    MGINFO_GREEN(log_prefix(context) << "Non-participant for VRF round, waiting for the normal POS round");
+    MGINFO_GREEN(log_prefix(context) << "Non-participant for VRF round, waiting for the next POS round");
     return goto_preparing_for_next_round(context);
   }
 
@@ -1829,7 +1843,7 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
 
   // Store own block for the producer node
   context.transient.send_and_wait_for_vrf_signed_block.final_block = block;
-  context.transient.send_and_wait_for_vrf_signed_block.wait.signature[key.pub] = std::nullopt;
+  // context.transient.send_and_wait_for_vrf_signed_block.wait.signature[key.pub] = std::nullopt;
 
   // Send
   MGINFO_MAGENTA(log_prefix(context) << "Sending block template from producer (us) to validators.\n" << cryptonote::obj_to_json_str(block));
@@ -1980,6 +1994,34 @@ round_state send_vrf_signed_blocks(round_context &context, master_nodes::master_
   return goto_preparing_for_next_round(context);
 }
 
+  bool validate_proof_with_threshodl(crypto::public_key const &pubkey, crypto::vrf_proof const &proof, const unsigned char* alpha_bytes, int const &active_mn)
+  {
+    unsigned char pk[32];
+    std::memcpy(pk, pubkey.data, sizeof(pk));
+
+    unsigned char output[64];
+
+    int err = vrf_verify(output, pk, proof.data, alpha_bytes, sizeof(crypto::hash));
+    if (err != 0) {
+      MGINFO("Incorrect proof, failed verification at for voter: " << pubkey << "\n");
+      return false;
+    }
+
+    // verify with threshold
+    double W = static_cast<double>(active_mn);
+    double tau = W * 80 / 100.0;
+
+    bool isValid = verify_vrf_output_with_threshold(output, tau, W);
+    if(!isValid)
+    {
+      MGINFO("doen't passed the threshold condition " << pubkey);
+      return false;
+    }
+
+    MGINFO_YELLOW("VRF output verified for " << pubkey << " : proof is " <<  oxenc::to_hex(tools::view_guts(proof)));
+    return true;
+  }
+
 round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::master_node_list &node_list, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain, cryptonote::core &core)
 {
   // MGINFO_CYAN(log_prefix(context) << __func__);
@@ -2010,13 +2052,19 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
     // Collect all pubkeys that have both proof + signature
     for (const auto &[pubkey, signature] : quorum_vrf_block_signature)
     {
+        if(pubkey == key.pub)
+        {
+          MGINFO_MAGENTA(log_prefix(context) << "Don't add my signature into block if i am a producer\n");
+          continue;
+        }
         MGINFO_MAGENTA(log_prefix(context) << "pubkey: " << pubkey 
                                            << ", has signature: " << *signature);
 
         auto it_proof = quorum_vrf_proofs.find(pubkey);
         if (it_proof != quorum_vrf_proofs.end() && it_proof->second)
         {
-            availablePubkey.push_back(pubkey);
+          MGINFO_MAGENTA(log_prefix(context) << "proof: " << *it_proof->second);
+          availablePubkey.push_back(pubkey);
         }
     }
 
@@ -2067,7 +2115,30 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
            << "final_block.vrf_signatures.size(): " << final_block.vrf_signatures.size()
            << "\nFinal VRF signed block:\n"
            << cryptonote::obj_to_json_str(final_block));
+    // {
+    //    auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
+    //   // get the alpha value from the previous two blocks
+    //   const crypto::hash& alpha = generate_hash_alpha(context.wait_for_next_block.top_hash, context.prepare_for_round.round);
+    //   const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+    //   MGINFO_YELLOW("Alpha Key: " << alpha);
 
+    //   // verify the proof
+    //   for (size_t i = 0; i < final_block.vrf_signatures.size(); i++ ){
+    //     master_nodes::quorum_vrf_signature const &quorum_vrf_signature = final_block.vrf_signatures[i];
+    //     crypto::public_key const &key = quorum_vrf_signature.pubkey;
+        
+    //     if(!validate_proof_with_threshodl(key, quorum_vrf_signature.proof, alpha_bytes, activeList.size()))
+    //     {
+    //       MGINFO_RED("proof verification and output threshold failed");
+    //     }
+
+    //     if(!crypto::check_signature(cryptonote::get_block_hash(final_block), key, quorum_vrf_signature.signature))
+    //     {
+    //       MGINFO_RED("signature verification failed");
+    //     }
+    //     MGINFO_YELLOW("VRF signature verified for " << key << " : signature is " << oxenc::to_hex(tools::view_guts(quorum_vrf_signature.signature)));
+    //   }
+    // }
     // Submit block
     cryptonote::block_verification_context bvc = {};
     if (!core.handle_block_found(final_block, bvc))

@@ -26,6 +26,9 @@
 // STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include <gmp.h>
+#include <gmpxx.h>
+
 #include "master_node_voting.h"
 #include "master_node_list.h"
 #include "cryptonote_basic/tx_extra.h"
@@ -36,12 +39,18 @@
 #include "checkpoints/checkpoints.h"
 #include "common/util.h"
 #include "common/hex.h"
+#include "crypto/vrf.h"
 
 #include "epee/misc_log_ex.h"
 #include "epee/string_tools.h"
 
 #include <string>
 #include <vector>
+
+extern "C"
+{
+#include <sodium/crypto_generichash.h>
+};
 
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "master_nodes"
@@ -239,9 +248,44 @@ namespace master_nodes
     return true;
   }
 
-  bool verify_quorum_signatures(master_nodes::quorum const &quorum, master_nodes::quorum_type type, hf hf_version, uint64_t height, crypto::hash const &hash, std::vector<quorum_signature> const &signatures, const cryptonote::block* block)
+  crypto::hash blake2b_hash(void const *data, size_t size)
   {
-    MGINFO_CYAN("VRF block template called in : " << __func__);
+    crypto::hash result = {};
+    static_assert(sizeof(result) == crypto_generichash_BYTES);
+    crypto_generichash(reinterpret_cast<unsigned char *>(result.data), sizeof(result), reinterpret_cast<unsigned char const *>(data), size, nullptr /*key*/, 0 /*key length*/);
+    return result;
+  }
+
+  bool validate_proof_with_threshodl(uint64_t height, crypto::public_key const &pubkey, crypto::vrf_proof const &proof, const unsigned char* alpha_bytes, int const &active_mn)
+  {
+    unsigned char pk[32];
+    std::memcpy(pk, pubkey.data, sizeof(pk));
+
+    unsigned char output[64];
+    // MGINFO_YELLOW("VRF output started verification for " << pubkey);
+    int err = vrf_verify(output, pk, proof.data, alpha_bytes, sizeof(crypto::hash));
+    if (err != 0) {
+      MGINFO("Incorrect proof, failed verification at height: " << height << " for voter: " << pubkey << "\n");
+      return false;
+    }
+
+    // // verify with threshold
+    double W = static_cast<double>(active_mn);
+    double tau = W * 80 / 100.0;
+
+    bool isValid = verify_vrf_output_with_threshold(output, tau, W);
+    if(!isValid)
+    {
+      MGINFO("doen't passed the threshold condition " << pubkey);
+      return false;
+    }
+
+    // MGINFO_YELLOW("VRF output verified for " << pubkey);
+    return true;
+  }
+
+  bool verify_quorum_signatures(master_nodes::quorum const &quorum, master_nodes::quorum_type type, hf hf_version, uint64_t height, crypto::hash const &hash, std::vector<quorum_signature> const &signatures, const cryptonote::block* block, int active_mn)
+  {
     bool enforce_vote_ordering                          = true;
     constexpr size_t MAX_QUORUM_SIZE                    = std::max(CHECKPOINT_QUORUM_SIZE, POS_QUORUM_NUM_VALIDATORS);
     std::array<size_t, MAX_QUORUM_SIZE> unique_vote_set = {};
@@ -273,12 +317,12 @@ namespace master_nodes
       break;
 
       case quorum_type::POS:
-      { // need to modify the verification method
-        // if (signatures.size() != POS_BLOCK_REQUIRED_SIGNATURES)
-        // {
-        //   MGINFO("POS block has " << signatures.size() << " signatures but requires " << POS_BLOCK_REQUIRED_SIGNATURES);
-        //   return false;
-        // }
+      {
+        if (block->vrf_signatures.size() != POS_BLOCK_REQUIRED_SIGNATURES)
+        {
+          MGINFO("POS block has " << signatures.size() << " signatures but requires " << POS_BLOCK_REQUIRED_SIGNATURES);
+          return false;
+        }
 
         if (!block)
         {
@@ -286,76 +330,88 @@ namespace master_nodes
           return false;
         }
 
-        // if (block->POS.validator_bitset >= (1 << POS_QUORUM_NUM_VALIDATORS))
-        // {
-        //   auto mask  = std::bitset<sizeof(POS_validator_bit_mask()) * 8>(POS_validator_bit_mask());
-        //   auto other = std::bitset<sizeof(POS_validator_bit_mask()) * 8>(block->POS.validator_bitset);
-        //   MGINFO("POS block specifies validator participation bits out of bounds. Expected the bit mask: " << mask << ", block: " << other);
-        //   return false;
-        // }
       }
       break;
     }
 
-    if(type != quorum_type::POS)
+    if(type == quorum_type::POS)
     {
-    for (size_t i = 0; i < signatures.size(); i++)
-    {
-      master_nodes::quorum_signature const &quorum_signature = signatures[i];
-      if (enforce_vote_ordering && i < (signatures.size() - 1))
+      auto buf = tools::memcpy_le(block->prev_id.data, block->POS.round);
+      crypto::hash alpha = blake2b_hash(buf.data(), buf.size());
+      const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
       {
-        auto curr = signatures[i].voter_index;
-        auto next = signatures[i + 1].voter_index;
+        // MGINFO_GREEN("Previous block hash : " << tools::type_to_hex(block->prev_id));
+        // MGINFO_GREEN("Alpha for proof check : " << tools::type_to_hex(alpha));
+        // MGINFO_GREEN("Block height is : " << cryptonote::get_block_height(*block));
+        // MGINFO_GREEN("Block round is : " << static_cast<int>(block->POS.round));
+        // MGINFO_GREEN("Active masternode list is : " << active_mn);
+      }
 
-        if (curr >= next)
+      for(size_t i = 0; i < block->vrf_signatures.size(); i++)
+      {
+        master_nodes::quorum_vrf_signature const &quorum_vrf_signature = block->vrf_signatures[i];
+        crypto::public_key const &key = quorum_vrf_signature.pubkey;
+
+        // MGINFO_GREEN("VRF pubkey is : " << tools::type_to_hex(key));
+        // MGINFO_GREEN("VRF proof is : " << tools::type_to_hex(quorum_vrf_signature.proof));
+        // MGINFO_GREEN("VRF signature is : " << tools::type_to_hex(quorum_vrf_signature.signature));
+
+        if(!validate_proof_with_threshodl(height, key, quorum_vrf_signature.proof, alpha_bytes, active_mn))
         {
-          MGINFO("Voters in signatures are not given in ascending order, failed verification at height: " << height);
+          MGINFO("proof verification and output threshold failed");
           return false;
         }
-      }
-
-      if (!bounds_check_validator_index(quorum, quorum_signature.voter_index, nullptr))
-       return false;
-
-      if (type == quorum_type::POS)
-      {
-        if (!block)
+        
+        if (!crypto::check_signature(hash, key, quorum_vrf_signature.signature))
         {
-          MGINFO("Internal Error: Wrong type passed in any object, expected block.");
+          MGINFO("Incorrect signature for vote, failed verification at height: " << height << " for voter: " << key << "\n" << quorum);
           return false;
         }
-
-        uint16_t bit = 1 << quorum_signature.voter_index;
-        if ((block->POS.validator_bitset & bit) == 0)
-        {
-          MGINFO("Received POS signature from validator " << static_cast<int>(quorum_signature.voter_index) << " that is not participating in round " << static_cast<int>(block->POS.round));
-          return false;
-        }
-      }
-
-      crypto::public_key const &key = quorum.validators[quorum_signature.voter_index];
-      if (quorum_signature.voter_index >= unique_vote_set.size())
-      {
-        MGINFO("Internal Error: Voter Index indexes out of bounds of the vote set, index: " << quorum_signature.voter_index << "vote set size: " << unique_vote_set.size());
-        return false;
-      }
-
-      if (unique_vote_set[quorum_signature.voter_index]++)
-      {
-        MGINFO("Voter: " << tools::type_to_hex(key) << ", quorum index is duplicated: " << quorum_signature.voter_index << ", failed verification at height: " << height);
-        return false;
-      }
-
-      if (!crypto::check_signature(hash, key, quorum_signature.signature))
-      {
-        if (height == 3126052){
-          return true;
-        }
-
-        MGINFO("Incorrect signature for vote, failed verification at height: " << height << " for voter: " << key << "\n" << quorum);
-        return false;
       }
     }
+    else
+    {
+      for (size_t i = 0; i < signatures.size(); i++)
+      {
+        master_nodes::quorum_signature const &quorum_signature = signatures[i];
+        if (enforce_vote_ordering && i < (signatures.size() - 1))
+        {
+          auto curr = signatures[i].voter_index;
+          auto next = signatures[i + 1].voter_index;
+
+          if (curr >= next)
+          {
+            MGINFO("Voters in signatures are not given in ascending order, failed verification at height: " << height);
+            return false;
+          }
+        }
+
+        if (!bounds_check_validator_index(quorum, quorum_signature.voter_index, nullptr))
+        return false;
+
+        crypto::public_key const &key = quorum.validators[quorum_signature.voter_index];
+        if (quorum_signature.voter_index >= unique_vote_set.size())
+        {
+          MGINFO("Internal Error: Voter Index indexes out of bounds of the vote set, index: " << quorum_signature.voter_index << "vote set size: " << unique_vote_set.size());
+          return false;
+        }
+
+        if (unique_vote_set[quorum_signature.voter_index]++)
+        {
+          MGINFO("Voter: " << tools::type_to_hex(key) << ", quorum index is duplicated: " << quorum_signature.voter_index << ", failed verification at height: " << height);
+          return false;
+        }
+
+        if (!crypto::check_signature(hash, key, quorum_signature.signature))
+        {
+          if (height == 3126052){
+            return true;
+          }
+
+          MGINFO("Incorrect signature for vote, failed verification at height: " << height << " for voter: " << key << "\n" << quorum);
+          return false;
+        }
+      }
     }
     MGINFO_CYAN("VRF block template verification done in: " << __func__);
     return true;
