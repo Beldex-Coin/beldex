@@ -1570,6 +1570,13 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     return round_state::send_and_wait_for_vrf_proofs;
   }
 
+  const auto curr_height = blockchain.get_current_blockchain_height(true /*lock*/);
+  if (context.wait_for_next_block.height != curr_height)
+  {
+    MTRACE(log_prefix(context) << "Block height changed whilst waiting for round " << +context.prepare_for_round.round << ", restarting POS stages");
+    return goto_wait_for_next_block_and_clear_round_data(context);
+  }
+
   // MGINFO_GREEN(log_prefix(context) << "Processing the vrf proofs:" << context.wait_for_next_block.height);
   bool process_vrf = true;
   
@@ -1698,7 +1705,7 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
     // verify with threshold
     auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
     double W = static_cast<double>(activeList.size());
-    double tau = W * 80 / 100.0;
+    double tau = W * ((context.wait_for_next_block.height >= 120)? 30 : 80) / 100.0;
 
     bool isValid = verify_vrf_output_with_threshold(output, tau, W);
     if(!isValid)
@@ -1880,7 +1887,7 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
       // verify with threshold
       auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
       double W = static_cast<double>(activeList.size());
-      double tau = W * 80 / 100.0;
+      double tau = W * ((context.wait_for_next_block.height >= 120)? 30 : 80) / 100.0;
       
       // Get output for the current worker
       unsigned char curr_worker_pk[32];
@@ -2010,7 +2017,7 @@ round_state send_vrf_signed_blocks(round_context &context, master_nodes::master_
 
     // verify with threshold
     double W = static_cast<double>(active_mn);
-    double tau = W * 80 / 100.0;
+    double tau = W * ((context.wait_for_next_block.height >= 120)? 30 : 80) / 100.0;
 
     bool isValid = verify_vrf_output_with_threshold(output, tau, W);
     if(!isValid)

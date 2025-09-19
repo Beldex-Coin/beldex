@@ -271,7 +271,7 @@ namespace master_nodes
 
     // // verify with threshold
     double W = static_cast<double>(active_mn);
-    double tau = W * 80 / 100.0;
+    double tau = W * ((height >= 120)? 30 : 80) / 100.0;
 
     bool isValid = verify_vrf_output_with_threshold(output, tau, W);
     if(!isValid)
@@ -286,7 +286,6 @@ namespace master_nodes
 
   bool verify_quorum_signatures(master_nodes::quorum const &quorum, master_nodes::quorum_type type, hf hf_version, uint64_t height, crypto::hash const &hash, std::vector<quorum_signature> const &signatures, const cryptonote::block* block, int active_mn)
   {
-    MGINFO_CYAN("VRF block template called in : " << __func__);
     bool enforce_vote_ordering                          = true;
     constexpr size_t MAX_QUORUM_SIZE                    = std::max(CHECKPOINT_QUORUM_SIZE, POS_QUORUM_NUM_VALIDATORS);
     std::array<size_t, MAX_QUORUM_SIZE> unique_vote_set = {};

@@ -1302,7 +1302,6 @@ namespace master_nodes
                                       std::shared_ptr<const quorum> POS_quorum,
                                       std::vector<std::shared_ptr<const quorum>> &alt_POS_quorums, int active_mn)
   {
-    MGINFO_CYAN("VRF block template called in : " << __func__);
     std::string_view block_type = alt_block ? "alt block "sv : "block "sv;
     uint64_t height             = cryptonote::get_block_height(block);
     crypto::hash hash           = cryptonote::get_block_hash(block);
@@ -1485,7 +1484,6 @@ namespace master_nodes
 
   void master_node_list::verify_block(const cryptonote::block &block, bool alt_block, cryptonote::checkpoint_t const *checkpoint)
   {
-    MGINFO_CYAN("VRF block template called in : " << __func__);
     if (block.major_version < hf::hf9_master_nodes)
       return;
 

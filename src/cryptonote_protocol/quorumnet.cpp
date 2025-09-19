@@ -1695,6 +1695,12 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
     auto destinations = peer_prepare_relay_to_quorum_subset(qnet.core, &quorum_ptr, &quorum_ptr + 1, quorum.validators.size() /*num_peers*/);
     peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
   }
+  else if (msg.type == POS::message_type::vrf_block_template && msg.type == POS::message_type::vrf_signed_block && quorum.validators.size() > 20)
+  {
+    master_nodes::quorum const *quorum_ptr = &quorum;
+    auto destinations = peer_prepare_relay_to_quorum_subset(qnet.core, &quorum_ptr, &quorum_ptr + 1, 4 /*num_peers*/);
+    peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
+  }
   else
   {
     // MGINFO_MAGENTA("POS pear list creation start...: "<< command);
