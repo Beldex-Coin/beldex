@@ -80,7 +80,7 @@ inline constexpr uint64_t LOCKED_TX_ALLOWED_DELTA_BLOCKS       = 1;
         #define DIFFICULTY_TARGET_V2                            120  // seconds
         #define DIFFICULTY_TARGET_V1                            60  // seconds - before first fork
 
-inline constexpr auto TARGET_BLOCK_TIME     = 1min;
+inline constexpr auto TARGET_BLOCK_TIME     = 30s;
 inline constexpr uint64_t BLOCKS_PER_HOUR   = 1h / TARGET_BLOCK_TIME;
 inline constexpr uint64_t BLOCKS_PER_DAY    = 24h / TARGET_BLOCK_TIME;
 

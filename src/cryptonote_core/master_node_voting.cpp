@@ -271,7 +271,7 @@ namespace master_nodes
 
     // // verify with threshold
     double W = static_cast<double>(active_mn);
-    double tau = W * ((height >= 120)? 30 : 80) / 100.0;
+    double tau = 9.0;
 
     bool isValid = verify_vrf_output_with_threshold(output, tau, W);
     if(!isValid)

@@ -87,6 +87,7 @@
         "print": "cpp",
         "queue": "cpp",
         "stack": "cpp",
-        "math.h": "c"
+        "math.h": "c",
+        "span": "cpp"
     }
 }
