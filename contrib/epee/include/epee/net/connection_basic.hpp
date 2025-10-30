@@ -52,6 +52,12 @@
 #include "byte_slice.h"
 #include "net/net_utils_base.h"
 #include "net/net_ssl.h"
+#if BOOST_VERSION >= 108700
+namespace boost::asio {
+  using io_service = io_context;
+}
+#endif
+
 #include "../shared_sv.h"
 
 namespace epee
@@ -149,7 +155,6 @@ class connection_basic { // not-templated base class for rapid developmet of som
 
 		// handlers and sleep
 		void sleep_before_packet(size_t packet_size, int phase, int q_len); // execute a sleep ; phase is not really used now(?)
-		static void save_limit_to_file(int limit); ///< for dr-monero
 		static double get_sleep_time(size_t cb);
 };
 

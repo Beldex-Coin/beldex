@@ -70,9 +70,11 @@ target_link_libraries(epee
   PUBLIC
     easylogging
     oxenmq::oxenmq
+    oxenc::oxenc
+    OpenSSL::SSL
+    OpenSSL::Crypto
   PRIVATE
     filesystem
     Boost::thread
-    OpenSSL::SSL
-    OpenSSL::Crypto
+    date::date
     extra)

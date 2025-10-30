@@ -27,6 +27,7 @@
 #pragma once 
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include "../misc_log_ex.h"

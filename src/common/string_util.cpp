@@ -97,8 +97,8 @@ std::string friendly_duration(std::chrono::nanoseconds dur) {
     dur %= 1min;
     some = true;
   }
-  if (some) {
-    // If we have >= minutes then don't bother with fractional seconds
+  if (some || dur == 0s) {
+    // If we have >= minutes or its exactly 0 seconds then don't bother with fractional seconds
     os << dur / 1s << 's';
   } else {
     double seconds = std::chrono::duration<double>(dur).count();

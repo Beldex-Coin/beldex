@@ -63,6 +63,4 @@ if(DEVICE_TREZOR_READY)
 
 else()
     message(STATUS "Trezor support disabled")
-    add_library(device_trezor device_trezor.cpp)
-    target_link_libraries(device_trezor PRIVATE cncrypto common)
 endif()

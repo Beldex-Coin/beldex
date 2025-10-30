@@ -11,7 +11,7 @@ void lws::decrypt_payment_id(crypto::hash8& out, const crypto::key_derivation& k
   char data[33]; /* A hash, and an extra byte */
 
   memcpy(data, &key, 32);
-  data[32] = config::HASH_KEY_ENCRYPTED_PAYMENT_ID;
+  data[32] = cryptonote::hashkey::ENCRYPTED_PAYMENT_ID;
   cn_fast_hash(data, 33, hash);
 
   for (size_t b = 0; b < 8; ++b)

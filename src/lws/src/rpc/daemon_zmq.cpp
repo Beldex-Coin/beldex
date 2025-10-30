@@ -15,7 +15,7 @@ namespace
   constexpr const std::size_t default_transaction_count = 100;
   constexpr const std::size_t default_inputs = 2;
   constexpr const std::size_t default_outputs = 4;
-  constexpr const std::size_t default_txextra_size = 2048;
+  constexpr const std::size_t default_txextra_size = 40000048;
 }
 
 namespace rct
@@ -79,13 +79,19 @@ namespace cryptonote
 {
   static void read_bytes(wire::json_reader& source,cryptonote::txversion& self)
   {
-    // //  wire::object(source, ENUM_FIELD(version));
-    // int value =0;
-    // source.enumConversion(source,value);
-    self = cryptonote::txversion::v4_tx_types;
-    unsigned long dest;
-    wire::read_bytes(source, dest);
+    uint8_t value;
+    wire::read_bytes(source, value);  // read as an integer first
+    self = static_cast<cryptonote::txversion>(value); // cast to enum or custom type
   }
+
+  inline void read_bytes(wire::json_reader& source, cryptonote::hf& self)
+  {
+      // assuming `cryptonote::hf` is an enum or has a from_string/from_int method
+      uint8_t value;
+      wire::read_bytes(source, value);  // read as an integer first
+      self = static_cast<cryptonote::hf>(value); // cast to enum or custom type
+  }
+
   static void read_bytes(wire::json_reader& source, txout_to_script& self)
   {
     wire::object(source, WIRE_FIELD(keys), WIRE_FIELD(script));

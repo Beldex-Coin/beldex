@@ -5,3 +5,4 @@ add_library(beldex-lws-wire ${beldex-lws-wire_sources} ${beldex-lws-wire_headers
 target_link_libraries(beldex-lws-wire PRIVATE beldex-lws-db)
 
 add_subdirectory(json)
+add_subdirectory(msgpack)

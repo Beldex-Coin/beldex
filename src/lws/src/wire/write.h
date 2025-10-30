@@ -20,6 +20,8 @@ namespace wire
 
     virtual ~writer() noexcept;
 
+    virtual void boolean(bool) = 0;
+
     virtual void integer(int) = 0;
     virtual void integer(std::intmax_t) = 0;
 
@@ -31,7 +33,6 @@ namespace wire
     virtual void string(boost::string_ref) = 0;
     virtual void binary(epee::span<const std::uint8_t> bytes) = 0;
 
-    virtual void enumeration(std::size_t index, epee::span<char const* const> enums) = 0;
 
     virtual void start_array(std::size_t) = 0;
     virtual void end_array() = 0;
@@ -50,6 +51,11 @@ namespace wire
   };
 
   // leave in header, compiler can de-virtualize when final type is given
+
+  inline void write_bytes(writer& dest, const bool source)
+  {
+    dest.boolean(source);
+  }
 
   inline void write_bytes(writer& dest, const int source)
   {
@@ -108,11 +114,15 @@ namespace wire_write
       declared after these functions. */
 
   template<typename W, typename T>
-  inline epee::byte_slice to_bytes(const T& value)
+  inline epee::byte_slice to_bytes(W&& dest, const T& value)
   {
-    W dest{};
     write_bytes(dest, value);
     return dest.take_bytes();
+  }
+  template<typename W, typename T>
+  inline epee::byte_slice to_bytes(const T& value)
+  {
+    return wire_write::to_bytes(W{}, value);
   }
 
   template<typename W, typename T, typename F = wire::identity_>
@@ -128,20 +138,21 @@ namespace wire_write
     dest.end_array();
   }
 
-  template<typename W, typename T>
-  inline bool field(W& dest, const wire::field_<T, true> elem)
+  template<typename W, typename T, unsigned I>
+  inline bool field(W& dest, const wire::field_<T, true, I> elem)
   {
-    dest.key(0, elem.name);
+    dest.key(I, elem.name);
     write_bytes(dest, elem.get_value());
     return true;
   }
 
-  template<typename W, typename T>
-  inline bool field(W& dest, const wire::field_<T, false> elem)
+
+  template<typename W, typename T, unsigned I>
+  inline bool field(W& dest, const wire::field_<T, false, I> elem)
   {
     if (bool(elem.get_value()))
     {
-      dest.key(0, elem.name);
+      dest.key(I, elem.name);
       write_bytes(dest, *elem.get_value());
     }
     return true;

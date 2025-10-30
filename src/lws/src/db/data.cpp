@@ -86,7 +86,7 @@ namespace db
     const bool coinbase = (unpacked.first & lws::db::coinbase_output);
     const bool rct = (unpacked.first & lws::db::ringct_output);
 
-    const auto rct_mask = rct ? std::addressof(self.ringct_mask) : nullptr;
+    const auto rct_mask = std::addressof(self.ringct_mask);
 
     epee::span<const std::uint8_t> payment_bytes{};
     if (unpacked.second == 32)
@@ -105,6 +105,7 @@ namespace db
       wire::field("timestamp", self.timestamp),
       wire::field("tx_hash", std::cref(self.link.tx_hash)),
       wire::field("tx_prefix_hash", std::cref(self.tx_prefix_hash)),
+      wire::field("locked_key_image", std::cref(self.locked_key_image)),
       wire::field("tx_public", std::cref(self.spend_meta.tx_public)),
       wire::optional_field("rct_mask", rct_mask),
       wire::optional_field("payment_id", payment_id),

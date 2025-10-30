@@ -97,11 +97,11 @@ release: cmake-release
 
 release-test:
 	mkdir -p $(builddir)/release
-	cd $(builddir)/release && cmake -D BUILD_TESTS=ON -D CMAKE_BUILD_TYPE=Release $(topdir) && $(MAKE) && $(MAKE) test
+	cd $(builddir)/release && cmake -D BUILD_TESTS=ON -D USE_LTO=OFF -D RANDOMX_ENABLE_JIT=OFF -D CMAKE_BUILD_TYPE=Release $(topdir) && $(MAKE) && $(MAKE) test
 
 release-all:
 	mkdir -p $(builddir)/release
-	cd $(builddir)/release && cmake -D BUILD_TESTS=OFF -D CMAKE_BUILD_TYPE=Release $(topdir) && $(MAKE)
+	cd $(builddir)/release && cmake -D BUILD_TESTS=OFF -DUSE_LTO=OFF -DRANDOMX_ENABLE_JIT=OFF -D CMAKE_BUILD_TYPE=Release $(topdir) && $(MAKE)
 
 release-static:
 	mkdir -p $(builddir)/release
@@ -109,7 +109,7 @@ release-static:
 
 release-full-static:
 	mkdir -p $(builddir)/release-static
-	cd $(builddir)/release-static && cmake -DBUILD_STATIC_DEPS=ON -DCMAKE_BUILD_TYPE=Release $(topdir) && $(MAKE)
+	cd $(builddir)/release-static && cmake -DBUILD_STATIC_DEPS=ON -DUSE_LTO=OFF -DRANDOMX_ENABLE_JIT=OFF -DCMAKE_BUILD_TYPE=Release $(topdir) && $(MAKE)
 
 release-full-static-archive: release-full-static
 	cd $(builddir)/release-static && $(MAKE) strip_binaries && $(MAKE) create_archive

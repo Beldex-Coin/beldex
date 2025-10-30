@@ -163,11 +163,13 @@ namespace epee
     {
       static_assert(Size > 0, "cannot deserialize empty std::array");
       size_t next_i = 0;
-      for (auto [it, end] = stg.template converting_array_range<T>(pname, parent_section); it != end; ++it) {
-        CHECK_AND_ASSERT_MES(next_i < array.size(), false, "too many values to deserialize into fixed size std::array");
-        array[next_i++] = *it;
-      }
-      CHECK_AND_ASSERT_MES(next_i == array.size(), false, "not enough values to deserialize into fixed size std::array");
+      try {
+        for (auto [it, end] = stg.template converting_array_range<T>(pname, parent_section); it != end; ++it) {
+          CHECK_AND_ASSERT_MES(next_i < array.size(), false, "too many values to deserialize into fixed size std::array");
+          array[next_i++] = *it;
+        }
+        CHECK_AND_ASSERT_MES(next_i == array.size(), false, "not enough values to deserialize into fixed size std::array");
+      } catch (const std::out_of_range&) { return false; }
       return true;
     }
     //--------------------------------------------------------------------------------------------------------------------

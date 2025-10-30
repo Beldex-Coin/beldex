@@ -1501,13 +1501,13 @@
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2288"/>
-        <source>Monero protects your privacy on the blockchain, and while Monero strives to improve all the time,</source>
+        <source>Monero protects your confidentiality on the blockchain, and while Monero strives to improve all the time,</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2289"/>
-        <source>no privacy technology can be 100% perfect, Monero included.</source>
-        <translation>nessuna tecnologia per la privacy può essere perfetta al 100%, incluso Monero.</translation>
+        <source>no confidential computing technology can be 100% perfect, Monero included.</source>
+        <translation>nessuna tecnologia per la confidentiality può essere perfetta al 100%, incluso Monero.</translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2290"/>
@@ -1521,7 +1521,7 @@
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2292"/>
-        <source>of the layers of privacy Monero provides. Be safe and practice defense in depth.</source>
+        <source>of the layers of confidentiality Monero provides. Be safe and practice defense in depth.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2322,7 +2322,7 @@ Avviso: alcune chiavi di input spese vengono da </translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="6144"/>
-        <source>Transaction spends more than one very old output. Privacy would be better if they were sent separately.</source>
+        <source>Transaction spends more than one very old output. Confidentiality would be better if they were sent separately.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2840,7 +2840,7 @@ This transaction (including %s change) will unlock on block %llu, in approximate
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2294"/>
-        <source>Welcome to Monero and financial privacy. For more information see https://GetMonero.org</source>
+        <source>Welcome to Monero and financial confidentiality. For more information see https://GetMonero.org</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2862,8 +2862,8 @@ This transaction (including %s change) will unlock on block %llu, in approximate
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2462"/>
         <location filename="../src/simplewallet/simplewallet.cpp" line="6573"/>
-        <source>WARNING: this is a non default ring size, which may harm your privacy. Default is recommended.</source>
-        <translation>ATTENZIONE: impostazione dell&apos;anello non default, la tua privacy potrebbe essere compromessa. Si consiglia di utilizzare l&apos;impostazione predefinita</translation>
+        <source>WARNING: this is a non default ring size, which may harm your confidentiality. Default is recommended.</source>
+        <translation>ATTENZIONE: impostazione dell&apos;anello non default, la tua confidentiality potrebbe essere compromessa. Si consiglia di utilizzare l&apos;impostazione predefinita</translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2458"/>
@@ -3632,7 +3632,7 @@ Key Image, &quot;absolute&quot;, list of rings</source>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="4496"/>
-        <source>Using a third party daemon can be detrimental to your security and privacy</source>
+        <source>Using a third party daemon can be detrimental to your security and confidentiality</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -3657,8 +3657,8 @@ Key Image, &quot;absolute&quot;, list of rings</source>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="4512"/>
-        <source>Failed to initialize ring database: privacy enhancing features will be inactive</source>
-        <translation>Impossibile inizializzare il database degli anelli: le funzionalità di miglioramento della privacy non saranno attive</translation>
+        <source>Failed to initialize ring database: confidentiality enhancing features will be inactive</source>
+        <translation>Impossibile inizializzare il database degli anelli: le funzionalità di miglioramento della confidentiality non saranno attive</translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="4614"/>
@@ -4488,7 +4488,7 @@ Transaction </source>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="6531"/>
         <location filename="../src/simplewallet/simplewallet.cpp" line="7006"/>
-        <source>WARNING: Outputs of multiple addresses are being used together, which might potentially compromise your privacy.
+        <source>WARNING: Outputs of multiple addresses are being used together, which might potentially compromise your confidentiality.
 </source>
         <translation type="unfinished"></translation>
     </message>
@@ -5681,7 +5681,7 @@ Use &quot;mms note&quot; to display the waiting notes</source>
         <location filename="../src/simplewallet/simplewallet.cpp" line="10137"/>
         <source>This is the command line monero wallet. It needs to connect to a monero
 daemon to work correctly.
-WARNING: Do not reuse your Monero keys on another fork, UNLESS this fork has key reuse mitigations built in. Doing so will harm your privacy.</source>
+WARNING: Do not reuse your Monero keys on another fork, UNLESS this fork has key reuse mitigations built in. Doing so will harm your confidentiality.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

@@ -14,7 +14,7 @@
 #include <utility>
 #include <fstream>
 
-#include "common/error.h"   
+#include "common/error.h"
 #include "common/hex.h"                          // monero/src
 #include "crypto/crypto.h"                       // monero/src
 #include "crypto/wallet/crypto.h"                     // monero/src
@@ -31,13 +31,18 @@
 #include "rpc/json.h"
 #include "wire/json/read.h"
 #include "lmdb/util.h"
+#include "wallet/node_rpc_proxy.h"
+#include "wallet/wallet2.h"
+
+// #include "common/types.h"
+#include "rpc/core_rpc_server_commands_defs.h"
 
 namespace lws
 {
-    std::atomic<bool> scanner::running{true};
+  std::atomic<bool> scanner::running{true};
 
-   namespace
-   {
+  namespace
+  {
     constexpr const std::chrono::seconds account_poll_interval{10};
     constexpr const std::chrono::minutes block_rpc_timeout{2};
     constexpr const std::chrono::seconds send_timeout{30};
@@ -52,14 +57,14 @@ namespace lws
     struct thread_data
     {
       explicit thread_data(db::storage disk, std::vector<lws::account> users)
-        : disk(std::move(disk)), users(std::move(users))
+          : disk(std::move(disk)), users(std::move(users))
       {}
 
       // rpc::client client;
       db::storage disk;
       std::vector<lws::account> users;
     };
-    
+
     // until we have a signal-handler safe notification system
     void checked_wait(const std::chrono::nanoseconds wait)
     {
@@ -85,13 +90,15 @@ namespace lws
     };
 
     void scan_transaction(
-      epee::span<lws::account> users,
-      const db::block_id height,
-      const std::uint64_t timestamp,
+        epee::span<lws::account> users,
+        const db::block_id height,
+        const std::uint64_t timestamp,
       crypto::hash const& tx_hash,
       cryptonote::transaction const& tx,
       std::vector<std::uint64_t> const& out_ids)
     {
+      boost::optional<crypto::key_image> locked_key_image;
+
       if (cryptonote::txversion::v4_tx_types < tx.version)
         throw std::runtime_error{"Unsupported tx version"};
 
@@ -99,11 +106,10 @@ namespace lws
       boost::optional<crypto::hash> prefix_hash;
       boost::optional<cryptonote::tx_extra_nonce> extra_nonce;
       std::pair<std::uint8_t, db::output::payment_id_> payment_id;
-      // std::cout <<"tx_hash : " << tx.hash << std::endl;
+
       {
         std::vector<cryptonote::tx_extra_field> extra;
         cryptonote::parse_tx_extra(tx.extra, extra);
-        // allow partial parsing of tx extra (similar to wallet2.cpp)
 
         size_t pk_index = 0;
         while(true)
@@ -115,7 +121,6 @@ namespace lws
           }
         }
 
-        // std::cout << "key : " << key << std::endl;
         extra_nonce.emplace();
         if (cryptonote::find_tx_extra_field_by_type(extra, *extra_nonce))
         {
@@ -126,7 +131,19 @@ namespace lws
           extra_nonce = boost::none;
       } // destruct `extra` vector
 
-      for (account& user : users)
+      {
+
+        cryptonote::tx_extra_tx_key_image_proofs key_image_proofs;
+        get_field_from_tx_extra(tx.extra, key_image_proofs);
+
+        if (!key_image_proofs.proofs.empty())
+        {
+          // Assign the key_image from the first proof to locked_key_image
+          locked_key_image = key_image_proofs.proofs.front().key_image;
+        }
+      }
+
+      for (account &user : users)
       {
         // std::cout << "entered in users " << std::endl;
         if (height <= user.scan_height())
@@ -142,7 +159,7 @@ namespace lws
         {
           // std::cout << "entered in vin " << std::endl;
           cryptonote::txin_to_key const* const in_data =
-            std::get_if<cryptonote::txin_to_key>(std::addressof(in));
+              std::get_if<cryptonote::txin_to_key>(std::addressof(in));
           if (in_data)
           {
             mixin = boost::numeric_cast<std::uint32_t>(
@@ -156,15 +173,15 @@ namespace lws
               if (user.has_spendable(db::output_id{in_data->amount, goffset}))
               {
                 user.add_spend(
-                  db::spend{
-                    db::transaction_link{height, tx_hash},
-                    in_data->k_image,
-                    db::output_id{in_data->amount, goffset},
-                    timestamp,
-                    tx.unlock_time,
-                    mixin,
-                    {0, 0, 0}, // reserved
-                    payment_id.first,
+                    db::spend{
+                        db::transaction_link{height, tx_hash},
+                        in_data->k_image,
+                        db::output_id{in_data->amount, goffset},
+                        timestamp,
+                        tx.unlock_time,
+                        mixin,
+                        {0, 0, 0}, // reserved
+                        payment_id.first,
                     payment_id.second.long_
                   }
                 );
@@ -182,14 +199,14 @@ namespace lws
           ++index;
 
           cryptonote::txout_to_key const* const out_data =
-            std::get_if<cryptonote::txout_to_key>(std::addressof(out.target));
+              std::get_if<cryptonote::txout_to_key>(std::addressof(out.target));
           if (!out_data)
             continue; // to next output
 
           crypto::public_key derived_pub;
           const bool received =
-            crypto::wallet::derive_subaddress_public_key(out_data->key, derived, index, derived_pub) &&
-            derived_pub == user.spend_public();
+              crypto::wallet::derive_subaddress_public_key(out_data->key, derived, index, derived_pub) &&
+              derived_pub == user.spend_public();
 
           if (!received)
             continue; // to next output
@@ -199,16 +216,13 @@ namespace lws
             prefix_hash.emplace();
             cryptonote::get_transaction_prefix_hash(tx, *prefix_hash);
           }
-            // std::cout <<"--------------------------"<< std::endl;
-            // std::cout << "height : " << (uint64_t)user.scan_height() << std::endl;
-            // std::cout << "derived_pub : " << derived_pub << std::endl;
-            // std::cout << "user.spend_public() : " <<  user.spend_public() << std::endl;
+
           std::uint64_t amount = out.amount;
-          // std::cout << "tx.version : " << tx.version << std::endl;
+          
           rct::key mask = rct::identity();
           if (!amount && !(ext & db::coinbase_output) && cryptonote::txversion::v1 < tx.version)
           {
-            // const bool bulletproof2 = (rct::RCTType::Bulletproof2 <= tx.rct_signatures.type);
+            
             const bool bulletproof2 = true;
             const auto decrypted = lws::decode_amount(
               tx.rct_signatures.outPk.at(index).mask, tx.rct_signatures.ecdhInfo.at(index), derived, index, bulletproof2
@@ -234,23 +248,24 @@ namespace lws
           }
 
           const bool added = user.add_out(
-            db::output{
-              db::transaction_link{height, tx_hash},
-              db::output::spend_meta_{
-                db::output_id{out.amount, out_ids.at(index)},
-                amount,
-                mixin,
-                boost::numeric_cast<std::uint32_t>(index),
+              db::output{
+                  db::transaction_link{height, tx_hash},
+                  db::output::spend_meta_{
+                      db::output_id{0, out_ids.at(index)},
+                      amount,
+                      mixin,
+                      boost::numeric_cast<std::uint32_t>(index),
                 key.pub_key
               },
-              timestamp,
-              tx.unlock_time,
-              *prefix_hash,
-              out_data->key,
-              mask,
-              {0, 0, 0, 0, 0, 0, 0}, // reserved bytes
-              db::pack(ext, payment_id.first),
-              payment_id.second
+                  timestamp,
+                  tx.unlock_time,
+                  *prefix_hash,
+                  locked_key_image ? *locked_key_image : crypto::key_image{},
+                  out_data->key,
+                  mask,
+                  {0, 0, 0, 0, 0, 0, 0}, // reserved bytes
+                  db::pack(ext, payment_id.first),
+                  payment_id.second
             }
           );
 
@@ -286,14 +301,14 @@ namespace lws
 
         // RPC server assumes that `start_height == 0` means use
         // block ids. This technically skips genesis block.
-      //   cryptonote::rpc::GetBlocksFast::Request req{};
-      //   req.start_height = std::uint64_t(users.begin()->scan_height());
+        //   cryptonote::rpc::GetBlocksFast::Request req{};
+        //   req.start_height = std::uint64_t(users.begin()->scan_height());
         auto start_height = std::uint64_t(users.begin()->scan_height());
-      //   req.start_height = std::max(std::uint64_t(1), req.start_height);
+        //   req.start_height = std::max(std::uint64_t(1), req.start_height);
         start_height = std::max(std::uint64_t(1), start_height);
-      //   epee::byte_slice block_request = rpc::client::make_message("get_blocks_fast", req);
-      //   if (!send(client, block_request.clone()))
-      //     return;
+        //   epee::byte_slice block_request = rpc::client::make_message("get_blocks_fast", req);
+        //   if (!send(client, block_request.clone()))
+        //     return;
 
         std::vector<crypto::hash> blockchain{};
         json details;
@@ -301,13 +316,13 @@ namespace lws
         {
           blockchain.clear();
 
-      //     auto resp = client.get_message(block_rpc_timeout);
+          //     auto resp = client.get_message(block_rpc_timeout);
 
           // m_LMQ->request(c, "rpc.get_blocks_fast", [&details,&start_height](bool s, auto data) {
           // if (s == 1 && data[0] == "200"){
           //   // std::cout << "get_blocks data : " << data[1] << "\n";
           //   json jf= json::parse(data[1]);
-          //   details =jf;    
+          //   details =jf;
           // }
           // else
           //   std::cout << "Timeout fetching master nodes list data!";
@@ -317,9 +332,10 @@ namespace lws
             {"jsonrpc","2.0"},
             {"id","0"},
             {"method","get_blocks_fast"},
-            {"params",{{"start_height",std::to_string(start_height)}}}
+            {"params",{{"start_height",start_height}}}
           };
-           auto response = cpr::Post(cpr::Url{daemon_rpc},
+
+          auto response = cpr::Post(cpr::Url{daemon_rpc},
                                     cpr::Body{block_fast.dump()},
                                     cpr::Header{ { "Content-Type", "application/json" }});
 
@@ -334,6 +350,26 @@ namespace lws
           {
             throw std::runtime_error{"Daemon unexpectedly returned zero blocks and status failed"};
           }
+
+          // parsing block details
+          json minorTxHashes = details["minor_tx_hashes"];
+          // std::cout<<"details  :: "<<details["minor_tx_hashes"]<<std::endl;
+          details.erase("minor_tx_hashes");
+
+          std::map<uint, crypto::hash> heightWithHash;
+          for (const auto& it : minorTxHashes)
+          {
+            if (it.is_array() && it.size() == 2) {
+              uint height = it[0].get<uint>();
+              std::string mHash = it[1].get<std::string>();
+              crypto::hash minorHash;
+              tools::hex_to_type(mHash, minorHash);
+              heightWithHash[height] = minorHash;
+            } else {
+              throw std::runtime_error("Invalid format in minor_tx_hashes entry");
+            }
+          }
+
           // parse the string format in_to json formate
           std::string out_indices = details["output_indices"];
           details["output_indices"] = json::parse(out_indices);
@@ -352,38 +388,38 @@ namespace lws
             for(auto data :t["block"]["tx_hashes"])
             {
                 if(!data.is_null())
-                {
-                  tx_hash[tx_num] = data;
-                }
-                tx_num++;
+              {
+                tx_hash[tx_num] = data;
+              }
+              tx_num++;
             }
             t["block"]["tx_hashes"] = tx_hash;
             // std::cout << " t.size() : " << t["transactions"].size() << std::endl;
             // std::string it_tx = t["transactions"];    // its in array
             for(auto & data :t["transactions"])
             {
-                // std::cout <<"transaction parsing" << std::endl;
-                std::string it = data;
-                data = json::parse(it);  
-                //  std::string ringct_ch = data["ringct"] ;
+              // std::cout <<"transaction parsing" << std::endl;
+              std::string it = data;
+              data = json::parse(it);
+              //  std::string ringct_ch = data["ringct"] ;
                 if(!data.empty())
-                {
+              {
                   for(auto &it : data["rct_signatures"]["ecdhInfo"])
-                  {
-                      it["mask"] = "0000000000000000000000000000000000000000000000000000000000000000";
+                {
+                  it["mask"] = "0000000000000000000000000000000000000000000000000000000000000000";
                       std::string s1=it["amount"];
                       if (s1.length()!=64)
-                      {
+                  {
                       s1 = s1+"000000000000000000000000000000000000000000000000";
                       it["amount"]= s1;
-                      }
+                  }
 
-                  }
-                  if(data["rct_signatures"].is_null())
-                  {
-                    data["rct_signatures"] = json::value_t::object;
-                  }
                 }
+                  if(data["rct_signatures"].is_null())
+                {
+                  data["rct_signatures"] = json::value_t::object;
+                }
+              }
             }
             // std::cout << "block_transaction_size() : " << t["block"]["tx_hashes"].size() << std::endl;
             // std::cout << "t[transactions].size() : " << t["transactions"].size() << std::endl;
@@ -393,20 +429,20 @@ namespace lws
               t["block"]["tx_hashes"] = json::array();
             }
             if(t["transactions"].size() != (details["output_indices"][ch].size()-1))
-            {   
+            {
               int let = 0;
-              json indis;  
+              json indis;
               for(auto &it :details["output_indices"][ch])
               {
                 // std::cout << "let:" <<let<< std::endl;
                if(it.empty())
-               {
-                //  std::cout << "inside 2";
-               }
-               else
-               {
-                 indis.push_back(it);
-               }
+                {
+                  //  std::cout << "inside 2";
+                }
+                else
+                {
+                  indis.push_back(it);
+                }
                 let++;
               }
               details["output_indices"][ch]= indis;
@@ -420,11 +456,6 @@ namespace lws
           // final_res["result"].erase("status");
           // final_res["result"].erase("untrusted");
           std::string resp = final_res.dump();
-          // std::cout << resp << std::endl;
-          // std::ifstream people_file("/home/blockhash/Downloads/monero.json", std::ifstream::binary);
-          // people_file >> final_res;
-          // resp = final_res.dump();
-          // std::cout << "resp : " <<  final_res << std::endl;
 
           auto fetched = MONERO_UNWRAP(wire::json::from_bytes<rpc::json<rpc::get_blocks_fast>::response>(std::move(resp)));
 
@@ -446,24 +477,11 @@ namespace lws
             // synced to top of chain, wait for next blocks
             std::this_thread::sleep_for(10s);
             continue; // to next get_blocks_fast read
-      //       for (;;)
-      //       {
-      //         const expect<rpc::minimal_chain_pub> new_block = client.wait_for_block();
-      //         if (new_block.matches(std::errc::interrupted))
-      //           return;
-      //         if (!new_block || is_new_block(disk, users.front(), *new_block))
-      //           break;
-      //       }
-
-      //       // request next chunk of blocks
-      //       if (!send(client, block_request.clone()))
-      //         return;
-      //       continue; 
           }
 
           // request next chunk of blocks
-      //     if (!send(client, block_request.clone()))
-      //       return;
+          //     if (!send(client, block_request.clone()))
+          //       return;
 
           if (fetched.result.blocks.size() != fetched.result.output_indices.size())
             throw std::runtime_error{"Bad daemon response - need same number of blocks and indices"};
@@ -509,11 +527,11 @@ namespace lws
               throw std::runtime_error{"Failed to calculate miner tx hash"};
 
             scan_transaction(
-              epee::to_mut_span(users),
-              db::block_id(fetched.result.start_height),
-              block.timestamp,
-              miner_tx_hash,
-              block.miner_tx,
+                epee::to_mut_span(users),
+                db::block_id(fetched.result.start_height),
+                block.timestamp,
+                heightWithHash[fetched.result.start_height],
+                block.miner_tx,
               *(indices.begin())
             );
 
@@ -528,7 +546,7 @@ namespace lws
             {
               std::vector<std::uint64_t> const& out_ids_ch = boost::get<2>(tx_data);
               // std::cout << "indices.size() : " << out_ids_ch.size() << std::endl;
-                scan_transaction(
+              scan_transaction(
                   epee::to_mut_span(users),
                   db::block_id(fetched.result.start_height),
                   block.timestamp,
@@ -569,8 +587,8 @@ namespace lws
 
           for (account& user : users)
             user.updated(db::block_id(fetched.result.start_height));
-            // std::this_thread::sleep_for(10s);
-            // break; // loops are enabled for make a continuous connection
+          // std::this_thread::sleep_for(10s);
+          // break; // loops are enabled for make a continuous connection
         }
       }
       catch (std::exception const& e)
@@ -632,7 +650,7 @@ namespace lws
       */
 
       boost::thread::attributes attrs;
-      attrs.set_stack_size(THREAD_STACK_SIZE);
+      attrs.set_stack_size(5 * 1024 * 1024);
 
       threads.reserve(thread_count);
       std::sort(users.begin(), users.end(), by_height{});  //users are sorted by their scan height
@@ -648,8 +666,8 @@ namespace lws
         };
         users.erase(users.end() - count, users.end());
 
-      //   rpc::client client = MONERO_UNWRAP(ctx.connect());
-      //   client.watch_scan_signals();
+        //   rpc::client client = MONERO_UNWRAP(ctx.connect());
+        //   client.watch_scan_signals();
         //  std::cout << "entered in to the users thereads\n";
         auto data = std::make_shared<thread_data>(disk.clone(), std::move(thread_users));
         threads.emplace_back(attrs, std::bind(&scan_loop, std::ref(self),daemon_rpc,std::move(data)));
@@ -672,7 +690,7 @@ namespace lws
 
       while (scanner::is_running())
       {
-      //   update_rates(ctx);
+        //   update_rates(ctx);
 
         for (;;)
         {
@@ -726,90 +744,92 @@ namespace lws
 
    }//anonymous
     void scanner::sync(db::storage disk,std::string daemon_rpc)
+  {
+    MINFO("Starting blockchain sync with daemon");
+    try
     {
-      MINFO("Starting blockchain sync with daemon");
-      try
-      {
-        json details;
+      json details;
         int a =0;
-        std::vector<crypto::hash> blk_ids;
+      std::vector<crypto::hash> blk_ids;
 
+      {
+        auto reader = disk.start_read();
+        if (!reader)
         {
-          auto reader = disk.start_read();
-          if (!reader)
-          {
-            // return reader.error(); 
-          }
-
-          auto chain = reader->get_chain_sync();
-          if (!chain)
-          {
-            // return chain.error();
-          }
-
-          // req.known_hashes = std::move(*chain);
-          a = *chain;  // get last height from the db
+          // return reader.error();
         }
-        for(;;)
+
+        auto chain = reader->get_chain_sync();
+        if (!chain)
         {
-            json block_hashes = {
+          // return chain.error();
+        }
+
+        // req.known_hashes = std::move(*chain);
+          a = *chain;  // get last height from the db
+      }
+        for(;;)
+      {
+        json block_hashes = {
               {"jsonrpc","2.0"},
               {"id","0"},
               {"method","get_hashes"},
-              {"params",{{"start_height",std::to_string(a)}}}
+              {"params",{{"start_height",a}}}
             };
-            auto response = cpr::Post(cpr::Url{daemon_rpc},
-                                      cpr::Body{block_hashes.dump()},
+
+        auto response = cpr::Post(cpr::Url{daemon_rpc},
+                                  cpr::Body{block_hashes.dump()},
                                       cpr::Header{ { "Content-Type", "application/json" }});
 
-            if(!response.text.size())
-            {
-              throw std::runtime_error{"daemon connection failed"};
-            }
-            json res = json::parse(response.text);
-            details = res["result"];
+        // std::cout << "response: " << response.text << std::endl;
+        if(!response.text.size())
+        {
+          throw std::runtime_error{"daemon connection failed"};
+        }
+        json res = json::parse(response.text);
+        details = res["result"];
             if(details["status"]=="Failed")
-            {
-              throw std::runtime_error{"Daemon unexpectedly returned zero hashes and status failed"};
-            }
-            for (auto block_data : details["m_block_ids"])
-            {
-              std::string id = block_data;
-              tools::hex_to_type(id, blk_ids.emplace_back());
-            }
-            
-            int block_ids_size = details["m_block_ids"].size();
-            int start_height = details["start_height"];
-            int current_height = details["current_height"];
+        {
+          throw std::runtime_error{"Daemon unexpectedly returned zero hashes and status failed"};
+        }
+        for (auto block_data : details["m_block_ids"])
+        {
+          std::string id = block_data;
+          tools::hex_to_type(id, blk_ids.emplace_back());
+        }
 
-          //  std::cout <<"last hash from response : " << blk_ids.back() << std::endl;
+        int block_ids_size = details["m_block_ids"].size();
+        int start_height = details["start_height"];
+        int current_height = details["current_height"];
+
+        //  std::cout <<"last hash from response : " << blk_ids.back() << std::endl;
 
             if (blk_ids.size() <= 1 || (current_height - start_height) <=1)
-            {
-              MINFO("synced daemon upto the top chain");
-              break;
-            }
+        {
+          MINFO("synced daemon upto the top chain");
+          break;
+        }
 
-          disk.sync_chain(db::block_id(details["start_height"]), epee::to_span(blk_ids));
-          blk_ids.clear();
+        disk.sync_chain(db::block_id(details["start_height"]), epee::to_span(blk_ids));
+        blk_ids.clear();
 
             a = block_ids_size + start_height -1;
-        }
-      }
-      catch (std::exception const& e)
-      {
-        scanner::stop();
-        MERROR(e.what());
-      }
-      catch (...)
-      {
-        scanner::stop();
-        MERROR("Unknown exception");
       }
     }
+      catch (std::exception const& e)
+    {
+      scanner::stop();
+      MERROR(e.what());
+    }
+    catch (...)
+    {
+      scanner::stop();
+      MERROR("Unknown exception");
+    }
+  }
 
    void scanner::run(db::storage disk, std::string daemon_rpc,std::size_t thread_count)
-   {
+  {
     thread_count = std::max(std::size_t(1), thread_count);
 
     // rpc::client client{};

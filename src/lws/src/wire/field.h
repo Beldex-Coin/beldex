@@ -6,9 +6,13 @@
 #include "wire/filters.h"
 #include "wire/traits.h"
 
+//! A required field with the same key name and C/C++ name
+#define WIRE_FIELD_ID(id, name)                       \
+  ::wire::field< id >( #name , std::ref( self . name ))
+
 //! A required field has the same key name and C/C++ name
-#define WIRE_FIELD(name)                                \
-  ::wire::field( #name , std::ref( self . name ))
+#define WIRE_FIELD(name) \
+  WIRE_FIELD_ID(0, name)
 
 //! A required field has the same key name and C/C++ name AND is cheap to copy (faster output).
 #define WIRE_FIELD_COPY(name)                   \
@@ -34,12 +38,13 @@ namespace wire
 
 
   //! Links `name` to a `value` for object serialization.
-  template<typename T, bool Required>
+  template<typename T, bool Required, unsigned I = 0>
   struct field_
   {
     using value_type = typename unwrap_reference<T>::type;
     static constexpr bool is_required() noexcept { return Required; }
     static constexpr std::size_t count() noexcept { return 1; }
+    static constexpr unsigned id() noexcept { return I; }
 
     const char* name;
     T value;
@@ -58,15 +63,15 @@ namespace wire
   };
 
   //! Links `name` to `value`. Use `std::ref` if de-serializing.
-  template<typename T>
-  constexpr inline field_<T, true> field(const char* name, T value)
+  template<unsigned I = 0, typename T = void>
+  constexpr inline field_<T, true, I> field(const char* name, T value)
   {
     return {name, std::move(value)};
   }
 
   //! Links `name` to `value`. Use `std::ref` if de-serializing.
-  template<typename T>
-  constexpr inline field_<T, false> optional_field(const char* name, T value)
+  template<unsigned I = 0, typename T = void>
+  constexpr inline field_<T, false, I> optional_field(const char* name, T value)
   {
     return {name, std::move(value)};
   }
@@ -76,6 +81,7 @@ namespace wire
   template<typename T>
   struct option
   {
+    static constexpr unsigned id() noexcept { return 0; }
     const char* name;
   };
 
@@ -216,13 +222,13 @@ namespace wire
   }
 
 
-  template<typename T>
-  inline constexpr bool available(const field_<T, true>&) noexcept
+  template<typename T, unsigned I>
+  inline constexpr bool available(const field_<T, true, I>&) noexcept
   {
     return true;
   }
-  template<typename T>
-  inline bool available(const field_<T, false>& elem)
+  template<typename T, unsigned I>
+  inline bool available(const field_<T, false, I>& elem)
   {
     return bool(elem.get_value());
   }

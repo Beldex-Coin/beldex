@@ -1263,7 +1263,7 @@ Transaction </translation>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="6531"/>
         <location filename="../src/simplewallet/simplewallet.cpp" line="7006"/>
-        <source>WARNING: Outputs of multiple addresses are being used together, which might potentially compromise your privacy.
+        <source>WARNING: Outputs of multiple addresses are being used together, which might potentially compromise your confidentiality.
 </source>
         <translation>ATTENTION : Des sorties de multiples adresses sont utilisées ensemble, ce qui pourrait potentiellement compromettre votre confidentialité.
 </translation>
@@ -1385,7 +1385,7 @@ Transaction </translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2294"/>
-        <source>Welcome to Monero and financial privacy. For more information see https://GetMonero.org</source>
+        <source>Welcome to Monero and financial confidentiality. For more information see https://GetMonero.org</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2478,12 +2478,12 @@ Transaction </translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2288"/>
-        <source>Monero protects your privacy on the blockchain, and while Monero strives to improve all the time,</source>
+        <source>Monero protects your confidentiality on the blockchain, and while Monero strives to improve all the time,</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2289"/>
-        <source>no privacy technology can be 100% perfect, Monero included.</source>
+        <source>no confidential computing technology can be 100% perfect, Monero included.</source>
         <translation>aucune technologie de confidentialité n&apos;est parfaite à 100%, Monero inclus.</translation>
     </message>
     <message>
@@ -2498,7 +2498,7 @@ Transaction </translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2292"/>
-        <source>of the layers of privacy Monero provides. Be safe and practice defense in depth.</source>
+        <source>of the layers of confidentiality Monero provides. Be safe and practice defense in depth.</source>
         <translation>des couches de confidentialité que Monero fournit. Soyez prudent et pratiquez la défense en profondeur.</translation>
     </message>
     <message>
@@ -3411,7 +3411,7 @@ Attention : Certaines clés d&apos;entrées étant dépensées sont issues de <
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="6144"/>
-        <source>Transaction spends more than one very old output. Privacy would be better if they were sent separately.</source>
+        <source>Transaction spends more than one very old output. confidentiality would be better if they were sent separately.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -3838,7 +3838,7 @@ Cette transaction (%s de monnaie rendue inclue) sera déverrouillée au bloc %ll
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="2462"/>
         <location filename="../src/simplewallet/simplewallet.cpp" line="6573"/>
-        <source>WARNING: this is a non default ring size, which may harm your privacy. Default is recommended.</source>
+        <source>WARNING: this is a non default ring size, which may harm your confidentiality. Default is recommended.</source>
         <translation>ATTENTION : ceci c&apos;est pas la taille de cercle par défaut, ce qui peut nuire à votre confidentialité. La valeur par défaut est recommandée.</translation>
     </message>
     <message>
@@ -4158,7 +4158,7 @@ Image de clé, &quot;absolue&quot;, liste de cercles</translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="4496"/>
-        <source>Using a third party daemon can be detrimental to your security and privacy</source>
+        <source>Using a third party daemon can be detrimental to your security and confidentiality</source>
         <translation>Utiliser le démon d&apos;un tiers peut nuire à votre sécurité et à votre confidentialité</translation>
     </message>
     <message>
@@ -4183,7 +4183,7 @@ Image de clé, &quot;absolue&quot;, liste de cercles</translation>
     </message>
     <message>
         <location filename="../src/simplewallet/simplewallet.cpp" line="4512"/>
-        <source>Failed to initialize ring database: privacy enhancing features will be inactive</source>
+        <source>Failed to initialize ring database: confidentiality enhancing features will be inactive</source>
         <translation>Impossible d&apos;initialiser la base de données des cercles : les fonctions d&apos;amélioration de la confidentialité seront inactives</translation>
     </message>
     <message>
@@ -5706,7 +5706,7 @@ Utilisez &quot;mms note&quot; pour afficher les notes en attente</translation>
         <location filename="../src/simplewallet/simplewallet.cpp" line="10137"/>
         <source>This is the command line monero wallet. It needs to connect to a monero
 daemon to work correctly.
-WARNING: Do not reuse your Monero keys on another fork, UNLESS this fork has key reuse mitigations built in. Doing so will harm your privacy.</source>
+WARNING: Do not reuse your Monero keys on another fork, UNLESS this fork has key reuse mitigations built in. Doing so will harm your confidentiality.</source>
         <translation>Ceci est le portefeuille monero en ligne de commande.
 Il a besoin de se connecter à un démon monero pour fonctionner correctement.
 ATTENTION : Ne réutilisez pas vos clés Monero avec un autre fork, À MOINS QUE ce fork inclue des mitigations contre la réutilisation des clés. Faire ceci nuira à votre confidentialité.</translation>

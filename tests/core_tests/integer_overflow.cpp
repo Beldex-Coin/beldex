@@ -112,8 +112,8 @@ bool gen_uint_overflow_1::generate(std::vector<test_event_entry>& events) const
   {
     beldex_blockchain_entry entry       = gen.create_next_block();
     cryptonote::transaction &miner_tx = entry.block.miner_tx;
-    split_miner_tx_outs(miner_tx, MONEY_SUPPLY);
-    gen.add_block(entry, false /*can_be_added_to_blockchain*/, "We purposely overflow miner tx by MONEY_SUPPLY in the miner tx");
+    split_miner_tx_outs(miner_tx, beldex::MONEY_SUPPLY);
+    gen.add_block(entry, false /*can_be_added_to_blockchain*/, "We purposely overflow miner tx by beldex::MONEY_SUPPLY in the miner tx");
   }
 
   // Problem 2. block_reward overflow
@@ -173,10 +173,10 @@ bool gen_uint_overflow_2::generate(std::vector<test_event_entry>& events) const
 
   std::vector<cryptonote::tx_destination_entry> destinations;
   const account_public_address& bob_addr = bob_account.get_keys().m_account_address;
-  destinations.push_back(tx_destination_entry(MONEY_SUPPLY, bob_addr, false));
-  destinations.push_back(tx_destination_entry(MONEY_SUPPLY - 1, bob_addr, false));
+  destinations.push_back(tx_destination_entry(beldex::MONEY_SUPPLY, bob_addr, false));
+  destinations.push_back(tx_destination_entry(beldex::MONEY_SUPPLY - 1, bob_addr, false));
   // sources.front().amount = destinations[0].amount + destinations[2].amount + destinations[3].amount + TESTS_DEFAULT_FEE
-  destinations.push_back(tx_destination_entry(sources.front().amount - MONEY_SUPPLY - MONEY_SUPPLY + 1 - TESTS_DEFAULT_FEE, bob_addr, false));
+  destinations.push_back(tx_destination_entry(sources.front().amount - beldex::MONEY_SUPPLY - beldex::MONEY_SUPPLY + 1 - TESTS_DEFAULT_FEE, bob_addr, false));
 
   cryptonote::transaction tx_1;
   if (!construct_tx(miner_account.get_keys(), sources, destinations, std::nullopt, std::vector<uint8_t>(), tx_1, 0))
@@ -191,7 +191,7 @@ bool gen_uint_overflow_2::generate(std::vector<test_event_entry>& events) const
   for (size_t i = 0; i < tx_1.vout.size(); ++i)
   {
     auto& tx_1_out = tx_1.vout[i];
-    if (tx_1_out.amount < MONEY_SUPPLY - 1)
+    if (tx_1_out.amount < beldex::MONEY_SUPPLY - 1)
       continue;
 
     append_tx_source_entry(sources, tx_1, i);
@@ -200,7 +200,7 @@ bool gen_uint_overflow_2::generate(std::vector<test_event_entry>& events) const
   destinations.clear();
   cryptonote::tx_destination_entry de;
   de.addr = alice_account.get_keys().m_account_address;
-  de.amount = MONEY_SUPPLY - TESTS_DEFAULT_FEE;
+  de.amount = beldex::MONEY_SUPPLY - TESTS_DEFAULT_FEE;
   destinations.push_back(de);
   destinations.push_back(de);
 

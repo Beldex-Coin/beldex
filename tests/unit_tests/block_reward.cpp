@@ -41,7 +41,7 @@ namespace
   class block_reward_and_already_generated_coins : public ::testing::Test
   {
   protected:
-    static const size_t current_block_weight = CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V1 / 2;
+    static const size_t current_block_weight = cryptonote::BLOCK_GRANTED_FULL_REWARD_ZONE_V1 / 2;
 
     union
     {
@@ -53,12 +53,12 @@ namespace
   };
 
   #define TEST_ALREADY_GENERATED_COINS(already_generated_coins, expected_reward)                                \
-    m_block_not_too_big = get_base_block_reward(0, current_block_weight, already_generated_coins, m_block_reward, m_block_reward_unpenalized, 7,0); \
+    m_block_not_too_big = get_base_block_reward(0, current_block_weight, already_generated_coins, m_block_reward, m_block_reward_unpenalized, cryptonote::hf::hf7, 0); \
     ASSERT_TRUE(m_block_not_too_big);                                                                           \
     ASSERT_EQ(m_block_reward, expected_reward);
 
   #define TEST_ALREADY_GENERATED_COINS_V2(already_generated_coins, expected_reward, h)                          \
-    m_block_not_too_big = get_base_block_reward(0, current_block_weight, already_generated_coins, m_block_reward, m_block_reward_unpenalized, 8,h); \
+    m_block_not_too_big = get_base_block_reward(0, current_block_weight, already_generated_coins, m_block_reward, m_block_reward_unpenalized, cryptonote::hf::hf8, h); \
     ASSERT_TRUE(m_block_not_too_big);                                                                           \
     ASSERT_EQ(m_block_reward, expected_reward);
 
@@ -87,9 +87,9 @@ namespace
 
   TEST_F(block_reward_and_already_generated_coins, handles_max)
   {
-    TEST_ALREADY_GENERATED_COINS(MONEY_SUPPLY - ((1 << 20) + 1), UINT64_C(0));
-    TEST_ALREADY_GENERATED_COINS(MONEY_SUPPLY -  (1 << 20)     , UINT64_C(0));
-    TEST_ALREADY_GENERATED_COINS(MONEY_SUPPLY - ((1 << 20) - 1), UINT64_C(0));
+    TEST_ALREADY_GENERATED_COINS(beldex::MONEY_SUPPLY - ((1 << 20) + 1), UINT64_C(0));
+    TEST_ALREADY_GENERATED_COINS(beldex::MONEY_SUPPLY -  (1 << 20)     , UINT64_C(0));
+    TEST_ALREADY_GENERATED_COINS(beldex::MONEY_SUPPLY - ((1 << 20) - 1), UINT64_C(0));
   }
 
   TEST_F(block_reward_and_already_generated_coins, reward_parity_between_orig_and_beldex_algo)
@@ -99,24 +99,24 @@ namespace
 
     cryptonote::block_reward_parts        reward_parts_v7   = {};
     cryptonote::beldex_block_reward_context reward_context_v7 = {};
-    m_block_reward_calc_success &= get_beldex_block_reward(0, current_block_weight, already_generated_coins, 7, reward_parts_v7, reward_context_v7);
+    m_block_reward_calc_success &= get_beldex_block_reward(0, current_block_weight, already_generated_coins, cryptonote::hf::hf7, reward_parts_v7, reward_context_v7);
 
     cryptonote::block_reward_parts        reward_parts_v8   = {};
     cryptonote::beldex_block_reward_context reward_context_v8 = {};
-    m_block_reward_calc_success &= get_beldex_block_reward(0, current_block_weight, already_generated_coins, 8, reward_parts_v8, reward_context_v8);
+    m_block_reward_calc_success &= get_beldex_block_reward(0, current_block_weight, already_generated_coins, cryptonote::hf::hf8, reward_parts_v8, reward_context_v8);
 
     cryptonote::block_reward_parts        reward_parts_v9   = {};
     cryptonote::beldex_block_reward_context reward_context_v9 = {};
-    m_block_reward_calc_success &= get_beldex_block_reward(0, current_block_weight, already_generated_coins, 9, reward_parts_v9, reward_context_v9);
+    m_block_reward_calc_success &= get_beldex_block_reward(0, current_block_weight, already_generated_coins, cryptonote::hf::hf9_master_nodes, reward_parts_v9, reward_context_v9);
 
     uint64_t reward_v7_orig = 0, reward_unpenalized_unused_;
-    m_block_reward_calc_success &= cryptonote::get_base_block_reward(0, current_block_weight, already_generated_coins, reward_v7_orig, reward_unpenalized_unused_, 7, 0);
+    m_block_reward_calc_success &= cryptonote::get_base_block_reward(0, current_block_weight, already_generated_coins, reward_v7_orig, reward_unpenalized_unused_, cryptonote::hf::hf7, 0);
 
     uint64_t reward_v8_orig = 0;
-    m_block_reward_calc_success &= cryptonote::get_base_block_reward(0, current_block_weight, already_generated_coins, reward_v8_orig, reward_unpenalized_unused_, 8, 0);
+    m_block_reward_calc_success &= cryptonote::get_base_block_reward(0, current_block_weight, already_generated_coins, reward_v8_orig, reward_unpenalized_unused_, cryptonote::hf::hf8, 0);
 
     uint64_t reward_v9_orig = 0;
-    m_block_reward_calc_success &= cryptonote::get_base_block_reward(0, current_block_weight, already_generated_coins, reward_v9_orig, reward_unpenalized_unused_, 9, 0);
+    m_block_reward_calc_success &= cryptonote::get_base_block_reward(0, current_block_weight, already_generated_coins, reward_v9_orig, reward_unpenalized_unused_, cryptonote::hf::hf9_master_nodes, 0);
 
     ASSERT_TRUE(m_block_reward_calc_success);                                                                           \
     ASSERT_EQ(reward_parts_v7.original_base_reward, reward_v7_orig);
@@ -125,5 +125,5 @@ namespace
   }
 
   //--------------------------------------------------------------------------------------------------------------------
-  // TODO(doyle): The following tests, test using CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V1 which is not relevant to us.
+  // TODO(doyle): The following tests, test using cryptonote::BLOCK_GRANTED_FULL_REWARD_ZONE_V1 which is not relevant to us.
 }

@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 #include <cstdio>
 #include <cstdint>
@@ -46,15 +47,13 @@ public:
   void pause();
   void resume();
   void reset();
-  uint64_t value() const;
-  operator uint64_t() const  { return value(); }
-  float milliseconds() const { return value() / 1.0e6; }
-  float seconds() const      { return milliseconds() / 1000.f; }
+  std::chrono::nanoseconds value() const;
+  std::chrono::duration<double> seconds() const { return value(); }
 
 protected:
-  uint64_t ticks;
+  std::optional<std::chrono::steady_clock::time_point> since;
+  std::chrono::nanoseconds elapsed;
   bool started;
-  bool paused;
 };
 
 class LoggingPerformanceTimer: public PerformanceTimer

@@ -1,5 +1,4 @@
-// Copyright (c) 2020, The Beldex Project
-//
+// Copyright (c) 2023, The Monero Project
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without modification, are
@@ -25,49 +24,35 @@
 // INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
 // STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
 
 #pragma once
 
-#include "core_rpc_server.h"
-#include "cryptonote_core/blockchain.h"
-#include "oxenmq/connections.h"
+#include <system_error>
 
-namespace oxenmq { class OxenMQ; }
-
-namespace cryptonote::rpc {
-
-void init_omq_options(boost::program_options::options_description& desc);
-
-/**
- * LMQ RPC server class.  This doesn't actually hold the OxenMQ instance--that's in
- * cryptonote_core--but it works with it to add RPC endpoints, make it listen on RPC ports, and
- * handles RPC requests.
- */
-class omq_rpc final{
-
-  enum class mempool_sub_type { all, flash };
-  struct mempool_sub {
-    std::chrono::steady_clock::time_point expiry;
-    mempool_sub_type type;
+namespace wire
+{
+namespace error
+{
+  //! Type wrapper to "grab" rapidjson errors
+  enum class msgpack : int
+  {
+    success = 0, // required for `expected<T>`
+    incomplete,
+    integer_encoding,
+    invalid,
+    not_enough_bytes
   };
 
-  struct block_sub {
-    std::chrono::steady_clock::time_point expiry;
-  };
+  //! \return Static string describing error `value`.
+  const char* get_string(msgpack value) noexcept;
 
-  cryptonote::core& core_;
-  core_rpc_server& rpc_;
-  std::shared_timed_mutex subs_mutex_;
-  std::unordered_map<oxenmq::ConnectionID, mempool_sub> mempool_subs_;
-  std::unordered_map<oxenmq::ConnectionID, block_sub> block_subs_;
+  //! \return Category for msgpack generated errors.
+  const std::error_category& msgpack_category() noexcept;
 
-public:
-  omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::program_options::variables_map& vm);
-
-  void send_block_notifications(const block& block);
-
-  void send_mempool_notifications(const crypto::hash& id, const transaction& tx, const std::string& blob, const tx_pool_options& opts);
-};
-
-} // namespace cryptonote::rpc
+  //! \return Error code with `value` and `rapidjson_category()`.
+  inline std::error_code make_error_code(msgpack value) noexcept
+  {
+    return std::error_code{int(value), msgpack_category()};
+  }
+}
+}

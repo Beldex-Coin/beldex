@@ -1,9 +1,10 @@
 #include "http_client.h"
 #include <chrono>
 #include <regex>
-#include <cpr/cpr.h>
 #include "common/string_util.h"
-#include "cpr/ssl_options.h"
+#include <cpr/cpr.h>
+#include <cpr/ssl_options.h>
+#include <nlohmann/json.hpp>
 
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "rpc.http_client"
@@ -130,6 +131,36 @@ void http_client::copy_params_from(const http_client& other) {
   auth = other.auth;
 }
 
+nlohmann::json http_client::json_rpc(std::string_view method, std::optional<nlohmann::json> params) {
+  nlohmann::json shell{
+    {"id", json_rpc_id++},
+    {"jsonrpc", "2.0"},
+    {"method", method}
+  };
+  if (params)
+    shell["params"] = std::move(*params);
+
+  // std::cout << "shell.dump() : " << shell.dump() << std::endl; //TODO will remove
+  cpr::Response res = post("json_rpc", shell.dump(), {{"Content-Type", "application/json; charset=utf-8"}});
+
+  nlohmann::json result;
+  try {
+    auto response = nlohmann::json::parse(res.text);
+
+    if (auto err = response.find("error"); err != response.end())
+      throw http_client_response_error{false, (*err)["code"].get<int>(),
+        "JSON RPC returned an error response: " + (*err)["message"].get<std::string>()};
+
+    // std::cout << "response : " << response << std::endl; //TODO will remove
+    if (auto res = response.find("result"); res != response.end())
+      result = std::move(*res);
+
+  } catch (const nlohmann::json::parse_error& e) {
+    throw http_client_serialization_error{"Failed to deserialize response for json_rpc request for " + std::string{method} + ": " + e.what()};
+  }
+
+  return result;
+}
 
 cpr::Response http_client::post(const std::string& uri, cpr::Body body, cpr::Header header) {
   if (base_url.str().empty())

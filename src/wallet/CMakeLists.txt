@@ -41,10 +41,9 @@ target_link_libraries(wallet
   PUBLIC
     multisig
     rpc_commands
-    rpc_server_base
+    rpc_common
     cryptonote_core
     mnemonics
-    device_trezor
     net
     lmdb
     rpc_http_client
@@ -54,6 +53,10 @@ target_link_libraries(wallet
   PRIVATE
     extra)
 
+if(TARGET device_trezor)
+  target_link_libraries(wallet PUBLIC device_trezor)
+endif()
+
 beldex_add_executable(wallet_rpc_server "beldex-wallet-rpc"
   wallet_rpc_server.cpp
   wallet_rpc_server_commands_defs.cpp
@@ -61,7 +64,7 @@ beldex_add_executable(wallet_rpc_server "beldex-wallet-rpc"
 
 target_link_libraries(wallet_rpc_server
   PRIVATE
-    rpc_server_base
+    rpc_common
     wallet
     daemonizer
     Boost::program_options

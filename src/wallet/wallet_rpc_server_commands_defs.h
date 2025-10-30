@@ -394,6 +394,22 @@ namespace tools::wallet_rpc {
     };
   };
 
+  struct key_image_list
+  {
+    std::list<std::string> key_images;
+
+    KV_MAP_SERIALIZABLE
+  };
+
+  struct amounts_list
+  {
+    std::list<uint64_t> amounts;
+
+    bool operator==(const amounts_list& other) const { return amounts == other.amounts; }
+
+    KV_MAP_SERIALIZABLE
+  };
+
   BELDEX_RPC_DOC_INTROSPECT
   // Send beldex to a number of recipients. To preview the transaction fee, set do_not_relay to true and get_tx_metadata to true.
   // Submit the response using the data in get_tx_metadata in the RPC call, relay_tx.
@@ -406,6 +422,7 @@ namespace tools::wallet_rpc {
       std::list<wallet::transfer_destination> destinations; // Array of destinations to receive BELDEX.
       uint32_t account_index;                       // (Optional) Transfer from this account index. (Defaults to 0)
       std::set<uint32_t> subaddr_indices;           // (Optional) Transfer from this set of subaddresses. (Defaults to 0)
+      std::set<uint32_t> subtract_fee_from_outputs;
       uint32_t priority;                            // Set a priority for the transaction. Accepted values are: 1 for unimportant or 5 for flash. (0 and 2-4 are accepted for backwards compatibility and are equivalent to 5)
       uint64_t unlock_time;                         // Number of blocks before the beldex can be spent (0 to use the default lock time).
       std::string payment_id;                       // (Optional) Random 64-character hex string to identify a transaction.
@@ -422,11 +439,13 @@ namespace tools::wallet_rpc {
       std::string tx_hash;        // Publicly searchable transaction hash.
       std::string tx_key;         // Transaction key if get_tx_key is true, otherwise, blank string.
       uint64_t amount;            // Amount transferred for the transaction.
+      amounts_list amounts_by_dest;
       uint64_t fee;               // Fee charged for the txn.
       std::string tx_blob;        // Raw transaction represented as hex string, if get_tx_hex is true.
       std::string tx_metadata;    // Set of transaction metadata needed to relay this transfer later, if get_tx_metadata is true.
       std::string multisig_txset; // Set of multisig transactions in the process of being signed (empty for non-multisig).
       std::string unsigned_txset; // Set of unsigned tx for cold-signing purposes.
+      key_image_list spent_key_images;
 
       KV_MAP_SERIALIZABLE
     };
@@ -466,11 +485,13 @@ namespace tools::wallet_rpc {
       std::list<std::string> tx_hash_list;     // The tx hashes of every transaction.
       std::list<std::string> tx_key_list;      // The transaction keys for every transaction.
       std::list<uint64_t> amount_list;         // The amount transferred for every transaction.
+      std::list<amounts_list> amounts_by_dest_list;
       std::list<uint64_t> fee_list;            // The amount of fees paid for every transaction.
       std::list<std::string> tx_blob_list;     // The tx as hex string for every transaction.
       std::list<std::string> tx_metadata_list; // List of transaction metadata needed to relay the transactions later.
       std::string multisig_txset;              // The set of signing keys used in a multisig transaction (empty for non-multisig).
       std::string unsigned_txset;              // Set of unsigned tx for cold-signing purposes.
+      std::list<key_image_list> spent_key_images_list;
 
       KV_MAP_SERIALIZABLE
     };
@@ -597,11 +618,13 @@ namespace tools::wallet_rpc {
       std::list<std::string> tx_hash_list;     // The tx hashes of every transaction.
       std::list<std::string> tx_key_list;      // The transaction keys for every transaction.
       std::list<uint64_t> amount_list;         // The amount transferred for every transaction.
+      std::list<amounts_list> amounts_by_dest_list;
       std::list<uint64_t> fee_list;            // The amount of fees paid for every transaction.
       std::list<std::string> tx_blob_list;     // The tx as hex string for every transaction.
       std::list<std::string> tx_metadata_list; // List of transaction metadata needed to relay the transactions later.
       std::string multisig_txset;              // The set of signing keys used in a multisig transaction (empty for non-multisig).
       std::string unsigned_txset;              // Set of unsigned tx for cold-signing purposes.
+      std::list<key_image_list> spent_key_images_list;
 
       KV_MAP_SERIALIZABLE
     };
@@ -644,11 +667,13 @@ namespace tools::wallet_rpc {
       std::list<std::string> tx_hash_list;     // The tx hashes of every transaction.
       std::list<std::string> tx_key_list;      // The transaction keys for every transaction.
       std::list<uint64_t> amount_list;         // The amount transferred for every transaction.
+      std::list<amounts_list> amounts_by_dest_list;
       std::list<uint64_t> fee_list;            // The amount of fees paid for every transaction.
       std::list<std::string> tx_blob_list;     // The tx as hex string for every transaction.
       std::list<std::string> tx_metadata_list; // List of transaction metadata needed to relay the transactions later.
       std::string multisig_txset;              // The set of signing keys used in a multisig transaction (empty for non-multisig).
       std::string unsigned_txset;              // Set of unsigned tx for cold-signing purposes.
+      std::list<key_image_list> spent_key_images_list;
 
       KV_MAP_SERIALIZABLE
     };
@@ -681,11 +706,13 @@ namespace tools::wallet_rpc {
       std::string tx_hash;        // The tx hashes of the transaction.
       std::string tx_key;         // The tx key of the transaction.
       uint64_t amount;            // The amount transfered in atomic units.
+      amounts_list amounts_by_dest;
       uint64_t fee;               // The fee paid in atomic units.
       std::string tx_blob;        // The tx as hex string.
       std::string tx_metadata;    // Transaction metadata needed to relay the transaction later.
       std::string multisig_txset; // The set of signing keys used in a multisig transaction (empty for non-multisig).
       std::string unsigned_txset; // Set of unsigned tx for cold-signing purposes.
+      key_image_list spent_key_images;
 
       KV_MAP_SERIALIZABLE
     };
@@ -1354,7 +1381,7 @@ BELDEX_RPC_DOC_INTROSPECT
       bool coinbase = false;
       bool filter_by_height = false;
       uint64_t min_height = 0;
-      uint64_t max_height = CRYPTONOTE_MAX_BLOCK_NUMBER;
+      uint64_t max_height = cryptonote::MAX_BLOCK_NUMBER;
       std::set<uint32_t> subaddr_indices;
       uint32_t account_index;
       bool all_accounts;
@@ -2042,11 +2069,13 @@ BELDEX_RPC_DOC_INTROSPECT
       std::string tx_hash;        // Publicly searchable transaction hash.
       std::string tx_key;         // Transaction key if `get_tx_key` is `true`, otherwise, blank string.
       uint64_t amount;            // Amount transferred for the transaction in atomic units.
+      amounts_list amounts_by_dest;
       uint64_t fee;               // Value in atomic units of the fee charged for the tx.
       std::string tx_blob;        // Raw transaction represented as hex string, if get_tx_hex is true.
       std::string tx_metadata;    // Set of transaction metadata needed to relay this transfer later, if `get_tx_metadata` is `true`.
       std::string multisig_txset; // Set of multisig transactions in the process of being signed (empty for non-multisig).
       std::string unsigned_txset; // Set of unsigned tx for cold-signing purposes.
+      key_image_list spent_key_images;
 
       KV_MAP_SERIALIZABLE
     };
@@ -2074,11 +2103,13 @@ BELDEX_RPC_DOC_INTROSPECT
       std::string tx_hash;        // Publicly searchable transaction hash.
       std::string tx_key;         // Transaction key if get_tx_key is true, otherwise, blank string.
       uint64_t amount;            // Amount transferred for the transaction in atomic units.
+      amounts_list amounts_by_dest;
       uint64_t fee;               // Value in atomic units of the fee charged for the tx.
       std::string tx_blob;        // Raw transaction represented as hex string, if get_tx_hex is true.
       std::string tx_metadata;    // Set of transaction metadata needed to relay this transfer later, if `get_tx_metadata` is `true`.
       std::string multisig_txset; // Set of multisig transactions in the process of being signed (empty for non-multisig).
       std::string unsigned_txset; // Set of unsigned tx for cold-signing purposes.
+      key_image_list spent_key_images;
 
       KV_MAP_SERIALIZABLE
     };
@@ -2164,7 +2195,7 @@ BELDEX_RPC_DOC_INTROSPECT
     {
       std::string address;              // The remote url of the daemon.
       std::string proxy;                // Optional proxy to use for connection. E.g. socks4a://hostname:port for a SOCKS proxy.
-      bool trusted;                     // When true, allow the usage of commands that may compromise privacy
+      bool trusted;                     // When true, allow the usage of commands that may compromise confidentiality.
       std::string ssl_private_key_path; // HTTPS client authentication: path to private key.  Must use an address starting with https://
       std::string ssl_certificate_path; // HTTPS client authentication: path to certificate.  Must use an address starting with https://
       std::string ssl_ca_file;          // Path to CA bundle to use for HTTPS server certificate verification instead of system CA.  Requires an https:// address.
@@ -2256,11 +2287,13 @@ For more information on updating and signing see the BNS_UPDATE_MAPPING document
       std::string tx_hash;        // Publicly searchable transaction hash.
       std::string tx_key;         // Transaction key if `get_tx_key` is `true`, otherwise, blank string.
       uint64_t amount;            // Amount transferred for the transaction in atomic units.
+      amounts_list amounts_by_dest;
       uint64_t fee;               // Value in atomic units of the fee charged for the tx.
       std::string tx_blob;        // Raw transaction represented as hex string, if get_tx_hex is true.
       std::string tx_metadata;    // Set of transaction metadata needed to relay this transfer later, if `get_tx_metadata` is `true`.
       std::string multisig_txset; // Set of multisig transactions in the process of being signed (empty for non-multisig).
       std::string unsigned_txset; // Set of unsigned tx for cold-signing purposes.
+      key_image_list spent_key_images;
 
       KV_MAP_SERIALIZABLE
     };
@@ -2339,11 +2372,13 @@ If signing is performed externally then you must first encrypt the `value` (if b
       std::string tx_hash;        // Publicly searchable transaction hash.
       std::string tx_key;         // Transaction key if `get_tx_key` is `true`, otherwise, blank string.
       uint64_t amount;            // Amount transferred for the transaction in atomic units.
+      amounts_list amounts_by_dest;
       uint64_t fee;               // Value in atomic units of the fee charged for the tx.
       std::string tx_blob;        // Raw transaction represented as hex string, if get_tx_hex is true.
       std::string tx_metadata;    // Set of transaction metadata needed to relay this transfer later, if `get_tx_metadata` is `true`.
       std::string multisig_txset; // Set of multisig transactions in the process of being signed (empty for non-multisig).
       std::string unsigned_txset; // Set of unsigned tx for cold-signing purposes.
+      key_image_list spent_key_images;
 
       KV_MAP_SERIALIZABLE
     };
@@ -2413,16 +2448,16 @@ This command is only required if the open wallet is one of the owners of a BNS r
       std::string name;                          // The plaintext name
       std::string owner;                         // The public key that purchased the Beldex Name Service entry.
       std::optional<std::string> backup_owner;   // The backup public key or wallet that the owner specified when purchasing the Beldex Name Service entry. Omitted if no backup owner.
-      std::string encrypted_bchat_value;         // The encrypted value of bchat that the name maps to, in hex.
-      std::string encrypted_wallet_value;        // The encrypted value of wallet that the name maps to, in hex.
-      std::string encrypted_belnet_value;        // The encrypted value of belnet that the name maps to, in hex.
-      std::string encrypted_eth_addr_value;
+      std::optional<std::string> encrypted_bchat_value;         // The encrypted value of bchat that the name maps to, in hex.
+      std::optional<std::string> encrypted_wallet_value;        // The encrypted value of wallet that the name maps to, in hex.
+      std::optional<std::string> encrypted_belnet_value;        // The encrypted value of belnet that the name maps to, in hex.
+      std::optional<std::string> encrypted_eth_addr_value;
       std::optional<std::string> value_bchat;    // Decrypted value that that name maps to.  Only provided if `decrypt: true` was specified in the request.
       std::optional<std::string> value_wallet;   // Decrypted value that that name maps to.  Only provided if `decrypt: true` was specified in the request.
       std::optional<std::string> value_belnet;   // Decrypted value that that name maps to.  Only provided if `decrypt: true` was specified in the request.
       std::optional<std::string> value_eth_addr;
       uint64_t update_height;                    // The last height that this Beldex Name Service entry was updated on the Blockchain.
-      std::optional<uint64_t> expiration_height; // For records that expire, this will be set to the expiration block height.
+      uint64_t expiration_height;                // For records that expire, this will be set to the expiration block height.
       std::optional<bool> expired;               // Indicates whether the record has expired. Only included in the response if "include_expired" is specified in the request.
       std::string txid;                          // The txid of the mapping's most recent update or purchase.
 
@@ -2539,11 +2574,13 @@ This command is only required if the open wallet is one of the owners of a BNS r
       std::string tx_hash;        // Publicly searchable transaction hash.
       std::string tx_key;         // Transaction key if get_tx_key is true, otherwise, blank string.
       uint64_t amount;            // Amount transferred for the transaction.
+      amounts_list amounts_by_dest;
       uint64_t fee;               // Fee charged for the txn.
       std::string tx_blob;        // Raw transaction represented as hex string, if get_tx_hex is true.
       std::string tx_metadata;    // Set of transaction metadata needed to relay this transfer later, if get_tx_metadata is true.
       std::string multisig_txset; // Set of multisig transactions in the process of being signed (empty for non-multisig).
       std::string unsigned_txset; // Set of unsigned tx for cold-signing purposes.
+      key_image_list spent_key_images;
 
       KV_MAP_SERIALIZABLE
     };

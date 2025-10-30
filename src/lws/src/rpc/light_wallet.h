@@ -95,6 +95,45 @@ namespace rpc
     };
     void write_bytes(wire::json_writer&, const get_address_txs_response&);
 
+    enum class daemon_state : std::uint8_t
+    {
+      ok = 0,
+      no_connections,
+      synchronizing,
+      unavailable
+    };
+    WIRE_DECLARE_ENUM(daemon_state);
+  
+    enum class network_type : std::uint8_t
+    {
+      main = 0,
+      test,
+      stage,
+      fake
+    };
+    WIRE_DECLARE_ENUM(network_type);
+  struct daemon_status_request
+  {
+    daemon_status_request() = delete;
+  };
+  inline void read_bytes(const wire::reader&, const daemon_status_request&)
+  {}
+
+  struct daemon_status_response
+  {
+    //! Defaults to current network in unavailable state
+    daemon_status_response() = default;
+
+    std::uint64_t outgoing_connections_count;
+    std::uint64_t incoming_connections_count;
+    std::uint64_t height;
+    std::uint64_t target_height;
+    network_type network;
+    daemon_state state;
+  };
+  void write_bytes(wire::json_writer&, const daemon_status_response&);
+
+
     struct get_random_outs_request
     {
       get_random_outs_request() = delete;

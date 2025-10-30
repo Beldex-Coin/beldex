@@ -19,7 +19,6 @@ target_link_libraries(beldex-lws-db PUBLIC
     checkpoints
     version
     net
-    device_trezor
     epee
     blockchain_db
     rpc_http_client

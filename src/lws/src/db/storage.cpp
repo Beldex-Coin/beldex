@@ -148,7 +148,13 @@ namespace db
       right_bytes.remove_prefix(sizeof(crypto::hash));
 
       static_assert(sizeof(crypto::key_image) == 32, "bad memcmp below");
-      return compare_32bytes(left_bytes, right_bytes);
+      diff = compare_32bytes(left_bytes, right_bytes);
+      if (diff)
+        return diff;
+
+      left_bytes.remove_prefix(sizeof(crypto::key_image));
+      right_bytes.remove_prefix(sizeof(crypto::key_image));
+      return less<output_id>(left_bytes, right_bytes);
     }
 
     constexpr const lmdb::basic_table<unsigned, block_info> blocks{
@@ -244,16 +250,16 @@ namespace db
           //   genesis_nonce = ::config::stagenet::GENESIS_NONCE;
           //   break;
 
-          case cryptonote::MAINNET:
-            genesis_tx = ::config::GENESIS_TX;
-            genesis_nonce = ::config::GENESIS_NONCE;
+          case cryptonote::network_type::MAINNET:
+            genesis_tx = cryptonote::config::GENESIS_TX;
+            genesis_nonce = cryptonote::config::GENESIS_NONCE;
             break;
 
           default:
             MONERO_THROW(lws::error::bad_blockchain, "Unsupported net type");
           }
           cryptonote::block b;
-          cryptonote::generate_genesis_block(b,cryptonote::MAINNET);
+          cryptonote::generate_genesis_block(b,cryptonote::network_type::MAINNET);
           crypto::hash block_hash = cryptonote::get_block_hash(b);
           if (!data.add_checkpoint(0, epee::to_hex::string(epee::as_byte_span(block_hash))))
             MONERO_THROW(lws::error::bad_blockchain, "Genesis tx and checkpoints file mismatch");
@@ -1170,9 +1176,10 @@ namespace db
           return {lws::error::bad_view_key};
       }
 
-      const account_by_address by_address{
-        user.address, {user.id, account_status::active}
-      };
+    const account_status status =
+      user.flags == account_flags::admin_account ?
+        account_status::hidden : account_status::active;
+    const account_by_address by_address{user.address, {user.id, status}};
 
       MDB_val key = lmdb::to_val(by_address_version);
       MDB_val value = lmdb::to_val(by_address);
@@ -1596,10 +1603,9 @@ namespace db
   }
 
 
-   expect<void> storage::add_account(account_address const& address, crypto::secret_key const& key) noexcept
-   {
+  expect<void> storage::add_account(account_address const& address, crypto::secret_key const& key, const account_flags flags) noexcept   {
     MONERO_PRECOND(db != nullptr);
-    return db->try_write([this, &address, &key] (MDB_txn& txn) -> expect<void>
+    return db->try_write([this, &address, &key, flags] (MDB_txn& txn) -> expect<void>
     {
       const expect<db::account_time> current_time = get_account_time();
       if (!current_time)
@@ -1640,7 +1646,7 @@ namespace db
       user.scan_height = *height;
       user.access = *current_time;
       user.creation = *current_time;
-      // ... leave flags set to zero ...
+      user.flags = flags;
 
       return do_add_account(
         *accounts_cur, *accounts_ba_cur, *accounts_bh_cur, user

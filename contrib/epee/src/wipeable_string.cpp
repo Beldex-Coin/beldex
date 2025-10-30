@@ -29,6 +29,7 @@
 #include <optional>
 #include <cctype>
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>

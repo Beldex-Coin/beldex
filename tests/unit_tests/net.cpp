@@ -36,7 +36,6 @@
 #include <boost/asio/read.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/write.hpp>
-#include <boost/endian/conversion.hpp>
 #include <boost/range/adaptor/sliced.hpp>
 #include <boost/range/combine.hpp>
 #include <boost/system/error_code.hpp>

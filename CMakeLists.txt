@@ -48,10 +48,10 @@ cmake_minimum_required(VERSION 3.10)
 message(STATUS "CMake version ${CMAKE_VERSION}")
 
 # Has to be set before `project()`, and ignored on non-macos:
-set(CMAKE_OSX_DEPLOYMENT_TARGET 10.12 CACHE STRING "macOS deployment target (Apple clang only)")
+set(CMAKE_OSX_DEPLOYMENT_TARGET 10.15 CACHE STRING "macOS deployment target (Apple clang only)")
 
 project(beldex
-    VERSION 6.0.0
+    VERSION 7.0.0
     LANGUAGES CXX C)
 set(BELDEX_RELEASE_CODENAME "Hermes")
 
@@ -290,6 +290,7 @@ if(NOT MANUAL_SUBMODULES)
     check_submodule(external/loki-mq cppzmq)
     if(BUILD_TESTS)
       check_submodule(external/googletest)
+      check_submodule(external/Catch2)
     endif()
     check_submodule(external/uWebSockets uSockets)
     check_submodule(external/ghc-filesystem)
@@ -434,6 +435,9 @@ if(BUILD_STATIC_DEPS)
   # SSL::* targets already set up
 else()
   find_package(OpenSSL REQUIRED)
+  if(NOT OpenSSL_FOUND)
+    message(FATAL_ERROR "OpenSSL not found. Set -DOPENSSL_ROOT_DIR if needed.")
+  endif()
 endif()
 
 add_definition_if_library_exists(c memset_s "string.h" HAVE_MEMSET_S)
@@ -577,7 +581,6 @@ else()
   # if those don't work for your compiler, single it out where appropriate
   if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT OPENBSD)
     set(C_SECURITY_FLAGS "${C_SECURITY_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=1")
-    set(C_SECURITY_FLAGS "${C_SECURITY_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=1")
     set(CXX_SECURITY_FLAGS "${CXX_SECURITY_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=1")
   endif()
 
@@ -609,6 +612,12 @@ else()
   if (NOT WIN32 AND NOT OPENBSD AND NOT APPLE)
     add_c_flag_if_supported(-fstack-clash-protection C_SECURITY_FLAGS)
     add_cxx_flag_if_supported(-fstack-clash-protection CXX_SECURITY_FLAGS)
+  endif()
+
+  # GCC 12's stringop-overflow warnings are really broken, with tons and tons of false positives all
+  # over the place (not just in our code, but also in its own stdlibc++ code).
+  if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 12)
+    set(CXX_WARNINGS "${CXX_WARNINGS} -Wno-stringop-overflow")
   endif()
 
   # Removed in GCC 9.1 (or before ?), but still accepted, so spams the output
@@ -862,7 +871,7 @@ if(BUILD_STATIC_DEPS)
   # sqlite3 target already set up
 else()
   add_library(sqlite3 INTERFACE)
-  pkg_check_modules(SQLITE3 REQUIRED sqlite3 IMPORTED_TARGET)
+  pkg_check_modules(SQLITE3 REQUIRED sqlite3>=3.24.0 IMPORTED_TARGET)
   message(STATUS "Found sqlite3 ${SQLITE3_VERSION}")
   target_link_libraries(sqlite3 INTERFACE PkgConfig::SQLITE3)
 endif()

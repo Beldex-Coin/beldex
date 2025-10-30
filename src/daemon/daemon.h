@@ -34,7 +34,7 @@
 #include "p2p/net_node.h"
 #include "rpc/core_rpc_server.h"
 #include "rpc/http_server.h"
-#include "rpc/lmq_server.h"
+#include "rpc/omq_server.h"
 
 #include "blocks/blocks.h"
 #include "rpc/core_rpc_server.h"

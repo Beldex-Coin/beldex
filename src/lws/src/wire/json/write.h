@@ -57,6 +57,7 @@ namespace wire
 
     //! \return Null-terminated buffer containing uint as decimal ascii
     static std::array<char, uint_to_string_size> to_string(std::uintmax_t) noexcept;
+    void boolean(bool) override final;
 
     void integer(int) override final;
     void integer(std::intmax_t) override final;
@@ -69,7 +70,6 @@ namespace wire
     void string(boost::string_ref) override final;
     void binary(epee::span<const std::uint8_t> source) override final;
 
-    void enumeration(std::size_t index, epee::span<char const* const> enums) override final;
 
     void start_array(std::size_t) override final;
     void end_array() override final;

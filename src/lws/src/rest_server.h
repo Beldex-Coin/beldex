@@ -31,6 +31,8 @@ namespace lws
             bool allow_external;
         }; //configre
 
+        explicit rest_server(epee::span<const std::string> addresses, std::vector<std::string> admin, db::storage disk, configuration config);
+
         rest_server(epee::span<const std::string> addresses, db::storage disk, configuration config);
 
         rest_server(rest_server&&) = delete;

@@ -180,7 +180,7 @@ namespace db
 
 
     //! Add an account, for immediate inclusion in the active list.
-    expect<void> add_account(account_address const& address, crypto::secret_key const& key) noexcept;
+    expect<void> add_account(account_address const& address, crypto::secret_key const& key, account_flags flags =  static_cast<account_flags>(0)) noexcept;
 
     //! Reset `addresses` to `height` for scanning.
     expect<std::vector<account_address>>

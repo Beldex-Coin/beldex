@@ -46,6 +46,7 @@ extern "C" {
 #include "common/hex.h"
 #include "serialization/variant.h"
 #include "common/util.h"
+#include <serialization/serialization.h>
 
 
 //Define this flag when debugging to get additional info on the console
@@ -79,7 +80,8 @@ namespace rct {
         unsigned char operator[](int i) const {
             return bytes[i];
         }
-        bool operator==(const key &k) const { return !crypto_verify_32(bytes, k.bytes); }
+        bool operator==(const key& k) const { return !crypto_verify_32(bytes, k.bytes); }
+        bool operator!=(const key& k) const { return !operator==(k); }
         unsigned char bytes[32];
     };
     typedef std::vector<key> keyV; //vector of keys
@@ -234,10 +236,47 @@ namespace rct {
       END_SERIALIZE()
     };
 
+    struct BulletproofPlus
+    {
+      rct::keyV V;
+      rct::key A, A1, B;
+      rct::key r1, s1, d1;
+      rct::keyV L, R;
+
+      BulletproofPlus() {}
+      BulletproofPlus(const rct::key &V, const rct::key &A, const rct::key &A1, const rct::key &B, const rct::key &r1, const rct::key &s1, const rct::key &d1, const rct::keyV &L, const rct::keyV &R):
+        V({V}), A(A), A1(A1), B(B), r1(r1), s1(s1), d1(d1), L(L), R(R) {}
+      BulletproofPlus(const rct::keyV &V, const rct::key &A, const rct::key &A1, const rct::key &B, const rct::key &r1, const rct::key &s1, const rct::key &d1, const rct::keyV &L, const rct::keyV &R):
+        V(V), A(A), A1(A1), B(B), r1(r1), s1(s1), d1(d1), L(L), R(R) {}
+
+      bool operator==(const BulletproofPlus &other) const { return V == other.V && A == other.A && A1 == other.A1 && B == other.B && r1 == other.r1 && s1 == other.s1 && d1 == other.d1 && L == other.L && R == other.R; }
+
+      BEGIN_SERIALIZE_OBJECT()
+        // Commitments aren't saved, they're restored via outPk
+        // FIELD(V)
+        FIELD(A)
+        FIELD(A1)
+        FIELD(B)
+        FIELD(r1)
+        FIELD(s1)
+        FIELD(d1)
+        FIELD(L)
+        FIELD(R)
+
+        if (L.empty() || L.size() != R.size())
+          throw std::runtime_error("Bad bulletproofplus serialization");
+      END_SERIALIZE()
+    };
+
     size_t n_bulletproof_amounts(const Bulletproof &proof);
     size_t n_bulletproof_max_amounts(const Bulletproof &proof);
     size_t n_bulletproof_amounts(const std::vector<Bulletproof> &proofs);
     size_t n_bulletproof_max_amounts(const std::vector<Bulletproof> &proofs);
+
+    size_t n_bulletproof_plus_amounts(const BulletproofPlus &proof);
+    size_t n_bulletproof_plus_max_amounts(const BulletproofPlus &proof);
+    size_t n_bulletproof_plus_amounts(const std::vector<BulletproofPlus> &proofs);
+    size_t n_bulletproof_plus_max_amounts(const std::vector<BulletproofPlus> &proofs);
 
     template <typename Archive, typename T>
     auto start_array(Archive& ar, std::string_view tag, std::vector<T>& v, size_t size) {
@@ -263,11 +302,14 @@ namespace rct {
       Bulletproof = 3,
       Bulletproof2 = 4,
       CLSAG = 5,
+      BulletproofPlus = 6,
     };
 
-    inline bool is_rct_simple(RCTType type) { return tools::equals_any(type, RCTType::Simple, RCTType::Bulletproof, RCTType::Bulletproof2, RCTType::CLSAG); }
+    inline bool is_rct_simple(RCTType type) { return tools::equals_any(type, RCTType::Simple, RCTType::Bulletproof, RCTType::Bulletproof2, RCTType::CLSAG, RCTType::BulletproofPlus); }
     inline bool is_rct_bulletproof(RCTType type) { return tools::equals_any(type, RCTType::Bulletproof, RCTType::Bulletproof2, RCTType::CLSAG); }
     inline bool is_rct_borromean(RCTType type) { return tools::equals_any(type, RCTType::Simple, RCTType::Full); }
+    inline bool is_rct_bulletproof_plus(RCTType type) { return tools::equals_any(type, RCTType::BulletproofPlus); }
+    inline bool is_rct_clsag(RCTType type) { return tools::equals_any(type, RCTType::CLSAG, RCTType::BulletproofPlus); }
 
     enum class RangeProofType : uint8_t { Borromean = 0, Bulletproof = 1, MultiOutputBulletproof = 2, PaddedBulletproof = 3 };
     struct RCTConfig {
@@ -290,7 +332,7 @@ namespace rct {
             field_varint(ar, "type", type);
             if (type == RCTType::Null)
                 return;
-            if (!tools::equals_any(type, RCTType::Full, RCTType::Simple, RCTType::Bulletproof, RCTType::Bulletproof2, RCTType::CLSAG))
+            if (!tools::equals_any(type, RCTType::Full, RCTType::Simple, RCTType::Bulletproof, RCTType::Bulletproof2, RCTType::CLSAG, RCTType::BulletproofPlus))
                 throw std::invalid_argument{"invalid ringct type"};
 
             field_varint(ar, "txnFee", txnFee);
@@ -302,35 +344,36 @@ namespace rct {
             {
                 auto arr = start_array(ar, "pseudoOuts", pseudoOuts, inputs);
                 for (auto& e : pseudoOuts)
-                    value(arr.element(), e);
+                    value(ar, e);
             }
 
             {
                 auto arr = start_array(ar, "ecdhInfo", ecdhInfo, outputs);
-                if (tools::equals_any(type, RCTType::Bulletproof2, RCTType::CLSAG))
+                if (tools::equals_any(type, RCTType::Bulletproof2, RCTType::CLSAG, RCTType::BulletproofPlus))
                 {
                     for (auto& e : ecdhInfo) {
-                        auto obj = arr.element().begin_object();
+                        auto obj = ar.begin_object();
                         if (Archive::is_deserializer)
                             memset(e.amount.bytes, 0, sizeof(e.amount.bytes));
                         field(ar, "amount", reinterpret_cast<crypto::hash8&>(e.amount));
                     }
                 } else {
                     for (auto& e : ecdhInfo)
-                        value(arr.element(), e);
+                        value(ar, e);
                 }
             }
 
             {
                 auto arr = start_array(ar, "outPk", outPk, outputs);
                 for (auto& e : outPk)
-                    value(arr.element(), e.mask);
+                    value(ar, e.mask);
             }
         }
     };
     struct rctSigPrunable {
         std::vector<rangeSig> rangeSigs;
         std::vector<Bulletproof> bulletproofs;
+        std::vector<BulletproofPlus> bulletproofs_plus;
         std::vector<mgSig> MGs; // simple rct has N, full has 1
         std::vector<clsag> CLSAGs;
         keyV pseudoOuts; //C - for simple rct
@@ -341,9 +384,22 @@ namespace rct {
         {
             if (type == RCTType::Null)
                 return;
-            if (!tools::equals_any(type, RCTType::Full, RCTType::Simple, RCTType::Bulletproof, RCTType::Bulletproof2, RCTType::CLSAG))
+            if (!tools::equals_any(type, RCTType::Full, RCTType::Simple, RCTType::Bulletproof, RCTType::Bulletproof2, RCTType::CLSAG, RCTType::BulletproofPlus))
                 throw std::invalid_argument{"invalid ringct type"};
-            if (rct::is_rct_bulletproof(type))
+            if (rct::is_rct_bulletproof_plus(type))
+            {
+                uint32_t nbp = bulletproofs_plus.size();
+                field_varint(ar, "nbp", nbp);
+                if (nbp > outputs)
+                    throw std::invalid_argument{"too many bulletproofs_plus"};
+                auto arr = start_array(ar, "bpp", bulletproofs_plus, nbp);
+                for (auto& b : bulletproofs_plus)
+                    value(ar, b);
+                if (auto n_max = n_bulletproof_plus_max_amounts(bulletproofs_plus); n_max < outputs)
+                    throw std::invalid_argument{"invalid bulletproofs_plus: n_max (" + std::to_string(n_max) + ") < outputs (" + std::to_string(outputs) + ")"};
+                
+            }
+            else if (rct::is_rct_bulletproof(type))
             {
                 uint32_t nbp = bulletproofs.size();
                 if (tools::equals_any(type, RCTType::Bulletproof2, RCTType::CLSAG))
@@ -355,7 +411,7 @@ namespace rct {
 
                 auto arr = start_array(ar, "bp", bulletproofs, nbp);
                 for (auto& b : bulletproofs)
-                    value(arr.element(), b);
+                    value(ar, b);
 
                 if (auto n_max = n_bulletproof_max_amounts(bulletproofs); n_max < outputs)
                     throw std::invalid_argument{"invalid bulletproofs: n_max (" + std::to_string(n_max) + ") < outputs (" + std::to_string(outputs) + ")"};
@@ -364,10 +420,10 @@ namespace rct {
             {
                 auto arr = start_array(ar, "rangeSigs", rangeSigs, outputs);
                 for (auto& s : rangeSigs)
-                    value(arr.element(), s);
+                    value(ar, s);
             }
 
-            if (type == RCTType::CLSAG)
+            if (type == RCTType::CLSAG || type == RCTType::BulletproofPlus)
             {
                 auto arr = start_array(ar, "CLSAGs", CLSAGs, inputs);
 
@@ -376,11 +432,11 @@ namespace rct {
                     // we save the CLSAGs contents directly, because we want it to save its
                     // arrays without the size prefixes, and the load can't know what size
                     // to expect if it's not in the data
-                    auto obj = arr.element().begin_object();
+                    auto obj = ar.begin_object();
                     {
                         auto arr_s = start_array(ar, "s", clsag.s, mixin + 1);
                         for (auto& x : clsag.s)
-                            value(arr_s.element(), x);
+                            value(ar, x);
                     }
                     field(ar, "c1", clsag.c1);
                     field(ar, "D", clsag.D);
@@ -401,7 +457,7 @@ namespace rct {
                     auto arr = start_array(ar, "MGs", MGs, mg_elements);
                     for (auto& mg : MGs)
                     {
-                        auto obj = arr.element().begin_object();
+                        auto obj = ar.begin_object();
 
                         // we save the MGs contents directly, because we want it to save its
                         // arrays and matrices without the size prefixes, and the load can't
@@ -410,14 +466,14 @@ namespace rct {
                             auto arr_ss = start_array(ar, "ss", mg.ss, mixin + 1);
                             for (auto& ss : mg.ss)
                             {
-                                auto arr_ss2 = arr_ss.element().begin_array();
+                                auto arr_ss2 = ar.begin_array();
                                 if constexpr (Archive::is_deserializer)
                                     ss.resize(mg_ss2_elements);
                                 else if (ss.size() != mg_ss2_elements)
                                     throw std::invalid_argument{"invalid mg_ss2 size: have " + std::to_string(ss.size()) + ", expected " + std::to_string(mg_ss2_elements)};
 
                                 for (auto& x : ss)
-                                    value(arr_ss2.element(), x);
+                                    value(ar, x);
                             }
                         }
                         field(ar, "cc", mg.cc);
@@ -425,26 +481,34 @@ namespace rct {
                     }
                 }
             }
-            if (tools::equals_any(type, RCTType::Bulletproof, RCTType::Bulletproof2, RCTType::CLSAG))
+            if (tools::equals_any(type, RCTType::Bulletproof, RCTType::Bulletproof2, RCTType::CLSAG, RCTType::BulletproofPlus))
             {
                 auto arr = start_array(ar, "pseudoOuts", pseudoOuts, inputs);
                 for (auto& o : pseudoOuts)
-                    value(arr.element(), o);
+                    value(ar, o);
             }
         }
 
+        BEGIN_SERIALIZE_OBJECT()
+          FIELD(rangeSigs)
+          FIELD(bulletproofs)
+          FIELD(bulletproofs_plus)
+          FIELD(MGs)
+          FIELD(CLSAGs)
+          FIELD(pseudoOuts)
+        END_SERIALIZE()
     };
     struct rctSig: public rctSigBase {
         rctSigPrunable p;
 
         keyV& get_pseudo_outs()
         {
-          return rct::is_rct_bulletproof(type) ? p.pseudoOuts : pseudoOuts;
+          return (type == RCTType::Bulletproof || type == RCTType::Bulletproof2 || type == RCTType::CLSAG || type == RCTType::BulletproofPlus) ? p.pseudoOuts : pseudoOuts;
         }
 
         keyV const& get_pseudo_outs() const
         {
-          return rct::is_rct_bulletproof(type) ? p.pseudoOuts : pseudoOuts;
+          return (type == RCTType::Bulletproof || type == RCTType::Bulletproof2 || type == RCTType::CLSAG || type == RCTType::BulletproofPlus) ? p.pseudoOuts : pseudoOuts;
         }
     };
 
@@ -604,3 +668,4 @@ VARIANT_TAG(rct::Bulletproof, "rct_bulletproof", 0x9c);
 VARIANT_TAG(rct::multisig_kLRki, "rct_multisig_kLR", 0x9d);
 VARIANT_TAG(rct::multisig_out, "rct_multisig_out", 0x9e);
 VARIANT_TAG(rct::clsag, "rct_clsag", 0x9f);
+VARIANT_TAG(rct::BulletproofPlus, "rct_bulletproof_plus", 0xa0);

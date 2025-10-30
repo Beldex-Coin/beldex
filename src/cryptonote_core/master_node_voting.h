@@ -102,14 +102,14 @@ namespace master_nodes
   struct master_node_keys;
 
   quorum_vote_t            make_state_change_vote(uint64_t block_height, uint16_t index_in_group, uint16_t worker_index, new_state state, uint16_t reason, const master_node_keys &keys);
-  quorum_vote_t            make_checkpointing_vote(uint8_t hf_version, crypto::hash const &block_hash, uint64_t block_height, uint16_t index_in_quorum, const master_node_keys &keys);
+  quorum_vote_t            make_checkpointing_vote(cryptonote::hf hf_version, crypto::hash const &block_hash, uint64_t block_height, uint16_t index_in_quorum, const master_node_keys &keys);
   cryptonote::checkpoint_t make_empty_master_node_checkpoint(crypto::hash const &block_hash, uint64_t height);
 
-  bool               verify_checkpoint                  (uint8_t hf_version, cryptonote::checkpoint_t const &checkpoint, master_nodes::quorum const &quorum);
-  bool               verify_tx_state_change             (const cryptonote::tx_extra_master_node_state_change& state_change, uint64_t latest_height, cryptonote::tx_verification_context& vvc, const master_nodes::quorum &quorum, const uint8_t hf_version);
-  bool               verify_vote_age                    (const quorum_vote_t& vote, uint64_t latest_height, cryptonote::vote_verification_context &vvc,uint8_t hf_version);
-  bool               verify_vote_signature              (uint8_t hf_version, const quorum_vote_t& vote, cryptonote::vote_verification_context &vvc, const master_nodes::quorum &quorum);
-  bool               verify_quorum_signatures           (master_nodes::quorum const &quorum, master_nodes::quorum_type type, uint8_t hf_version, uint64_t height, crypto::hash const &hash, std::vector<quorum_signature> const &signatures, const cryptonote::block* block = nullptr);
+  bool               verify_checkpoint                  (cryptonote::hf hf_version, cryptonote::checkpoint_t const &checkpoint, master_nodes::quorum const &quorum);
+  bool               verify_tx_state_change             (const cryptonote::tx_extra_master_node_state_change& state_change, uint64_t latest_height, cryptonote::tx_verification_context& vvc, const master_nodes::quorum &quorum, const cryptonote::hf hf_version);
+  bool               verify_vote_age                    (const quorum_vote_t& vote, uint64_t latest_height, cryptonote::vote_verification_context &vvc, cryptonote::hf hf_version);
+  bool               verify_vote_signature              (cryptonote::hf hf_version, const quorum_vote_t& vote, cryptonote::vote_verification_context &vvc, const master_nodes::quorum &quorum);
+  bool               verify_quorum_signatures           (master_nodes::quorum const &quorum, master_nodes::quorum_type type, cryptonote::hf hf_version, uint64_t height, crypto::hash const &hash, std::vector<quorum_signature> const &signatures, const cryptonote::block* block = nullptr);
   bool               verify_POS_quorum_sizes          (master_nodes::quorum const &quorum);
   crypto::signature  make_signature_from_vote           (quorum_vote_t const &vote, const master_node_keys &keys);
   crypto::signature  make_signature_from_tx_state_change(cryptonote::tx_extra_master_node_state_change const &state_change, const master_node_keys &keys);
@@ -128,13 +128,13 @@ namespace master_nodes
 
     // TODO(beldex): Review relay behaviour and all the cases when it should be triggered
     void                         set_relayed         (const std::vector<quorum_vote_t>& votes);
-    void                         remove_expired_votes(uint64_t height,uint8_t hf_version);
-    void                         remove_used_votes   (std::vector<cryptonote::transaction> const &txs, uint8_t hard_fork_version);
+    void                         remove_expired_votes(uint64_t height);
+    void                         remove_used_votes   (std::vector<cryptonote::transaction> const &txs, cryptonote::hf version);
 
     /// Returns relayable votes for either p2p (quorum_relay=false) or quorumnet
     /// (quorum_relay=true).  Before HF14 everything goes via p2p; starting in HF14 obligation votes
     /// go via quorumnet, checkpoints go via p2p.
-    std::vector<quorum_vote_t>   get_relayable_votes (uint64_t height, uint8_t hf_version, bool quorum_relay) const;
+    std::vector<quorum_vote_t>   get_relayable_votes (uint64_t height, cryptonote::hf hf_version, bool quorum_relay) const;
     bool                         received_checkpoint_vote(uint64_t height, size_t index_in_quorum) const;
 
   private:

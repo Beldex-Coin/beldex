@@ -5,7 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
-
+#include "wire.h"
 #include "db/string.h"
 #include "error.h"
 #include "misc_os_dependent.h"      // beldex/contrib/epee/include
@@ -74,7 +74,7 @@ namespace
     // std::cout << "called ringct write_bytes\n";
     rct_bytes rct{};
     rct_bytes const* optional_rct = nullptr;
-    if (unpack(self.data.first.extra).first & lws::db::ringct_output)
+    if (unpack(self.data.first.extra).first)
     {
       crypto::key_derivation derived;
       if (!crypto::generate_key_derivation(self.data.first.spend_meta.tx_public, self.user_key, derived))
@@ -101,6 +101,7 @@ namespace
       wire::field("tx_id", self.data.first.spend_meta.id.low),
       wire::field("tx_hash", std::cref(self.data.first.link.tx_hash)),
       wire::field("tx_prefix_hash", std::cref(self.data.first.tx_prefix_hash)),
+      wire::field("locked_key_image", std::cref(self.data.first.locked_key_image)),
       wire::field("tx_pub_key", self.data.first.spend_meta.tx_public),
       wire::field("timestamp", iso_timestamp(self.data.first.timestamp)),
       wire::field("height", self.data.first.link.height),
@@ -139,7 +140,7 @@ namespace lws
 
   void rpc::read_bytes(wire::json_reader& source, safe_uint64& self)
   {
-    self = safe_uint64(wire::integer::convert_to<std::uint64_t>(source.safe_unsigned_integer()));
+    self = safe_uint64(wire::integer::cast_unsigned<std::uint64_t>(source.safe_unsigned_integer()));
   }
   void rpc::write_bytes(wire::json_writer& dest, const safe_uint64 self)
   {
@@ -149,7 +150,7 @@ namespace lws
   void rpc::read_bytes(wire::json_reader& source, safe_uint64_array& self)
   {
     for (std::size_t count = source.start_array(); !source.is_array_end(count); --count)
-      self.values.emplace_back(wire::integer::convert_to<std::uint64_t>(source.safe_unsigned_integer()));
+    self.values.emplace_back(wire::integer::cast_unsigned<std::uint64_t>(source.safe_unsigned_integer()));
     source.end_array();
   }
 
@@ -163,6 +164,29 @@ namespace lws
     convert_address(address, self.address);
   }
 
+  namespace rpc
+  {
+    namespace
+    {
+      constexpr const char* map_daemon_state[] = {"ok", "no_connections", "synchronizing", "unavailable"};
+      constexpr const char* map_network_type[] = {"main", "test", "stage", "fake"};
+    }
+    WIRE_DEFINE_ENUM(daemon_state, map_daemon_state);
+    WIRE_DEFINE_ENUM(network_type, map_network_type);
+  }
+
+  void rpc::write_bytes(wire::json_writer& dest, const daemon_status_response& self)
+  {
+    wire::object(dest,
+      WIRE_FIELD(outgoing_connections_count),
+      WIRE_FIELD(incoming_connections_count),
+      WIRE_FIELD(height),
+      WIRE_FIELD(target_height),
+      WIRE_FIELD(network),
+      WIRE_FIELD(state)
+    );
+  }
+  
   void rpc::write_bytes(wire::json_writer& dest, const transaction_spend& self)
   {
     wire::object(dest,

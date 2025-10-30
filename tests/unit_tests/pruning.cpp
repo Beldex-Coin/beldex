@@ -76,49 +76,49 @@ TEST(pruning, fits)
 
 TEST(pruning, tip)
 {
-  static constexpr uint64_t H = CRYPTONOTE_PRUNING_TIP_BLOCKS + 1000;
-  static_assert(H >= CRYPTONOTE_PRUNING_TIP_BLOCKS, "H must be >= CRYPTONOTE_PRUNING_TIP_BLOCKS");
-  for (uint64_t h = H - CRYPTONOTE_PRUNING_TIP_BLOCKS; h < H; ++h)
+  static constexpr uint64_t H = cryptonote::PRUNING_TIP_BLOCKS + 1000;
+  static_assert(H >= cryptonote::PRUNING_TIP_BLOCKS, "H must be >= cryptonote::PRUNING_TIP_BLOCKS");
+  for (uint64_t h = H - cryptonote::PRUNING_TIP_BLOCKS; h < H; ++h)
   {
-    uint32_t pruning_seed = tools::get_pruning_seed(h, H, CRYPTONOTE_PRUNING_LOG_STRIPES);
+    uint32_t pruning_seed = tools::get_pruning_seed(h, H, cryptonote::PRUNING_LOG_STRIPES);
     ASSERT_EQ(pruning_seed, 0);
-    for (pruning_seed = 0; pruning_seed <= (1 << CRYPTONOTE_PRUNING_LOG_STRIPES); ++pruning_seed)
+    for (pruning_seed = 0; pruning_seed <= (1 << cryptonote::PRUNING_LOG_STRIPES); ++pruning_seed)
       ASSERT_TRUE(tools::has_unpruned_block(h, H, pruning_seed));
   }
 }
 
 TEST(pruning, seed)
 {
-  const uint64_t SS = CRYPTONOTE_PRUNING_STRIPE_SIZE;
-  const uint64_t NS = 1 << CRYPTONOTE_PRUNING_LOG_STRIPES;
+  const uint64_t SS = cryptonote::PRUNING_STRIPE_SIZE;
+  const uint64_t NS = 1 << cryptonote::PRUNING_LOG_STRIPES;
   const uint64_t TB = NS * SS;
 
   for (uint64_t cycle = 0; cycle < 10; ++cycle)
   {
     const uint64_t O = TB * cycle;
-    ASSERT_EQ(tools::get_pruning_stripe(O + 0,       10000000, CRYPTONOTE_PRUNING_LOG_STRIPES), 1);
-    ASSERT_EQ(tools::get_pruning_stripe(O + 1,       10000000, CRYPTONOTE_PRUNING_LOG_STRIPES), 1);
-    ASSERT_EQ(tools::get_pruning_stripe(O + SS-1,    10000000, CRYPTONOTE_PRUNING_LOG_STRIPES), 1);
-    ASSERT_EQ(tools::get_pruning_stripe(O + SS,      10000000, CRYPTONOTE_PRUNING_LOG_STRIPES), 2);
-    ASSERT_EQ(tools::get_pruning_stripe(O + SS*2-1,  10000000, CRYPTONOTE_PRUNING_LOG_STRIPES), 2);
-    ASSERT_EQ(tools::get_pruning_stripe(O + SS*2,    10000000, CRYPTONOTE_PRUNING_LOG_STRIPES), 3);
-    ASSERT_EQ(tools::get_pruning_stripe(O + SS*NS-1, 10000000, CRYPTONOTE_PRUNING_LOG_STRIPES), NS);
-    ASSERT_EQ(tools::get_pruning_stripe(O + SS*NS,   10000000, CRYPTONOTE_PRUNING_LOG_STRIPES), 1);
+    ASSERT_EQ(tools::get_pruning_stripe(O + 0,       10000000, cryptonote::PRUNING_LOG_STRIPES), 1);
+    ASSERT_EQ(tools::get_pruning_stripe(O + 1,       10000000, cryptonote::PRUNING_LOG_STRIPES), 1);
+    ASSERT_EQ(tools::get_pruning_stripe(O + SS-1,    10000000, cryptonote::PRUNING_LOG_STRIPES), 1);
+    ASSERT_EQ(tools::get_pruning_stripe(O + SS,      10000000, cryptonote::PRUNING_LOG_STRIPES), 2);
+    ASSERT_EQ(tools::get_pruning_stripe(O + SS*2-1,  10000000, cryptonote::PRUNING_LOG_STRIPES), 2);
+    ASSERT_EQ(tools::get_pruning_stripe(O + SS*2,    10000000, cryptonote::PRUNING_LOG_STRIPES), 3);
+    ASSERT_EQ(tools::get_pruning_stripe(O + SS*NS-1, 10000000, cryptonote::PRUNING_LOG_STRIPES), NS);
+    ASSERT_EQ(tools::get_pruning_stripe(O + SS*NS,   10000000, cryptonote::PRUNING_LOG_STRIPES), 1);
   }
 }
 
 TEST(pruning, match)
 {
-  static constexpr uint64_t H = CRYPTONOTE_PRUNING_TIP_BLOCKS + 1000;
-  static_assert(H >= CRYPTONOTE_PRUNING_TIP_BLOCKS, "H must be >= CRYPTONOTE_PRUNING_TIP_BLOCKS");
-  for (uint64_t h = 0; h < H - CRYPTONOTE_PRUNING_TIP_BLOCKS; ++h)
+  static constexpr uint64_t H = cryptonote::PRUNING_TIP_BLOCKS + 1000;
+  static_assert(H >= cryptonote::PRUNING_TIP_BLOCKS, "H must be >= cryptonote::PRUNING_TIP_BLOCKS");
+  for (uint64_t h = 0; h < H - cryptonote::PRUNING_TIP_BLOCKS; ++h)
   {
-    uint32_t pruning_seed = tools::get_pruning_seed(h, H, CRYPTONOTE_PRUNING_LOG_STRIPES);
+    uint32_t pruning_seed = tools::get_pruning_seed(h, H, cryptonote::PRUNING_LOG_STRIPES);
     uint32_t pruning_stripe = tools::get_pruning_stripe(pruning_seed);
-    ASSERT_TRUE(pruning_stripe > 0 && pruning_stripe <= (1 << CRYPTONOTE_PRUNING_LOG_STRIPES));
-    for (uint32_t other_pruning_stripe = 1; other_pruning_stripe <= (1 << CRYPTONOTE_PRUNING_LOG_STRIPES); ++other_pruning_stripe)
+    ASSERT_TRUE(pruning_stripe > 0 && pruning_stripe <= (1 << cryptonote::PRUNING_LOG_STRIPES));
+    for (uint32_t other_pruning_stripe = 1; other_pruning_stripe <= (1 << cryptonote::PRUNING_LOG_STRIPES); ++other_pruning_stripe)
     {
-      uint32_t other_pruning_seed = tools::make_pruning_seed(other_pruning_stripe, CRYPTONOTE_PRUNING_LOG_STRIPES);
+      uint32_t other_pruning_seed = tools::make_pruning_seed(other_pruning_stripe, cryptonote::PRUNING_LOG_STRIPES);
       ASSERT_TRUE(tools::has_unpruned_block(h, H, other_pruning_seed) == (other_pruning_seed == pruning_seed));
     }
   }
@@ -126,13 +126,13 @@ TEST(pruning, match)
 
 TEST(pruning, stripe_size)
 {
-  static constexpr uint64_t H = CRYPTONOTE_PRUNING_TIP_BLOCKS + CRYPTONOTE_PRUNING_STRIPE_SIZE * (1 << CRYPTONOTE_PRUNING_LOG_STRIPES) + 1000;
-  static_assert(H >= CRYPTONOTE_PRUNING_TIP_BLOCKS + CRYPTONOTE_PRUNING_STRIPE_SIZE * (1 << CRYPTONOTE_PRUNING_LOG_STRIPES), "H must be >= that stuff in front");
-  for (uint32_t pruning_stripe = 1; pruning_stripe <= (1 << CRYPTONOTE_PRUNING_LOG_STRIPES); ++pruning_stripe)
+  static constexpr uint64_t H = cryptonote::PRUNING_TIP_BLOCKS + cryptonote::PRUNING_STRIPE_SIZE * (1 << cryptonote::PRUNING_LOG_STRIPES) + 1000;
+  static_assert(H >= cryptonote::PRUNING_TIP_BLOCKS + cryptonote::PRUNING_STRIPE_SIZE * (1 << cryptonote::PRUNING_LOG_STRIPES), "H must be >= that stuff in front");
+  for (uint32_t pruning_stripe = 1; pruning_stripe <= (1 << cryptonote::PRUNING_LOG_STRIPES); ++pruning_stripe)
   {
-    uint32_t pruning_seed = tools::make_pruning_seed(pruning_stripe, CRYPTONOTE_PRUNING_LOG_STRIPES);
+    uint32_t pruning_seed = tools::make_pruning_seed(pruning_stripe, cryptonote::PRUNING_LOG_STRIPES);
     unsigned int current_run = 0, best_run = 0;
-    for (uint64_t h = 0; h < H - CRYPTONOTE_PRUNING_TIP_BLOCKS; ++h)
+    for (uint64_t h = 0; h < H - cryptonote::PRUNING_TIP_BLOCKS; ++h)
     {
       if (tools::has_unpruned_block(h, H, pruning_seed))
       {
@@ -140,31 +140,31 @@ TEST(pruning, stripe_size)
       }
       else if (current_run)
       {
-        ASSERT_EQ(current_run, CRYPTONOTE_PRUNING_STRIPE_SIZE);
+        ASSERT_EQ(current_run, cryptonote::PRUNING_STRIPE_SIZE);
         best_run = std::max(best_run, current_run);
         current_run = 0;
       }
     }
-    ASSERT_EQ(best_run, CRYPTONOTE_PRUNING_STRIPE_SIZE);
+    ASSERT_EQ(best_run, cryptonote::PRUNING_STRIPE_SIZE);
   }
 }
 
 TEST(pruning, next_unpruned)
 {
-  static_assert((1 << CRYPTONOTE_PRUNING_LOG_STRIPES) >= 4, "CRYPTONOTE_PRUNING_LOG_STRIPES too low");
+  static_assert((1 << cryptonote::PRUNING_LOG_STRIPES) >= 4, "cryptonote::PRUNING_LOG_STRIPES too low");
 
-  const uint64_t SS = CRYPTONOTE_PRUNING_STRIPE_SIZE;
-  const uint64_t NS = 1 << CRYPTONOTE_PRUNING_LOG_STRIPES;
+  const uint64_t SS = cryptonote::PRUNING_STRIPE_SIZE;
+  const uint64_t NS = 1 << cryptonote::PRUNING_LOG_STRIPES;
   const uint64_t TB = NS * SS;
 
   for (uint64_t h = 0; h < 100; ++h)
     ASSERT_EQ(tools::get_next_unpruned_block_height(h, 10000000, 0), h);
 
-  const uint32_t seed1 = tools::make_pruning_seed(1, CRYPTONOTE_PRUNING_LOG_STRIPES);
-  const uint32_t seed2 = tools::make_pruning_seed(2, CRYPTONOTE_PRUNING_LOG_STRIPES);
-  const uint32_t seed3 = tools::make_pruning_seed(3, CRYPTONOTE_PRUNING_LOG_STRIPES);
-  const uint32_t seed4 = tools::make_pruning_seed(4, CRYPTONOTE_PRUNING_LOG_STRIPES);
-  const uint32_t seedNS = tools::make_pruning_seed(NS, CRYPTONOTE_PRUNING_LOG_STRIPES);
+  const uint32_t seed1 = tools::make_pruning_seed(1, cryptonote::PRUNING_LOG_STRIPES);
+  const uint32_t seed2 = tools::make_pruning_seed(2, cryptonote::PRUNING_LOG_STRIPES);
+  const uint32_t seed3 = tools::make_pruning_seed(3, cryptonote::PRUNING_LOG_STRIPES);
+  const uint32_t seed4 = tools::make_pruning_seed(4, cryptonote::PRUNING_LOG_STRIPES);
+  const uint32_t seedNS = tools::make_pruning_seed(NS, cryptonote::PRUNING_LOG_STRIPES);
 
   ASSERT_EQ(tools::get_next_unpruned_block_height(0,      10000000, seed1), 0);
   ASSERT_EQ(tools::get_next_unpruned_block_height(1,      10000000, seed1), 1);
@@ -201,20 +201,20 @@ TEST(pruning, next_unpruned)
 
 TEST(pruning, next_pruned)
 {
-  static_assert((1 << CRYPTONOTE_PRUNING_LOG_STRIPES) >= 4, "CRYPTONOTE_PRUNING_LOG_STRIPES too low");
+  static_assert((1 << cryptonote::PRUNING_LOG_STRIPES) >= 4, "cryptonote::PRUNING_LOG_STRIPES too low");
 
-  const uint64_t SS = CRYPTONOTE_PRUNING_STRIPE_SIZE;
-  const uint64_t NS = 1 << CRYPTONOTE_PRUNING_LOG_STRIPES;
+  const uint64_t SS = cryptonote::PRUNING_STRIPE_SIZE;
+  const uint64_t NS = 1 << cryptonote::PRUNING_LOG_STRIPES;
   const uint64_t TB = NS * SS;
 
-  const uint32_t seed1 = tools::make_pruning_seed(1, CRYPTONOTE_PRUNING_LOG_STRIPES);
-  const uint32_t seed2 = tools::make_pruning_seed(2, CRYPTONOTE_PRUNING_LOG_STRIPES);
-  const uint32_t seedNS_1 = tools::make_pruning_seed(NS-1, CRYPTONOTE_PRUNING_LOG_STRIPES);
-  const uint32_t seedNS = tools::make_pruning_seed(NS, CRYPTONOTE_PRUNING_LOG_STRIPES);
+  const uint32_t seed1 = tools::make_pruning_seed(1, cryptonote::PRUNING_LOG_STRIPES);
+  const uint32_t seed2 = tools::make_pruning_seed(2, cryptonote::PRUNING_LOG_STRIPES);
+  const uint32_t seedNS_1 = tools::make_pruning_seed(NS-1, cryptonote::PRUNING_LOG_STRIPES);
+  const uint32_t seedNS = tools::make_pruning_seed(NS, cryptonote::PRUNING_LOG_STRIPES);
 
   for (uint64_t h = 0; h < 100; ++h)
     ASSERT_EQ(tools::get_next_pruned_block_height(h, 10000000, 0), 10000000);
-  for (uint64_t h = 10000000 - 1 - CRYPTONOTE_PRUNING_TIP_BLOCKS; h < 10000000; ++h)
+  for (uint64_t h = 10000000 - 1 - cryptonote::PRUNING_TIP_BLOCKS; h < 10000000; ++h)
     ASSERT_EQ(tools::get_next_pruned_block_height(h, 10000000, 0), 10000000);
 
   ASSERT_EQ(tools::get_next_pruned_block_height(1,    10000000, seed1), SS);

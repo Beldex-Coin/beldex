@@ -30,7 +30,7 @@
 
 #pragma once 
 
-#include <boost/endian/conversion.hpp>
+#include <oxenc/endian.h>
 #include <optional>
 #include <memory>
 #include <string>
@@ -65,7 +65,7 @@ namespace tools
   std::string input_line_win();
 #endif
 
-  std::string get_human_readable_timestamp(uint64_t ts);
+  std::string get_human_readable_timestamp(std::time_t ts);
   std::string get_human_readable_timespan(std::chrono::seconds seconds);
   std::string get_human_readable_bytes(uint64_t bytes);
 
@@ -85,7 +85,7 @@ namespace tools
     // Copy an integer type, swapping to little-endian if needed
     template <typename T, std::enable_if_t<std::is_integral<T>::value, int> = 0>
     void memcpy_one(char*& dest, T t) {
-      boost::endian::native_to_little_inplace(t);
+      oxenc::host_to_little_inplace(t);
       std::memcpy(dest, &t, sizeof(T));
       dest += sizeof(T);
     }

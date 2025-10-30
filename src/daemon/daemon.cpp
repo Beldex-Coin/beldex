@@ -41,19 +41,19 @@
 #if defined(PER_BLOCK_CHECKPOINT)
 #include "blocks/blocks.h"
 #endif
-#include "rpc/rpc_args.h"
+#include "rpc/common/rpc_args.h"
 #include "rpc/http_server.h"
-#include "rpc/lmq_server.h"
+#include "rpc/omq_server.h"
+#include "rpc/bootstrap_daemon.h"
 #include "cryptonote_protocol/quorumnet.h"
 #include "cryptonote_core/uptime_proof.h"
 
 #include "common/password.h"
 #include "common/signal_handler.h"
-#include "daemon/command_server.h"
-#include "daemon/command_line_args.h"
 #include "net/parse.h"
 #include "version.h"
 
+#include "command_line_args.h"
 #include "command_server.h"
 #include "daemon.h"
 
@@ -121,6 +121,10 @@ daemon::daemon(boost::program_options::variables_map vm_) :
   if (!p2p->init(vm))
     throw std::runtime_error("Failed to initialize p2p server.");
 
+  MGINFO("- rpc");
+  if (!rpc->init(vm))
+    throw std::runtime_error("Failed to initialize rpc server.");
+
   // Handle circular dependencies
   protocol->set_p2p_endpoint(p2p.get());
   core->set_cryptonote_protocol(protocol.get());
@@ -160,11 +164,11 @@ daemon::daemon(boost::program_options::variables_map vm_) :
       if (restricted && restricted_rpc_port != 0)
         std::swap(main_rpc_port, restricted_rpc_port);
       else if (command_line::get_arg(vm, cryptonote::arg_testnet_on))
-        main_rpc_port = config::testnet::RPC_DEFAULT_PORT;
+        main_rpc_port = cryptonote::config::testnet::RPC_DEFAULT_PORT;
       else if (command_line::get_arg(vm, cryptonote::arg_devnet_on))
-        main_rpc_port = config::devnet::RPC_DEFAULT_PORT;
+        main_rpc_port = cryptonote::config::devnet::RPC_DEFAULT_PORT;
       else
-        main_rpc_port = config::RPC_DEFAULT_PORT;
+        main_rpc_port = cryptonote::config::RPC_DEFAULT_PORT;
     }
     if (main_rpc_port && main_rpc_port == restricted_rpc_port)
       restricted = true;
@@ -233,6 +237,13 @@ daemon::~daemon()
   if (http_rpc_admin) {
     MGINFO("- admin HTTP RPC server");
     http_rpc_admin.reset();
+  }
+
+  MGINFO("- rpc");
+  try {
+    rpc->deinit();
+  } catch (const std::exception& e) {
+    MERROR("Failed to deinitialize rpc: " << e.what());
   }
 
   MGINFO("- p2p");
@@ -320,11 +331,25 @@ bool daemon::run(bool interactive)
       http_rpc_public->start();
     }
 
-    std::unique_ptr<daemonize::command_server> rpc_commands;
+    std::optional<daemonize::command_server> rpc_commands;
     if (interactive)
     {
       MGINFO("Starting command-line processor");
-      rpc_commands = std::make_unique<daemonize::command_server>(*rpc);
+      auto& omq = core->get_omq();
+
+      std::promise<void> p;
+      auto conn = omq.connect_inproc(
+          [&p] (oxenmq::ConnectionID) { p.set_value(); },
+          [&p] (oxenmq::ConnectionID, std::string_view err) {
+            try {
+              throw std::runtime_error{"Internal beldexd RPC connection failed: " + std::string{err}};
+            } catch (...) {
+              p.set_exception(std::current_exception());
+            }
+          });
+      p.get_future().get();
+
+      rpc_commands.emplace(omq, std::move(conn));
       rpc_commands->start_handling([this] { stop(); });
     }
 
@@ -341,6 +366,7 @@ bool daemon::run(bool interactive)
     {
       MGINFO("Stopping RPC command processor");
       rpc_commands->stop_handling();
+      rpc_commands.reset();
     }
 
     if (http_rpc_public) {

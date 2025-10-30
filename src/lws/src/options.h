@@ -15,9 +15,9 @@
 namespace lws
 {
    const std::string default_db_subdir = "/light_wallet_server";
-   const std::string dir_slash = "/.";
+   const std::string dir_slash = "/";
   //  std::cout<< std::getenv("HOME");
-   const std::string default_db_dir = std::getenv("HOME")+ dir_slash + CRYPTONOTE_NAME;
+   const std::string default_db_dir = std::getenv("HOME")+ dir_slash + std::string(cryptonote::DATA_DIRNAME);
   // const std::string default_db_dir = std::string("/home/blockhash")+ dir_slash + CRYPTONOTE_NAME;
    struct options
   {

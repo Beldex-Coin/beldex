@@ -37,12 +37,9 @@
 #include "net/tor_address.h"
 #include "net/i2p_address.h"
 #include "p2p/p2p_protocol_defs.h"
-
-#ifdef CRYPTONOTE_PRUNING_DEBUG_SPOOF_SEED
 #include "common/pruning.h"
-#endif
 
-BOOST_CLASS_VERSION(nodetool::peerlist_entry, 2)
+BOOST_CLASS_VERSION(nodetool::peerlist_entry, 3)
 
 namespace boost
 {
@@ -228,19 +225,21 @@ namespace boost
         return;
       }
       a & pl.pruning_seed;
-#ifdef CRYPTONOTE_PRUNING_DEBUG_SPOOF_SEED
-      if (!typename Archive::is_saving())
+      if constexpr (cryptonote::PRUNING_DEBUG_SPOOF_SEED && !typename Archive::is_saving())
       {
-        pl.pruning_seed = tools::make_pruning_seed(1+pl.adr.as<epee::net_utils::ipv4_network_address>().ip() % (1<<CRYPTONOTE_PRUNING_LOG_STRIPES), CRYPTONOTE_PRUNING_LOG_STRIPES);
+          pl.pruning_seed = tools::make_pruning_seed(1+pl.adr.as<epee::net_utils::ipv4_network_address>().ip() % (1 << cryptonote::PRUNING_LOG_STRIPES), cryptonote::PRUNING_LOG_STRIPES);
       }
-#endif
       if (ver < 2)
       {
-        if (!typename Archive::is_saving())
-          pl.rpc_port = 0;
         return;
       }
-      a & pl.rpc_port;
+      
+      if (ver < 3)
+      {
+        // Unused, but don't break
+        uint16_t rpc_port = 0;
+        a & rpc_port;
+      }
     }
 
     template <class Archive, class ver_type>

@@ -7,8 +7,7 @@ add_subdirectory(rpc)
 add_subdirectory(util)
 add_subdirectory(wire)
 
-find_package(nlohmann_json 3.7.0 REQUIRED)
-find_package(Boost 1.45.0 COMPONENTS filesystem regex)
+find_package(Boost 1.62 COMPONENTS filesystem regex)
 find_package(OpenSSL REQUIRED)
 
 set(beldex-lws-common_sources config.cpp error.cpp)
@@ -20,7 +19,6 @@ target_link_libraries(beldex-lws-common beldex-lws-db)
 add_executable(beldex-lws-daemon server_main.cpp scanner.cpp rest_server.cpp)
 
 target_link_libraries(beldex-lws-daemon PUBLIC
-    beldex-lws-db
     beldex-lws-common
     beldex-lws-rpc
     beldex-lws-util
@@ -34,12 +32,12 @@ target_link_libraries(beldex-lws-daemon PUBLIC
     Threads::Threads
     Boost::regex
 )
-target_link_libraries(beldex-lws-daemon PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(beldex-lws-daemon PRIVATE nlohmann_json::nlohmann_json Boost::filesystem)
 
 add_executable(beldex-lws-admin admin_main.cpp)
 target_link_libraries(beldex-lws-admin PRIVATE 
-beldex-lws-db
 beldex-lws-common
+beldex-lws-rpc
 beldex-lws-wire-json
 )
 
