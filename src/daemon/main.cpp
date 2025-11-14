@@ -39,7 +39,7 @@
 #include "daemonizer/daemonizer.h"
 #include "epee/misc_log_ex.h"
 #include "p2p/net_node.h"
-#include "rpc/rpc_args.h"
+#include "rpc/common/rpc_args.h"
 #include "rpc/core_rpc_server.h"
 #include "daemon/command_line_args.h"
 #include "version.h"
@@ -171,8 +171,8 @@ int main(int argc, char const * argv[])
       // want to rename if we find one (the data-dir migration happens later):
       std::list<std::pair<fs::path, bool>> potential;
       if (std::error_code ec; fs::exists(data_dir, ec)) {
-        potential.emplace_back(data_dir / CRYPTONOTE_NAME ".conf", false);
-        potential.emplace_back(data_dir / "beldex.conf", true);
+        potential.emplace_back(data_dir / cryptonote::CONF_FILENAME, false);
+        potential.emplace_back(data_dir / cryptonote::CONF_FILENAME, true);
       } else if (command_line::is_arg_defaulted(vm, cryptonote::arg_data_dir)) {
         // If we weren't given an explict command-line data-dir then we also need to check the
         // legacy data directory.  (We will rename it, later, but we have to check it *first*
@@ -185,14 +185,14 @@ int main(int argc, char const * argv[])
         else if (command_line::get_arg(vm, cryptonote::arg_devnet_on)) old_data_dir /= "devnet";
         else if (command_line::get_arg(vm, cryptonote::arg_regtest_on)) old_data_dir /= "regtest";
 
-        potential.emplace_back(old_data_dir / CRYPTONOTE_NAME ".conf", false);
-        potential.emplace_back(old_data_dir / "beldex.conf", true);
+        potential.emplace_back(old_data_dir / cryptonote::CONF_FILENAME, false);
+        potential.emplace_back(old_data_dir / cryptonote::CONF_FILENAME, true);
       }
       for (auto& [conf, rename] : potential) {
         if (std::error_code ec; fs::exists(conf, ec)) {
           if (rename) {
             fs::path renamed = conf;
-            renamed.replace_filename(CRYPTONOTE_NAME ".conf");
+            renamed.replace_filename(cryptonote::CONF_FILENAME);
             assert(renamed != conf);
             if (fs::rename(conf, renamed, ec); ec) {
               std::cerr << RED << "Failed to migrate " << conf << " -> " << renamed <<
@@ -299,11 +299,11 @@ int main(int argc, char const * argv[])
     po::notify(vm);
 
     // log_file_path
-    //   default: <data_dir>/<CRYPTONOTE_NAME>.log
+    //   default: <data_dir>/beldex.log
     //   if log-file argument given:
     //     absolute path
     //     relative path: relative to data_dir
-    auto log_file_path = data_dir / CRYPTONOTE_NAME ".log";
+    auto log_file_path = data_dir / cryptonote::LOG_FILENAME;
     if (!command_line::is_arg_defaulted(vm, daemon_args::arg_log_file))
       log_file_path = command_line::get_arg(vm, daemon_args::arg_log_file);
     if (log_file_path.is_relative())
@@ -338,9 +338,9 @@ int main(int argc, char const * argv[])
           auto rpc_port = command_line::get_arg(vm, cryptonote::rpc::http_server::arg_rpc_bind_port);
           if (rpc_port == 0)
             rpc_port =
-              command_line::get_arg(vm, cryptonote::arg_testnet_on) ? config::testnet::RPC_DEFAULT_PORT :
-              command_line::get_arg(vm, cryptonote::arg_devnet_on) ? config::devnet::RPC_DEFAULT_PORT :
-              config::RPC_DEFAULT_PORT;
+              command_line::get_arg(vm, cryptonote::arg_testnet_on) ? cryptonote::config::testnet::RPC_DEFAULT_PORT :
+              command_line::get_arg(vm, cryptonote::arg_devnet_on) ? cryptonote::config::devnet::RPC_DEFAULT_PORT :
+              cryptonote::config::RPC_DEFAULT_PORT;
           rpc_addr = rpc_config.bind_ip.value_or("127.0.0.1") + ":" + std::to_string(rpc_port);
         } else {
           rpc_addr = command_line::get_arg(vm, cryptonote::rpc::http_server::arg_rpc_admin)[0];

@@ -58,10 +58,9 @@ void serialize_value(Archive& ar, std::pair<F,S>& p)
   if (!Archive::is_serializer && cnt != 2)
     throw std::runtime_error("Serialization failed: expected pair, found " + std::to_string(cnt) + " values");
 
-  detail::serialize_pair_element(arr.element(), p.first);
-  detail::serialize_pair_element(arr.element(), p.second);
+  detail::serialize_pair_element(ar, p.first);
+  detail::serialize_pair_element(ar, p.second);
 
-  ar.end_array();
 }
 
 }

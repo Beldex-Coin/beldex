@@ -2,11 +2,14 @@
 #include "http_server_base.h"
 #include <oxenc/base64.h>
 #include <oxenc/hex.h>
+#include <oxenc/endian.h>
 #include "common/string_util.h"
 
 // epee:
 #include "epee/net/jsonrpc_structs.h"
 #include "epee/storages/portable_storage_template_helper.h"
+
+#include <nlohmann/json.hpp>
 
 namespace cryptonote::rpc {
 
@@ -74,23 +77,20 @@ namespace cryptonote::rpc {
   }
 
   // Similar to the above, but for JSON errors (which are 200 OK + error embedded in JSON)
-  void http_server_base::jsonrpc_error_response(HttpResponse& res, int code, std::string message, std::optional<epee::serialization::storage_entry> id) const
+  void http_server_base::jsonrpc_error_response(HttpResponse& res, int code, std::string message, nlohmann::json id) const
   {
-    epee::json_rpc::error_response rsp;
-    rsp.jsonrpc = "2.0";
-    if (id)
-      rsp.id = *id;
-    rsp.error.code = code;
-    rsp.error.message = std::move(message);
-    std::string body;
-    epee::serialization::store_t_to_json(rsp, body);
-    if (body.capacity() > body.size())
-      body += '\n';
     res.writeStatus("200 OK"sv);
     res.writeHeader("Server", m_server_header);
     res.writeHeader("Content-Type", "application/json");
     if (m_closing) res.writeHeader("Connection", "close");
-    res.end(body);
+    res.end(nlohmann::json{
+      {"jsonrpc", "2.0"},
+      {"id", std::move(id)},
+      {"error", nlohmann::json{
+        {"code", code},
+        {"message", std::move(message)}
+      }}
+    }.dump());
     if (m_closing) res.close();
   }
 
@@ -114,7 +114,7 @@ namespace cryptonote::rpc {
       // for example, localhost becomes `::1` instead of `0:0:0:0:0:0:0:1`).
       std::array<uint16_t, 8> a;
       std::memcpy(a.data(), addr.data(), 16);
-      for (auto& x : a) boost::endian::big_to_native_inplace(x);
+      for (auto& x : a) oxenc::big_to_host_inplace(x);
 
       size_t zero_start = 0, zero_end = 0;
       for (size_t i = 0, start = 0, end = 0; i < a.size(); i++) {

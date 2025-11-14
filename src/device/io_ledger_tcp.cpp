@@ -1,7 +1,7 @@
 #include "io_ledger_tcp.hpp"
 #include "common/beldex.h"
 #include <array>
-#include <boost/endian/conversion.hpp>
+#include <oxenc/endian.h>
 #include <cstring>
 #include <stdexcept>
 #include "epee/misc_log_ex.h"
@@ -168,7 +168,7 @@ int ledger_tcp::exchange(const unsigned char* command, unsigned int cmd_len, uns
     throw std::runtime_error{"Unable to exchange data with hardware wallet: not connected"};
 
   // Sending: [SIZE][DATA], where SIZE is a uint32_t in network order
-  uint32_t size = boost::endian::native_to_big(cmd_len);
+  uint32_t size = oxenc::host_to_big(cmd_len);
   const unsigned char* size_bytes = reinterpret_cast<const unsigned char*>(&size);
   full_write(*sockfd, size_bytes, 4);
   full_write(*sockfd, command, cmd_len);
@@ -178,7 +178,7 @@ int ledger_tcp::exchange(const unsigned char* command, unsigned int cmd_len, uns
   // bytes of DATA are a 2-byte, u16 status code and... therefore not... included.  Good job, Ledger
   // devs.
   full_read(*sockfd, reinterpret_cast<unsigned char*>(&size), 4);
-  auto data_size = boost::endian::big_to_native(size) + 2;
+  auto data_size = oxenc::big_to_host(size) + 2;
 
   if (data_size > max_resp_len)
     throw std::runtime_error{"Hardware wallet returned unexpectedly large response: got " +

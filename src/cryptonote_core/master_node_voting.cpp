@@ -46,6 +46,7 @@
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "master_nodes"
 
+using cryptonote::hf;
 namespace master_nodes
 {
   static crypto::hash make_state_change_vote_hash(uint64_t block_height, uint32_t master_node_index, new_state state)
@@ -132,10 +133,10 @@ namespace master_nodes
                               uint64_t latest_height,
                               cryptonote::tx_verification_context &tvc,
                               const master_nodes::quorum &quorum,
-                              const uint8_t hf_version)
+                              const hf hf_version)
   {
     auto &vvc = tvc.m_vote_ctx;
-    if (state_change.state != new_state::deregister && hf_version < cryptonote::network_version_13_checkpointing)
+    if (state_change.state != new_state::deregister && hf_version < hf::hf13_checkpointing)
     {
       LOG_PRINT_L1("Received state change TX with Non-deregister state changes are invalid before v12");
       return bad_tx(tvc);
@@ -198,7 +199,7 @@ namespace master_nodes
     int validator_index_tracker                                            = -1;
     for (const auto &vote : state_change.votes)
     {
-      if (hf_version >= cryptonote::network_version_14_enforce_checkpoints) // NOTE: After HF13, votes must be stored in ascending order
+      if (hf_version >= hf::hf15_flash) // NOTE: After HF13, votes must be stored in ascending order
       {
         if (validator_index_tracker >= static_cast<int>(vote.validator_index))
         {
@@ -238,7 +239,7 @@ namespace master_nodes
     return true;
   }
 
-  bool verify_quorum_signatures(master_nodes::quorum const &quorum, master_nodes::quorum_type type, uint8_t hf_version, uint64_t height, crypto::hash const &hash, std::vector<quorum_signature> const &signatures, const cryptonote::block* block)
+  bool verify_quorum_signatures(master_nodes::quorum const &quorum, master_nodes::quorum_type type, hf hf_version, uint64_t height, crypto::hash const &hash, std::vector<quorum_signature> const &signatures, const cryptonote::block* block)
   {
     bool enforce_vote_ordering                          = true;
     constexpr size_t MAX_QUORUM_SIZE                    = std::max(CHECKPOINT_QUORUM_SIZE, POS_QUORUM_NUM_VALIDATORS);
@@ -266,7 +267,7 @@ namespace master_nodes
           return false;
         }
 
-        enforce_vote_ordering = hf_version >= cryptonote::network_version_14_enforce_checkpoints;
+        enforce_vote_ordering = hf_version >= hf::hf15_flash;
       }
       break;
 
@@ -362,7 +363,7 @@ namespace master_nodes
     return result;
   }
 
-  bool verify_checkpoint(uint8_t hf_version, cryptonote::checkpoint_t const &checkpoint, master_nodes::quorum const &quorum)
+  bool verify_checkpoint(hf hf_version, cryptonote::checkpoint_t const &checkpoint, master_nodes::quorum const &quorum)
   {
     if (checkpoint.type == cryptonote::checkpoint_type::master_node)
     {
@@ -404,7 +405,7 @@ namespace master_nodes
     return result;
   }
 
-  quorum_vote_t make_checkpointing_vote(uint8_t hf_version, crypto::hash const &block_hash, uint64_t block_height, uint16_t index_in_quorum, const master_node_keys &keys)
+  quorum_vote_t make_checkpointing_vote(hf hf_version, crypto::hash const &block_hash, uint64_t block_height, uint16_t index_in_quorum, const master_node_keys &keys)
   {
     quorum_vote_t result         = {};
     result.type                  = quorum_type::checkpointing;
@@ -425,7 +426,7 @@ namespace master_nodes
     return result;
   }
 
-  bool verify_vote_age(const quorum_vote_t& vote, uint64_t latest_height, cryptonote::vote_verification_context &vvc,uint8_t hf_version)
+  bool verify_vote_age(const quorum_vote_t& vote, uint64_t latest_height, cryptonote::vote_verification_context &vvc, hf hf_version)
   {
     bool result           = true;
     bool height_in_buffer = false;
@@ -454,7 +455,7 @@ namespace master_nodes
     return result;
   }
 
-  bool verify_vote_signature(uint8_t hf_version, const quorum_vote_t &vote, cryptonote::vote_verification_context &vvc, const master_nodes::quorum &quorum) {
+  bool verify_vote_signature(hf hf_version, const quorum_vote_t &vote, cryptonote::vote_verification_context &vvc, const master_nodes::quorum &quorum) {
       bool result = true;
       if (vote.type > tools::enum_top<quorum_type>) {
           vvc.m_invalid_vote_type = true;
@@ -597,7 +598,7 @@ namespace master_nodes
           result.push_back(vote_entry.vote);
   }
 
-  std::vector<quorum_vote_t> voting_pool::get_relayable_votes(uint64_t height, uint8_t hf_version, bool quorum_relay) const
+  std::vector<quorum_vote_t> voting_pool::get_relayable_votes(uint64_t height, hf hf_version, bool quorum_relay) const
   {
     std::unique_lock lock{m_lock};
 
@@ -612,13 +613,13 @@ namespace master_nodes
 
     std::vector<quorum_vote_t> result;
 
-    if (quorum_relay && hf_version < cryptonote::network_version_15_flash)
+    if (quorum_relay && hf_version < hf::hf15_flash)
       return result; // no quorum relaying before HF14
 
-    if (hf_version < cryptonote::network_version_15_flash || quorum_relay)
+    if (hf_version < hf::hf15_flash || quorum_relay)
       append_relayable_votes(result, m_obligations_pool, max_last_sent, min_height);
 
-    if (hf_version < cryptonote::network_version_15_flash || !quorum_relay)
+    if (hf_version < hf::hf15_flash || !quorum_relay)
       append_relayable_votes(result, m_checkpoint_pool,  max_last_sent, min_height);
 
     return result;
@@ -653,7 +654,7 @@ namespace master_nodes
     return *votes;
   }
 
-  void voting_pool::remove_used_votes(std::vector<cryptonote::transaction> const &txs, uint8_t hard_fork_version)
+  void voting_pool::remove_used_votes(std::vector<cryptonote::transaction> const &txs, hf version)
   {
     // TODO(doyle): Cull checkpoint votes
     std::unique_lock lock{m_lock};
@@ -666,7 +667,7 @@ namespace master_nodes
         continue;
 
       cryptonote::tx_extra_master_node_state_change state_change;
-      if (!get_master_node_state_change_from_tx_extra(tx.extra, state_change, hard_fork_version))
+      if (!get_master_node_state_change_from_tx_extra(tx.extra, state_change, version))
       {
         LOG_ERROR("Could not get state change from tx, possibly corrupt tx");
         continue;
@@ -692,7 +693,7 @@ namespace master_nodes
     }
   }
 
-  void voting_pool::remove_expired_votes(uint64_t height,uint8_t hf_version)
+  void voting_pool::remove_expired_votes(uint64_t height)
   {
     std::unique_lock lock{m_lock};
     uint64_t min_height = (height < VOTE_LIFETIME) ? 0 : height - VOTE_LIFETIME;

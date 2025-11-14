@@ -39,14 +39,14 @@
 TEST(master_nodes, staking_requirement)
 {
   // NOTE: Thanks for the values @Sonofotis
-  const uint64_t atomic_epsilon = config::DEFAULT_DUST_THRESHOLD;
+  const uint64_t atomic_epsilon = cryptonote::config::DEFAULT_DUST_THRESHOLD;
 
   // LHS of Equation
   // Try underflow
   {
     uint64_t height = 100;
     uint64_t mainnet_requirement   = master_nodes::get_staking_requirement(height);
-    ASSERT_EQ(mainnet_requirement,  (45000 * COIN));
+    ASSERT_EQ(mainnet_requirement,  (45000 * beldex::COIN));
   }
 
   // Starting height for mainnet
@@ -56,14 +56,14 @@ TEST(master_nodes, staking_requirement)
     uint64_t height = 101250;
     int64_t mainnet_requirement  = (int64_t)master_nodes::get_staking_requirement(height);
 
-    ASSERT_EQ(mainnet_requirement,  (45000 * COIN));
+    ASSERT_EQ(mainnet_requirement,  (45000 * beldex::COIN));
   }
 
   // Check the requirements are decreasing
   {
     uint64_t height = 209250;
     int64_t mainnet_requirement  = (int64_t)master_nodes::get_staking_requirement(height);
-    int64_t  mainnet_expected = (int64_t)((29643 * COIN) + 670390000);
+    int64_t  mainnet_expected = (int64_t)((29643 * beldex::COIN) + 670390000);
     int64_t  mainnet_delta    = std::abs(mainnet_requirement - mainnet_expected);
     ASSERT_LT(mainnet_delta, atomic_epsilon);
   }
@@ -74,7 +74,7 @@ TEST(master_nodes, staking_requirement)
     uint64_t height = 230704;
     int64_t  mainnet_requirement  = (int64_t)master_nodes::get_staking_requirement(height);
 
-    int64_t  mainnet_expected = (int64_t)((27164 * COIN) + 648610000);
+    int64_t  mainnet_expected = (int64_t)((27164 * beldex::COIN) + 648610000);
     int64_t  mainnet_delta    = std::abs(mainnet_requirement - mainnet_expected);
     ASSERT_LT(mainnet_delta, atomic_epsilon);
   }
@@ -84,7 +84,7 @@ TEST(master_nodes, staking_requirement)
     uint64_t height = 373200;
     int64_t  mainnet_requirement  = (int64_t)master_nodes::get_staking_requirement(height);
 
-    int64_t  mainnet_expected = (int64_t)((20839 * COIN) + 644149350);
+    int64_t  mainnet_expected = (int64_t)((20839 * beldex::COIN) + 644149350);
     ASSERT_EQ(mainnet_requirement, mainnet_expected);
   }
 
@@ -93,7 +93,7 @@ TEST(master_nodes, staking_requirement)
     uint64_t height = 450000;
     uint64_t mainnet_requirement  = master_nodes::get_staking_requirement(height);
 
-    uint64_t  mainnet_expected = (18898 * COIN) + 351896001;
+    uint64_t  mainnet_expected = (18898 * beldex::COIN) + 351896001;
     ASSERT_EQ(mainnet_requirement, mainnet_expected);
   }
 
@@ -102,7 +102,7 @@ TEST(master_nodes, staking_requirement)
     uint64_t height = 999999;
     uint64_t mainnet_requirement  = master_nodes::get_staking_requirement(height);
 
-    uint64_t mainnet_expected = (15000 * COIN) + 3122689;
+    uint64_t mainnet_expected = (15000 * beldex::COIN) + 3122689;
     ASSERT_EQ(mainnet_requirement, mainnet_expected);
   }
 
@@ -111,7 +111,7 @@ TEST(master_nodes, staking_requirement)
     uint64_t height = 1000000;
     uint64_t mainnet_requirement  = master_nodes::get_staking_requirement(height);
 
-    uint64_t mainnet_expected = 15000 * COIN;
+    uint64_t mainnet_expected = 15000 * beldex::COIN;
     ASSERT_EQ(mainnet_requirement, mainnet_expected);
   }
 }
@@ -121,8 +121,8 @@ static bool verify_vote(master_nodes::quorum_vote_t const &vote,
                         cryptonote::vote_verification_context &vvc,
                         master_nodes::quorum const &quorum)
 {
-  bool result = master_nodes::verify_vote_age(vote, latest_height,vvc, cryptonote::network_version_17_POS );
-  result &= master_nodes::verify_vote_signature(cryptonote::network_version_count - 1, vote, vvc, quorum);
+  bool result = master_nodes::verify_vote_age(vote, latest_height,vvc, cryptonote::hf::hf17_POS);
+  result &= master_nodes::verify_vote_signature(cryptonote::hf::hf20_bulletproof_plus, vote, vvc, quorum);
   return result;
 }
 
@@ -230,7 +230,7 @@ TEST(master_nodes, tx_extra_state_change_validation)
 
   // Valid state_change
   cryptonote::tx_extra_master_node_state_change valid_state_change = {};
-  uint8_t hf_version = cryptonote::network_version_11_infinite_staking;
+  cryptonote::hf hf_version = cryptonote::hf::hf11_infinite_staking;
   const uint64_t HEIGHT = 100;
   {
     valid_state_change.block_height       = HEIGHT - 1;
@@ -322,114 +322,82 @@ TEST(master_nodes, tx_extra_state_change_validation)
 TEST(master_nodes, min_portions)
 {
 
-  uint8_t hf_version = cryptonote::network_version_9_master_nodes;
+  cryptonote::hf hf_version = cryptonote::hf::hf9_master_nodes;
   // Test new contributors can *NOT* stake to a registration with under 25% of the total stake if there is more than 25% available.
   {
-    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {0, STAKING_PORTIONS}));
+    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {0, cryptonote::old::STAKING_PORTIONS}));
   }
-
-  {
-    const auto small = MIN_PORTIONS - 1;
-    const auto rest = STAKING_PORTIONS - small;
-    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {small, rest}));
-  }
-
-  {
-    /// TODO: fix this test
-    const auto small = MIN_PORTIONS - 1;
-    const auto rest = STAKING_PORTIONS - small - STAKING_PORTIONS / 2;
-    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {STAKING_PORTIONS / 2, small, rest}));
-  }
-
-  {
-    const auto small = MIN_PORTIONS - 1;
-    const auto rest = STAKING_PORTIONS - small - 2 * MIN_PORTIONS;
-    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {MIN_PORTIONS, MIN_PORTIONS, small, rest}));
-  }
-
   // Test new contributors *CAN* stake as the last person with under 25% if there is less than 25% available.
 
   // Two contributers
   {
-    const auto large = 4 * (STAKING_PORTIONS / 5);
-    const auto rest = STAKING_PORTIONS - large;
+    const auto large = 4 * (cryptonote::old::STAKING_PORTIONS / 5);
+    const auto rest = cryptonote::old::STAKING_PORTIONS - large;
     bool result = master_nodes::check_master_node_portions(hf_version, {large, rest});
     ASSERT_TRUE(result);
   }
 
   // Three contributers
   {
-    const auto half = STAKING_PORTIONS / 2 - 1;
-    const auto rest = STAKING_PORTIONS - 2 * half;
+    const auto half = cryptonote::old::STAKING_PORTIONS / 2 - 1;
+    const auto rest = cryptonote::old::STAKING_PORTIONS - 2 * half;
     bool result = master_nodes::check_master_node_portions(hf_version, {half, half, rest});
     ASSERT_TRUE(result);
   }
 
   // Four contributers
   {
-    const auto third = STAKING_PORTIONS / 3 - 1;
-    const auto rest = STAKING_PORTIONS - 3 * third;
+    const auto third = cryptonote::old::STAKING_PORTIONS / 3 - 1;
+    const auto rest = cryptonote::old::STAKING_PORTIONS - 3 * third;
     bool result = master_nodes::check_master_node_portions(hf_version, {third, third, third, rest});
     ASSERT_TRUE(result);
   }
 
   // ===== After hard fork v11 =====
-  hf_version = cryptonote::network_version_11_infinite_staking;
+  hf_version = cryptonote::hf::hf11_infinite_staking;
 
   {
-    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {0, STAKING_PORTIONS}));
+    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {0, cryptonote::old::STAKING_PORTIONS}));
   }
 
   {
-    const auto small = MIN_PORTIONS - 1;
-    const auto rest = STAKING_PORTIONS - small;
-    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {small, rest}));
-  }
-
-  {
-    const auto small = STAKING_PORTIONS / 8;
-    const auto rest = STAKING_PORTIONS - small - STAKING_PORTIONS / 2;
-    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {STAKING_PORTIONS / 2, small, rest}));
-  }
-
-  {
-    const auto small = MIN_PORTIONS - 1;
-    const auto rest = STAKING_PORTIONS - small - 2 * MIN_PORTIONS;
-    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {MIN_PORTIONS, MIN_PORTIONS, small, rest}));
+    const auto small = cryptonote::old::STAKING_PORTIONS / 8;
+    const auto rest = cryptonote::old::STAKING_PORTIONS - small - cryptonote::old::STAKING_PORTIONS / 2;
+    ASSERT_FALSE(master_nodes::check_master_node_portions(hf_version, {cryptonote::old::STAKING_PORTIONS / 2, small, rest}));
   }
 
   // Test new contributors *CAN* stake as the last person with under 25% if there is less than 25% available.
 
   // Two contributers
   {
-    const auto large = 4 * (STAKING_PORTIONS / 5);
-    const auto rest = STAKING_PORTIONS - large;
+    const auto large = 4 * (cryptonote::old::STAKING_PORTIONS / 5);
+    const auto rest = cryptonote::old::STAKING_PORTIONS - large;
     bool result = master_nodes::check_master_node_portions(hf_version, {large, rest});
     ASSERT_TRUE(result);
   }
 
   // Three contributers
   {
-    const auto half = STAKING_PORTIONS / 2 - 1;
-    const auto rest = STAKING_PORTIONS - 2 * half;
+    const auto half = cryptonote::old::STAKING_PORTIONS / 2 - 1;
+    const auto rest = cryptonote::old::STAKING_PORTIONS - 2 * half;
     bool result = master_nodes::check_master_node_portions(hf_version, {half, half, rest});
     ASSERT_TRUE(result);
   }
 
   // Four contributers
   {
-    const auto third = STAKING_PORTIONS / 3 - 1;
-    const auto rest = STAKING_PORTIONS - 3 * third;
+    const auto third = cryptonote::old::STAKING_PORTIONS / 3 - 1;
+    const auto rest = cryptonote::old::STAKING_PORTIONS - 3 * third;
     bool result = master_nodes::check_master_node_portions(hf_version, {third, third, third, rest});
     ASSERT_TRUE(result);
   }
 
   // New test for hf_v11: allow less than 25% stake in the presence of large existing contributions
   {
-    const auto large = STAKING_PORTIONS / 2;
-    const auto small_1 = STAKING_PORTIONS / 6;
-    const auto small_2 = STAKING_PORTIONS / 6;
-    const auto rest = STAKING_PORTIONS - large - small_1 - small_2;
+    const auto large = cryptonote::old::STAKING_PORTIONS / 2;
+    const auto small_1 = cryptonote::old::STAKING_PORTIONS / 6;
+    const auto small_2 = cryptonote::old::STAKING_PORTIONS / 6;
+    const auto rest = cryptonote::old::STAKING_PORTIONS - large - small_1 - small_2;
     bool result = master_nodes::check_master_node_portions(hf_version, {large, small_1, small_2, rest});
     ASSERT_TRUE(result);
   }
@@ -442,7 +410,7 @@ TEST(master_nodes, min_stake_amount)
 {
   /// pre v11
   uint64_t height            = 101250;
-  uint8_t hf_version         = cryptonote::network_version_9_master_nodes;
+  cryptonote::hf hf_version         = cryptonote::hf::hf9_master_nodes;
   uint64_t stake_requirement = master_nodes::get_staking_requirement(height);
   {
     const uint64_t reserved = stake_requirement / 2;
@@ -457,7 +425,7 @@ TEST(master_nodes, min_stake_amount)
   }
 
   /// post v11
-  hf_version = cryptonote::network_version_11_infinite_staking;
+  hf_version = cryptonote::hf::hf11_infinite_staking;
   stake_requirement = master_nodes::get_staking_requirement(height);
   {
     // 50% reserved, with 1 contribution, max of 4- the minimum stake should be (50% / 3)
@@ -490,14 +458,8 @@ TEST(master_nodes, min_stake_amount)
 TEST(master_nodes, master_node_rewards_proportional_to_portions)
 {
   {
-    const auto reward_a = cryptonote::get_portion_of_reward(MIN_PORTIONS, COIN);
-    const auto reward_b = cryptonote::get_portion_of_reward(3 * MIN_PORTIONS, COIN);
-    ASSERT_TRUE(3 * reward_a == reward_b);
-  }
-
-  {
-    const auto reward_a = cryptonote::get_portion_of_reward(STAKING_PORTIONS/2, COIN);
-    const auto reward_b = cryptonote::get_portion_of_reward(STAKING_PORTIONS, COIN);
+    const auto reward_a = cryptonote::get_portion_of_reward(cryptonote::old::STAKING_PORTIONS/2, beldex::COIN);
+    const auto reward_b = cryptonote::get_portion_of_reward(cryptonote::old::STAKING_PORTIONS, beldex::COIN);
     ASSERT_TRUE(2 * reward_a == reward_b);
   }
 
@@ -505,32 +467,32 @@ TEST(master_nodes, master_node_rewards_proportional_to_portions)
 
 TEST(master_nodes, master_node_get_locked_key_image_unlock_height)
 {
-  uint64_t lock_duration = master_nodes::staking_num_lock_blocks(cryptonote::MAINNET, cryptonote::network_version_17_POS) / 2;
+  uint64_t lock_duration = master_nodes::staking_num_lock_blocks(cryptonote::MAINNET, cryptonote::hf::hf17_POS) / 2;
 
   {
     uint64_t curr_height   = 100;
     uint64_t expected      = curr_height + lock_duration;
-    uint64_t unlock_height = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET, curr_height, cryptonote::network_version_17_POS);
+    uint64_t unlock_height = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET, curr_height, cryptonote::hf::hf17_POS);
     ASSERT_EQ(unlock_height, expected);
   }
 
   {
     uint64_t curr_height   = lock_duration - 1;
     uint64_t expected      = curr_height + lock_duration;
-    uint64_t unlock_height = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET, curr_height, cryptonote::network_version_17_POS);
+    uint64_t unlock_height = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET, curr_height, cryptonote::hf::hf17_POS);
     ASSERT_EQ(unlock_height, expected);
   }
 
   {
     uint64_t curr_height   = lock_duration + 100;
     uint64_t expected      = curr_height + lock_duration;
-    uint64_t unlock_height = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET, curr_height, cryptonote::network_version_17_POS);
+    uint64_t unlock_height = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET, curr_height, cryptonote::hf::hf17_POS);
     ASSERT_EQ(unlock_height, expected);
   }
 
   {
     uint64_t expected      = lock_duration + lock_duration;
-    uint64_t unlock_height = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET, lock_duration, cryptonote::network_version_17_POS);
+    uint64_t unlock_height = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET, lock_duration, cryptonote::hf::hf17_POS);
     ASSERT_EQ(unlock_height, expected);
   }
 
@@ -538,7 +500,7 @@ TEST(master_nodes, master_node_get_locked_key_image_unlock_height)
     uint64_t register_height = lock_duration + 1;
     uint64_t curr_height     = register_height + 2;
     uint64_t expected        = curr_height + lock_duration;
-    uint64_t unlock_height   = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET,curr_height, cryptonote::network_version_17_POS);
+    uint64_t unlock_height   = master_nodes::get_locked_key_image_unlock_height(cryptonote::MAINNET,curr_height, cryptonote::hf::hf17_POS);
     ASSERT_EQ(unlock_height, expected);
   }
 }

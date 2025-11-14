@@ -36,39 +36,41 @@ namespace cryptonote {
 // version 7 from the start of the blockchain, inhereted from Monero mainnet
 static constexpr std::array mainnet_hard_forks =
 {
-  hard_fork{1,  0,       1,  1548750273 }, // Beldex 0.1: Beldex is born
-  hard_fork{7,  0,      10,  1548750283 },
-  hard_fork{8,  0,    40000, 1559474448 },
-  hard_fork{11, 0,    56240, 1577836800 },
-  hard_fork{12, 0,   126874, 1578704502 },
-  hard_fork{15, 0,   742420, 1636320320 }, //Friday, December 10, 2021 6:00:00 PM (GMT)
-  hard_fork{17, 0,   742421, 1636320540 },
-  hard_fork{18, 0,  2986890, 1706506200 }, // Monday, January 29, 2024 5:30:00 AM (UTC)
-  hard_fork{19, 0,  3546545, 1725514200 }, // Thursday, September 5, 2024 5:30:00 AM (UTC)
+  hard_fork{hf::hf1,                    0,       1,  1548750273 }, // Beldex 1.0: Beldex is born
+  hard_fork{hf::hf7,                    0,      10,  1548750283 },
+  hard_fork{hf::hf8,                    0,    40000, 1559474448 },
+  hard_fork{hf::hf11_infinite_staking,  0,    56240, 1577836800 },
+  hard_fork{hf::hf12_security_signature,0,   126874, 1578704502 },
+  hard_fork{hf::hf15_flash,             0,   742420, 1636320320 }, //Friday, December 10, 2021 6:00:00 PM (GMT)
+  hard_fork{hf::hf17_POS,               0,   742421, 1636320540 },
+  hard_fork{hf::hf18_bns,               0,  2986890, 1706506200 }, // Monday, January 29, 2024 5:30:00 AM (UTC)
+  hard_fork{hf::hf19_enhance_bns,       0,  3546545, 1725514200 }, // Thursday, September 5, 2024 5:30:00 AM (UTC)
+  hard_fork{hf::hf20_bulletproof_plus,  0,  4939540, 1765105200 }, // Sunday, December 7, 2025 4:30:00 AM (UTC)
 };
 
 static constexpr std::array testnet_hard_forks =
 {
-  hard_fork{1,  0,        1, 1548474440 },
-  hard_fork{7,  0,       10, 1559474448 },
-  hard_fork{8,  0,    40000, 1559474448 },
-  hard_fork{11, 0,    54288, 1628224369 },
-  hard_fork{12, 0,   104832, 1629012232 }, // Sunday, August 15, 2021 7:23:52 AM
-  hard_fork{15, 0,   169950, 1636391396 }, //  Monday, November 8, 2021 5:09:56 PM
-  hard_fork{17, 0,   169960, 1636391696 }, // Monday, November 8, 2021 5:14:56 PM
-  hard_fork{18, 0,  1251330, 1701063000 }, // Monday, November 27, 2023 5:30:00 AM
-  hard_fork{19, 0,  1997558, 1723447800 }, // Monday, Aug 12, 2024 7:30:00 AM
+  hard_fork{hf::hf1,                    0,        1, 1548474440 },
+  hard_fork{hf::hf7,                    0,       10, 1559474448 },
+  hard_fork{hf::hf8,                    0,    40000, 1559474448 },
+  hard_fork{hf::hf11_infinite_staking,  0,    54288, 1628224369 },
+  hard_fork{hf::hf12_security_signature,0,   104832, 1629012232 }, // Sunday, August 15, 2021 7:23:52 AM
+  hard_fork{hf::hf15_flash,             0,   169950, 1636391396 }, //  Monday, November 8, 2021 5:09:56 PM
+  hard_fork{hf::hf17_POS,               0,   169960, 1636391696 }, // Monday, November 8, 2021 5:14:56 PM
+  hard_fork{hf::hf18_bns,               0,  1251330, 1701063000 }, // Monday, November 27, 2023 5:30:00 AM
+  hard_fork{hf::hf19_enhance_bns,       0,  1997558, 1723447800 }, // Monday, Aug 12, 2024 7:30:00 AM
+  hard_fork{hf::hf20_bulletproof_plus,  0,  3262180, 1761388200 }, // Saturday, Oct 25, 2025 10:30:00 AM
 };
 
 static constexpr std::array devnet_hard_forks =
 {
-  hard_fork{ 7, 0,      0,  1599848400 },
-  hard_fork{ 17, 0,     2,  1599848400 },
+  hard_fork{hf::hf7,                    0,      0,  1599848400 },
+  hard_fork{hf::hf17_POS,               0,      2,  1599848400 },
 };
 
 template <size_t N>
 static constexpr bool is_ordered(const std::array<hard_fork, N>& forks) {
-  if (N == 0 || forks[0].version < 1)
+  if (N == 0 || forks[0].version < hf::hf1)
     return false;
   for (size_t i = 1; i < N; i++) {
     auto& hf = forks[i];
@@ -102,7 +104,7 @@ std::pair<const hard_fork*, const hard_fork*> get_hard_forks(network_type type)
 
 
 std::pair<std::optional<uint64_t>, std::optional<uint64_t>>
-get_hard_fork_heights(network_type nettype, uint8_t version) {
+get_hard_fork_heights(network_type nettype, hf version) {
   std::pair<std::optional<uint64_t>, std::optional<uint64_t>> found;
   for (auto [it, end] = get_hard_forks(nettype); it != end; it++) {
     if (it->version > version) { // This (and anything else) are in the future
@@ -116,7 +118,7 @@ get_hard_fork_heights(network_type nettype, uint8_t version) {
   return found;
 }
 
-uint8_t hard_fork_ceil(network_type nettype, uint8_t version) {
+hf hard_fork_ceil(network_type nettype, hf version) {
   auto [it, end] = get_hard_forks(nettype);
   for (; it != end; it++)
     if (it->version >= version)
@@ -125,9 +127,9 @@ uint8_t hard_fork_ceil(network_type nettype, uint8_t version) {
   return version;
 }
 
-std::pair<uint8_t, uint8_t>
+std::pair<hf, uint8_t>
 get_network_version_revision(network_type nettype, uint64_t height) {
-  std::pair<uint8_t, uint8_t> result;
+  std::pair<hf, uint8_t> result;
   for (auto [it, end] = get_hard_forks(nettype); it != end; it++) {
     if (it->height <= height)
       result = {it->version, it->mnode_revision};
@@ -137,18 +139,22 @@ get_network_version_revision(network_type nettype, uint64_t height) {
   return result;
 }
 
-bool is_hard_fork_at_least(network_type type, uint8_t version, uint64_t height) {
+bool is_hard_fork_at_least(network_type type, hf version, uint64_t height) {
   return get_network_version(type, height) >= version;
 }
 
-std::pair<uint8_t, uint8_t>
+std::pair<hf, uint8_t>
 get_ideal_block_version(network_type nettype, uint64_t height)
 {
-  std::pair<uint8_t, uint8_t> result;
+  std::pair<hf, uint8_t> result;
   for (auto [it, end] = get_hard_forks(nettype); it != end; it++) {
-    if (it->height <= height)
+    if (it->height <= height){
       result.first = it->version;
-    result.second = it->version;
+      result.second = it->mnode_revision;
+    }
+    if (result.first < hf::hf20_bulletproof_plus)
+      result.second = static_cast<uint8_t>(it->version);
+
   }
   return result;
 }

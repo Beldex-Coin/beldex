@@ -35,8 +35,8 @@
 
 if(NOT STATIC AND NOT BUILD_STATIC_DEPS)
   find_package(PkgConfig REQUIRED)
-  pkg_check_modules(OXENC liboxenc>=1.0.1 IMPORTED_TARGET)
-  pkg_check_modules(OXENMQ liboxenmq>=1.2.3 IMPORTED_TARGET)
+  pkg_check_modules(OXENC liboxenc>=1.0.10 IMPORTED_TARGET)
+  pkg_check_modules(OXENMQ liboxenmq>=1.2.7 IMPORTED_TARGET)
 endif()
 
 if(NOT OXENC_FOUND)
@@ -63,6 +63,11 @@ add_subdirectory(db_drivers)
 add_subdirectory(easylogging++ easyloggingpp)
 add_subdirectory(randomx EXCLUDE_FROM_ALL)
 add_subdirectory(fmt)
+add_subdirectory(date EXCLUDE_FROM_ALL)
+
+set(JSON_MultipleHeaders ON CACHE BOOL "") # Allows multi-header nlohmann use
+add_subdirectory(nlohmann-json)
+
 # uSockets doesn't really have a proper build system (just a very simple Makefile) so build it
 # ourselves.
 if (NOT CMAKE_VERSION VERSION_LESS 3.12)
@@ -140,3 +145,5 @@ if(cpr_cmake_head MATCHES "project\\(cpr VERSION ([0-9]+)\.([0-9]+)\.([0-9]+) LA
 else()
     message(FATAL_ERROR "Could not identify cpr submodule version!")
 endif()
+
+add_subdirectory(Catch2)

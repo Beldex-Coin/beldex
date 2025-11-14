@@ -1,6 +1,9 @@
 
-#include "lmq_server.h"
+#include "omq_server.h"
+#include "rpc/common/param_parser.hpp"
+#include "cryptonote_config.h"
 #include "oxenmq/oxenmq.h"
+#include "oxenc/bt.h"
 #include <fmt/core.h>
 
 #undef BELDEX_DEFAULT_LOG_CATEGORY
@@ -48,7 +51,7 @@ const command_line::arg_descriptor<std::vector<std::string>> arg_omq_local_contr
 #ifndef _WIN32
 const command_line::arg_descriptor<std::string> arg_omq_umask{
   "lmq-umask",
-  "Sets the umask to apply to any listening ipc:///path/to/sock LMQ sockets, in octal.",
+  "Sets the umask to apply to any listening ipc:///path/to/sock OMQ sockets, in octal.",
   "0007"};
 #endif
 
@@ -66,21 +69,20 @@ auto as_x_pubkeys(const std::vector<std::string>& pk_strings) {
   pks.reserve(pk_strings.size());
   for (const auto& pkstr : pk_strings) {
     if (pkstr.size() != 64 || !oxenc::is_hex(pkstr))
-      throw std::runtime_error("Invalid LMQ login pubkey: '" + pkstr + "'; expected 64-char hex pubkey");
+      throw std::runtime_error("Invalid OMQ login pubkey: '" + pkstr + "'; expected 64-char hex pubkey");
     pks.emplace_back();
     oxenc::to_hex(pkstr.begin(), pkstr.end(), reinterpret_cast<char *>(&pks.back()));
   }
   return pks;
 }
 
-// LMQ RPC responses consist of [CODE, DATA] for code we (partially) mimic HTTP error codes: 200
+// OMQ RPC responses consist of [CODE, DATA] for code we (partially) mimic HTTP error codes: 200
 // means success, anything else means failure.  (We don't have codes for Forbidden or Not Found
-// because those happen at the LMQ protocol layer).
+// because those happen at the OMQ protocol layer).
 constexpr std::string_view
-  LMQ_OK{"200"sv},
-  LMQ_BAD_REQUEST{"400"sv},
-  LMQ_ERROR{"500"sv};
-
+  OMQ_OK{"200"sv},
+  OMQ_BAD_REQUEST{"400"sv},
+  OMQ_ERROR{"500"sv};
 } // end anonymous namespace
 
 
@@ -107,21 +109,21 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
   // the quorumnet listener set up in cryptonote_core).
   for (const auto &addr : command_line::get_arg(vm, arg_omq_public)) {
     check_omq_listen_addr(addr);
-    MGINFO("LMQ listening on " << addr << " (public unencrypted)");
+    MGINFO("OMQ listening on " << addr << " (public unencrypted)");
     omq.listen_plain(addr,
         [&core](std::string_view ip, std::string_view pk, bool /*mn*/) { return core.omq_allow(ip, pk, AuthLevel::basic); });
   }
 
   for (const auto &addr : command_line::get_arg(vm, arg_omq_curve_public)) {
     check_omq_listen_addr(addr);
-    MGINFO("LMQ listening on " << addr << " (public curve)");
+    MGINFO("OMQ listening on " << addr << " (public curve)");
     omq.listen_curve(addr,
         [&core](std::string_view ip, std::string_view pk, bool /*mn*/) { return core.omq_allow(ip, pk, AuthLevel::basic); });
   }
 
   for (const auto &addr : command_line::get_arg(vm, arg_omq_curve)) {
     check_omq_listen_addr(addr);
-    MGINFO("LMQ listening on " << addr << " (curve restricted)");
+    MGINFO("OMQ listening on " << addr << " (curve restricted)");
     omq.listen_curve(addr,
         [&core](std::string_view ip, std::string_view pk, bool /*mn*/) { return core.omq_allow(ip, pk, AuthLevel::denied); });
   }
@@ -133,10 +135,10 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
     // enough to support unix domain sockets, but for now the Windows default is just "don't listen"
 #ifndef _WIN32
     // Push default .beldex/beldexd.sock
-    locals.push_back("ipc://" + core.get_config_directory().u8string() + "/" + CRYPTONOTE_NAME + "d.sock");
+    locals.push_back("ipc://" + core.get_config_directory().u8string() + "/" + std::string{cryptonote::SOCKET_FILENAME});
     // Pushing old default beldexd.sock onto the list. A symlink from .beldex -> .beldex so the user should be able
     // to communicate via the old .beldex/beldexd.sock
-    locals.push_back("ipc://" + core.get_config_directory().u8string() + "/beldexd.sock");
+    locals.push_back("ipc://" + core.get_config_directory().u8string() + "/" + std::string{cryptonote::SOCKET_FILENAME});
 #endif
   } else if (locals.size() == 1 && locals[0] == "none") {
     locals.clear();
@@ -191,17 +193,29 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
     omq.add_request_command(cmd.second->is_public ? "rpc" : "admin", cmd.first,
         [name=std::string_view{cmd.first}, &call=*cmd.second, this](oxenmq::Message& m) {
       if (m.data.size() > 1)
-        m.send_reply(LMQ_BAD_REQUEST, "Bad request: RPC commands must have at most one data part "
+        m.send_reply(OMQ_BAD_REQUEST, "Bad request: RPC commands must have at most one data part "
             "(received " + std::to_string(m.data.size()) + ")");
 
       rpc_request request{};
       request.context.admin = m.access.auth >= AuthLevel::admin;
       request.context.source = rpc_source::omq;
       request.context.remote = m.remote;
-      request.body = m.data.empty() ? ""sv : m.data[0];
+      if (!m.data.empty())
+        request.body = m.data[0];
 
       try {
-        m.send_reply(LMQ_OK, call.invoke(std::move(request), rpc_));
+        auto result = std::visit([](auto&& v) -> std::string {
+          using T = decltype(v);
+          if constexpr (std::is_same_v<oxenc::bt_value&&, T>)
+            return bt_serialize(std::move(v));
+          else if constexpr (std::is_same_v<nlohmann::json&&, T>)
+            return v.dump();
+          else {
+            static_assert(std::is_same_v<std::string&&, T>);
+            return std::move(v);
+          }
+        }, call.invoke(std::move(request), rpc_));
+        m.send_reply(OMQ_OK, std::move(result));
         return;
       } catch (const parse_error& e) {
         // This isn't really WARNable as it's the client fault; log at info level instead.
@@ -210,26 +224,31 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
         // warnings that get generated deep inside epee, for example when passing a string or
         // number instead of a JSON object.  If you want to find some, `grep number2 epee` (for
         // real).
-        MINFO("LMQ RPC request '" << (call.is_public ? "rpc." : "admin.") << name << "' called with invalid/unparseable data: " << e.what());
-        m.send_reply(LMQ_BAD_REQUEST, "Unable to parse request: "s + e.what());
+        MINFO("OMQ RPC request '" << (call.is_public ? "rpc." : "admin.") << name << "' called with invalid/unparseable data: " << e.what());
+        MDEBUG("Bad request body:" << m.data.empty() ? "(empty)" : m.data[0]);
+        m.send_reply(OMQ_BAD_REQUEST, "Unable to parse request: "s + e.what());
         return;
       } catch (const rpc_error& e) {
-        MWARNING("LMQ RPC request '" << (call.is_public ? "rpc." : "admin.") << name << "' failed with: " << e.what());
-        m.send_reply(LMQ_ERROR, e.what());
+        MWARNING("OMQ RPC request '" << (call.is_public ? "rpc." : "admin.") << name << "' failed with: " << e.what());
+        m.send_reply(OMQ_ERROR, e.what());
         return;
       } catch (const std::exception& e) {
-        MWARNING("LMQ RPC request '" << (call.is_public ? "rpc." : "admin.") << name << "' "
+        MWARNING("OMQ RPC request '" << (call.is_public ? "rpc." : "admin.") << name << "' "
             "raised an exception: " << e.what());
       } catch (...) {
-        MWARNING("LMQ RPC request '" << (call.is_public ? "rpc." : "admin.") << name << "' "
+        MWARNING("OMQ RPC request '" << (call.is_public ? "rpc." : "admin.") << name << "' "
             "raised an unknown exception");
       }
       // Don't include the exception message in case it contains something that we don't want go
       // back to the user.  If we want to support it eventually we could add some sort of
       // `rpc::user_visible_exception` that carries a message to send back to the user.
-      m.send_reply(LMQ_ERROR, "An exception occured while processing your request");
+      m.send_reply(OMQ_ERROR, "An exception occured while processing your request");
     });
   }
+
+  omq.add_request_command("rpc", "get_blocks", [this](oxenmq::Message& m) {
+    on_get_blocks(m);
+  });
 
   // Subscription commands
 
@@ -255,38 +274,7 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
   // txblob are binary: in particular, txhash is *not* hex-encoded.
   //
   omq.add_request_command("sub", "mempool", [this](oxenmq::Message& m) {
-
-    if (m.data.size() != 1) {
-      m.send_reply("Invalid subscription request: no subscription type given");
-      return;
-    }
-
-    mempool_sub_type sub_type;
-    if (m.data[0] == "flash"sv)
-      sub_type = mempool_sub_type::flash;
-    else if (m.data[0] == "all"sv)
-      sub_type = mempool_sub_type::all;
-    else {
-      m.send_reply("Invalid mempool subscription type '" + std::string{m.data[0]} + "'");
-      return;
-    }
-
-    {
-      std::unique_lock lock{subs_mutex_};
-      auto expiry = std::chrono::steady_clock::now() + 30min;
-      auto result = mempool_subs_.emplace(m.conn, mempool_sub{expiry, sub_type});
-      if (!result.second) {
-        result.first->second.expiry = expiry;
-        if (result.first->second.type == sub_type) {
-          MTRACE("Renewed mempool subscription request from conn id " << m.conn << " @ " << m.remote);
-          m.send_reply("ALREADY");
-          return;
-        }
-        result.first->second.type = sub_type;
-      }
-      MDEBUG("New " << (sub_type == mempool_sub_type::flash ? "flash" : "all") << " mempool subscription request from conn " << m.conn << " @ " << m.remote);
-      m.send_reply("OK");
-    }
+    on_mempool_sub_request(m);
   });
 
   // New block subscriptions: [sub.block].  This sends a notification every time a new block is
@@ -301,17 +289,7 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
   // containing the latest height/hash.  (Note that blockhash is the hash in bytes, *not* the hex
   // encoded block hash).
   omq.add_request_command("sub", "block", [this](oxenmq::Message& m) {
-      std::unique_lock lock{subs_mutex_};
-    auto expiry = std::chrono::steady_clock::now() + 30min;
-    auto result = block_subs_.emplace(m.conn, block_sub{expiry});
-    if (!result.second) {
-      result.first->second.expiry = expiry;
-      MTRACE("Renewed block subscription request from conn id " << m.conn << " @ " << m.remote);
-      m.send_reply("ALREADY");
-    } else {
-      MDEBUG("New block subscription request from conn " << m.conn << " @ " << m.remote);
-      m.send_reply("OK");
-    }
+    on_block_sub_request(m);
   });
 
   core_.get_blockchain_storage().hook_block_post_add([this] (const auto& info) { send_block_notifications(info.block); return true; });
@@ -374,5 +352,196 @@ void omq_rpc::send_mempool_notifications(const crypto::hash& id, const transacti
   });
 }
 
+void omq_rpc::on_get_blocks(oxenmq::Message& m)
+{
+  if (m.data.size() == 0)
+  {
+    m.send_reply("Invalid rpc.get_blocks request: no parameters given.");
+    return;
+  }
+
+  if (m.data[0].front() != 'd')
+  {
+    m.send_reply("Invalid rpc.get_blocks request: parameters must be bt-encoded.");
+    return;
+  }
+
+  uint64_t start_height;
+  uint64_t max_count;
+  uint64_t size_limit;
+  try
+  {
+    get_values(m.data[0],
+        "max_count", required{max_count},
+        "size_limit", required{size_limit},
+        "start_height", required{start_height});
+  }
+  catch (const std::exception& e)
+  {
+    m.send_reply(std::string("Invalid rpc.get_blocks request: ") + e.what());
+  }
+
+  size_limit = std::min<uint64_t>(size_limit, 2000000);
+
+  auto chain_height = core_.get_current_blockchain_height();
+  if (start_height > chain_height)
+  {
+    m.send_reply("Invalid rpc.get_blocks request: start_height given is above current chain height.");
+    return;
+  }
+
+  size_t message_size = 128; // initial size conservative overhead assumption
+
+  auto end = chain_height;
+  if (max_count != 0)
+    end = std::min(start_height + max_count, chain_height);
+
+  using bt_list = oxenc::bt_list;
+  using bt_dict = oxenc::bt_dict;
+
+  std::vector<std::string> bt_blocks;
+
+  uint64_t i;
+  for (i = start_height; i < end; i++)
+  {
+    bt_dict block_bt;
+
+    auto hash = core_.get_block_id_by_height(i);
+    block b;
+    if (!core_.get_block_by_height(i, b))
+    {
+      m.send_reply("Unknown error fetching blocks.");
+      return;
+    }
+
+    block_bt["hash"] = std::string_view{hash.data, sizeof(hash.data)};
+    block_bt["height"] = i;
+    block_bt["timestamp"] = b.timestamp;
+
+    std::vector<cryptonote::blobdata> txs;
+    core_.get_transactions(b.tx_hashes, txs);
+    if (txs.size() != b.tx_hashes.size())
+    {
+      m.send_reply("Unknown error fetching transactions.");
+      return;
+    }
+
+    bt_list tx_list_bt;
+
+    std::vector<uint64_t> indices;
+
+    {
+      bt_dict tx_bt;
+
+      crypto::hash miner_tx_hash;
+      cryptonote::get_transaction_hash(b.miner_tx, miner_tx_hash, nullptr);
+
+      if (not core_.get_tx_outputs_gindexs(miner_tx_hash, indices))
+      {
+        m.send_reply("Unknown error fetching output info.");
+        return;
+      }
+
+      tx_bt["global_indices"] = bt_list(indices.begin(), indices.end());
+      tx_bt["hash"] = std::string{miner_tx_hash.data, sizeof(miner_tx_hash.data)};
+      tx_bt["tx"] = tx_to_blob(b.miner_tx);
+
+      tx_list_bt.push_back(std::move(tx_bt));
+    }
+
+    for (size_t tx_index = 0; tx_index < txs.size(); tx_index++)
+    {
+      bt_dict tx_bt;
+
+      indices.clear();
+
+      const auto& txhash = b.tx_hashes[tx_index];
+
+      if (not core_.get_tx_outputs_gindexs(txhash, indices))
+      {
+        m.send_reply("Unknown error fetching output info.");
+        return;
+      }
+
+      tx_bt["global_indices"] = bt_list(indices.begin(), indices.end());
+      tx_bt["hash"] = std::string{txhash.data, sizeof(txhash.data)};
+      tx_bt["tx"] = std::move(txs[tx_index]);
+
+      tx_list_bt.push_back(std::move(tx_bt));
+    }
+
+    block_bt["transactions"] = std::move(tx_list_bt);
+
+    auto block_str = oxenc::bt_serialize(block_bt);
+    size_t sz = block_str.size() + 16; // conservative estimate of 16 bytes wire overhead per block
+
+    if (message_size + sz > size_limit)
+    {
+      // i is checked after loop to signal "end of chain", so decrement if we don't add the block
+      i--;
+      break;
+    }
+
+    bt_blocks.push_back(std::move(block_str));
+  }
+
+  std::string status = "OK";
+  if (i == chain_height)
+    status = "END";
+  else if (bt_blocks.empty())
+    status = "TOO BIG";
+
+  m.send_reply(status, oxenmq::send_option::data_parts(bt_blocks));
+}
+
+void omq_rpc::on_mempool_sub_request(oxenmq::Message& m)
+{
+  if (m.data.size() != 1) {
+    m.send_reply("Invalid subscription request: no subscription type given");
+    return;
+  }
+
+  mempool_sub_type sub_type;
+  if (m.data[0] == "flash"sv)
+    sub_type = mempool_sub_type::flash;
+  else if (m.data[0] == "all"sv)
+    sub_type = mempool_sub_type::all;
+  else {
+    m.send_reply("Invalid mempool subscription type '" + std::string{m.data[0]} + "'");
+    return;
+  }
+
+  {
+    std::unique_lock lock{subs_mutex_};
+    auto expiry = std::chrono::steady_clock::now() + 30min;
+    auto result = mempool_subs_.emplace(m.conn, mempool_sub{expiry, sub_type});
+    if (!result.second) {
+      result.first->second.expiry = expiry;
+      if (result.first->second.type == sub_type) {
+        MTRACE("Renewed mempool subscription request from conn id " << m.conn << " @ " << m.remote);
+        m.send_reply("ALREADY");
+        return;
+      }
+      result.first->second.type = sub_type;
+    }
+    MDEBUG("New " << (sub_type == mempool_sub_type::flash ? "flash" : "all") << " mempool subscription request from conn " << m.conn << " @ " << m.remote);
+    m.send_reply("OK");
+  }
+}
+
+void omq_rpc::on_block_sub_request(oxenmq::Message& m)
+{
+  std::unique_lock lock{subs_mutex_};
+  auto expiry = std::chrono::steady_clock::now() + 30min;
+  auto result = block_subs_.emplace(m.conn, block_sub{expiry});
+  if (!result.second) {
+    result.first->second.expiry = expiry;
+    MTRACE("Renewed block subscription request from conn id " << m.conn << " @ " << m.remote);
+    m.send_reply("ALREADY");
+  } else {
+    MDEBUG("New block subscription request from conn " << m.conn << " @ " << m.remote);
+    m.send_reply("OK");
+  }
+}
 
 }} // namespace cryptonote::rpc

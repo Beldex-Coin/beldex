@@ -108,7 +108,7 @@ static void make_rct_tx(eventV& events,
 {
     txs.emplace_back();
 
-    bool success = beldex_tx_builder(events, txs.back(), blk_head, from, to.get_keys().m_account_address, amount, cryptonote::network_version_7).build();
+    bool success = beldex_tx_builder(events, txs.back(), blk_head, from, to.get_keys().m_account_address, amount, cryptonote::hf::hf7).build();
     /// TODO: beter error message
     if (!success) throw std::exception();
     events.push_back(txs.back());
@@ -117,7 +117,7 @@ static void make_rct_tx(eventV& events,
 /// generate 30 more blocks to unlock outputs
 static void rewind_blocks(test_generator& gen, eventV& events, std::vector<cryptonote::block>& chain, const cryptonote::account_base& miner)
 {
-    for (auto i = 0u; i < CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW; ++i) {
+    for (auto i = 0u; i < cryptonote::MINED_MONEY_UNLOCK_WINDOW; ++i) {
         chain.emplace_back();
         const auto idx = chain.size() - 1;
         gen.construct_block(chain[idx], chain[idx - 1], miner);

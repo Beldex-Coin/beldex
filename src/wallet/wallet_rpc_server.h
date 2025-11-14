@@ -42,7 +42,7 @@
 #include "common/periodic_task.h"
 #include "wallet_rpc_server_commands_defs.h"
 #include "wallet2.h"
-#include "rpc/http_server_base.h"
+#include "rpc/common/http_server_base.h"
 
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "wallet.rpc"
@@ -181,10 +181,10 @@ namespace tools
       // Safely and cleanly closes the currently open wallet (if one is open)
       void close_wallet(bool save_current);
 
-      template<typename Ts, typename Tu>
+      template<typename Ts, typename Tu,typename Tk, typename Ta>
       void fill_response(std::vector<tools::wallet2::pending_tx> &ptx_vector,
-          bool get_tx_key, Ts& tx_key, Tu &amount, Tu &fee, std::string &multisig_txset, std::string &unsigned_txset, bool do_not_relay, bool flash,
-          Ts &tx_hash, bool get_tx_hex, Ts &tx_blob, bool get_tx_metadata, Ts &tx_metadata);
+          bool get_tx_key, Ts& tx_key, Tu &amount, Ta &amounts_by_dest, Tu &fee, std::string &multisig_txset, std::string &unsigned_txset, bool do_not_relay, bool flash,
+          Ts &tx_hash, bool get_tx_hex, Ts &tx_blob, bool get_tx_metadata, Ts &tx_metadata, Tk &spent_key_images);
 
       cryptonote::address_parse_info extract_account_addr(cryptonote::network_type nettype, std::string_view addr_or_url);
 

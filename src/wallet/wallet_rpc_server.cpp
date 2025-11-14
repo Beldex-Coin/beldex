@@ -51,7 +51,7 @@
 #include "epee/wipeable_string.h"
 #include "crypto/hash.h"
 #include "mnemonics/electrum-words.h"
-#include "rpc/rpc_args.h"
+#include "rpc/common/rpc_args.h"
 #include "rpc/core_rpc_server_commands_defs.h"
 #include "daemonizer/daemonizer.h"
 #include "cryptonote_core/beldex_name_system.h"
@@ -221,10 +221,12 @@ namespace tools
 
       epee::serialization::portable_storage ps;
       if(!ps.load_from_json(body))
-        return jsonrpc_error_response(res, -32700, "Parse error");
+        return jsonrpc_error_response(res, -32700, "Parse error", {});
 
-      epee::serialization::storage_entry id{std::string{}};
-      ps.get_value("id", id, nullptr);
+      epee::serialization::storage_entry epee_id{std::string{}};
+      ps.get_value("id", epee_id, nullptr);
+
+      nlohmann::json id = var::get<std::string>(epee_id);
 
       std::string method;
       if(!ps.get_value("method", method, nullptr))
@@ -246,7 +248,7 @@ namespace tools
       // If it's a restricted command and we're in restricted mode then deny it
       if (restricted && m_restricted) {
         MWARNING("JSON RPC request for restricted command " << method << " in restricted mode from " << get_remote_address(res));
-        return jsonrpc_error_response(res, error_code::DENIED, method + " is not available in restricted mode.");
+        return jsonrpc_error_response(res, error_code::DENIED, method + " is not available in restricted mode.", {});
       }
 
       // Try to load "params" into a generic epee value; if it fails (because there is no "params")
@@ -259,7 +261,7 @@ namespace tools
       wallet_rpc_error json_error{-32603, "Internal error"};
 
       try {
-        result = invoke_ptr(ps, std::move(id), std::move(params), *this);
+        result = invoke_ptr(ps, std::move(epee_id), std::move(params), *this);
         json_error.code = 0;
       } catch (const parse_error& e) {
         json_error = {-32602, "Invalid params"}; // Reserved json code/message value for specifically this failure
@@ -302,7 +304,7 @@ namespace tools
       }
 
       if (json_error.code != 0)
-        return jsonrpc_error_response(res, json_error.code, std::move(json_error.message));
+        return jsonrpc_error_response(res, json_error.code, std::move(json_error.message), {});
 
       res.writeHeader("Server", server_header());
       res.writeHeader("Content-Type", "application/json");
@@ -984,10 +986,10 @@ namespace tools
     return hex_tx_keys(ptx.tx_key, ptx.additional_tx_keys);
   }
   //------------------------------------------------------------------------------------------------------------------------------
-  template<typename Ts, typename Tu>
+  template<typename Ts, typename Tu, typename Tk, typename Ta>
   void wallet_rpc_server::fill_response(std::vector<wallet::pending_tx> &ptx_vector,
-      bool get_tx_key, Ts& tx_key, Tu &amount, Tu &fee, std::string &multisig_txset, std::string &unsigned_txset, bool do_not_relay, bool flash,
-      Ts &tx_hash, bool get_tx_hex, Ts &tx_blob, bool get_tx_metadata, Ts &tx_metadata)
+      bool get_tx_key, Ts& tx_key, Tu &amount, Ta &amounts_by_dest, Tu &fee, std::string &multisig_txset, std::string &unsigned_txset, bool do_not_relay, bool flash,
+      Ts &tx_hash, bool get_tx_hex, Ts &tx_blob, bool get_tx_metadata, Ts &tx_metadata, Tk &spent_key_images)
   {
     for (const auto & ptx : ptx_vector)
     {
@@ -998,6 +1000,24 @@ namespace tools
       // Compute amount leaving wallet in tx. By convention dests does not include change outputs
       fill(amount, total_amount(ptx));
       fill(fee, ptx.fee);
+      
+      // add amounts by destination
+      tools::wallet_rpc::amounts_list abd;
+      for (const auto& dst : ptx.dests)
+        abd.amounts.push_back(dst.amount);
+      fill(amounts_by_dest, abd);
+
+      // add spent key images
+      tools::wallet_rpc::key_image_list key_image_list;
+      bool all_are_txin_to_key = std::all_of(ptx.tx.vin.begin(), ptx.tx.vin.end(), [&](const cryptonote::txin_v& s_e) -> bool
+      {
+        CHECKED_GET_SPECIFIC_VARIANT(s_e, cryptonote::txin_to_key, in, false);
+        key_image_list.key_images.push_back(tools::type_to_hex(in.k_image));
+        return true;
+      });
+      THROW_WALLET_EXCEPTION_IF(!all_are_txin_to_key, error::unexpected_txin_type, ptx.tx);
+      fill(spent_key_images, key_image_list);
+
     }
 
     if (m_wallet->multisig())
@@ -1044,11 +1064,11 @@ namespace tools
 
     {
       uint32_t priority = convert_priority(req.priority);
-      std::optional<uint8_t> hf_version = m_wallet->get_hard_fork_version();
+      auto hf_version = m_wallet->get_hard_fork_version();
       if (!hf_version)
         throw wallet_rpc_error{error_code::HF_QUERY_FAILED, tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED};
       cryptonote::beldex_construct_tx_params tx_params = tools::wallet2::construct_params(*hf_version, cryptonote::txtype::standard, priority);
-      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, CRYPTONOTE_DEFAULT_TX_MIXIN, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices, tx_params);
+      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, cryptonote::TX_OUTPUT_DECOYS, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices, tx_params, req.subtract_fee_from_outputs);
 
       if (ptx_vector.empty())
         throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "No transaction created"};
@@ -1057,8 +1077,8 @@ namespace tools
       if (ptx_vector.size() != 1)
         throw wallet_rpc_error{error_code::TX_TOO_LARGE, "Transaction would be too large.  try /transfer_split."};
 
-      fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
-          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata);
+      fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.amounts_by_dest, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
+          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata, res.spent_key_images);
     }
     return res;
   }
@@ -1080,11 +1100,11 @@ namespace tools
     
     if(req.amount)
     {
-      std::optional<uint8_t> hf_version = m_wallet->get_hard_fork_version();
+      auto hf_version = m_wallet->get_hard_fork_version();
       if (!hf_version)
         throw wallet_rpc_error{error_code::HF_QUERY_FAILED, tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED};
       cryptonote::beldex_construct_tx_params tx_params = tools::wallet2::construct_params(*hf_version, cryptonote::txtype::coin_burn, req.priority, req.amount);
-      ptx_vector = m_wallet->create_transactions_2({}, CRYPTONOTE_DEFAULT_TX_MIXIN, 0, req.priority, extra, req.account_index, req.subaddr_indices, tx_params);
+      ptx_vector = m_wallet->create_transactions_2({}, cryptonote::TX_OUTPUT_DECOYS, 0, req.priority, extra, req.account_index, req.subaddr_indices, tx_params);
     }
     else
     {
@@ -1112,7 +1132,7 @@ namespace tools
         throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "The txid already spent."};
       if(!available)
         throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "No incoming available transfers"};
-      ptx_vector = m_wallet->create_transactions_burn(ki, outputs, CRYPTONOTE_DEFAULT_TX_MIXIN, 0, req.priority, extra);
+      ptx_vector = m_wallet->create_transactions_burn(ki, outputs, cryptonote::TX_OUTPUT_DECOYS, 0, req.priority, extra);
     }  
     if (ptx_vector.empty())
       throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "Failed to create coin_burn transaction:"};
@@ -1123,6 +1143,7 @@ namespace tools
                    req.get_tx_key,
                    res.tx_key,
                    res.amount,
+                   res.amounts_by_dest,
                    res.fee,
                    res.multisig_txset,
                    res.unsigned_txset,
@@ -1132,7 +1153,8 @@ namespace tools
                    req.get_tx_hex,
                    res.tx_blob,
                    req.get_tx_metadata,
-                   res.tx_metadata);
+                   res.tx_metadata,
+                   res.spent_key_images);
     return res;
   }
   //------------------------------------------------------------------------------------------------------------------------------
@@ -1151,20 +1173,20 @@ namespace tools
 
     {
       uint32_t priority = convert_priority(req.priority);
-      std::optional<uint8_t> hf_version = m_wallet->get_hard_fork_version();
+      auto hf_version = m_wallet->get_hard_fork_version();
       if (!hf_version)
         throw wallet_rpc_error{error_code::HF_QUERY_FAILED, tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED};
 
       cryptonote::beldex_construct_tx_params tx_params = tools::wallet2::construct_params(*hf_version, cryptonote::txtype::standard, priority);
       LOG_PRINT_L2("on_transfer_split calling create_transactions_2");
-      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, CRYPTONOTE_DEFAULT_TX_MIXIN, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices, tx_params);
+      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, cryptonote::TX_OUTPUT_DECOYS, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices, tx_params);
       LOG_PRINT_L2("on_transfer_split called create_transactions_2");
 
       if (ptx_vector.empty())
         throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "No transaction created"};
 
-      fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
-          res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list);
+      fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.amounts_by_dest_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
+          res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list, res.spent_key_images_list);
     }
     return res;
   }
@@ -1403,8 +1425,8 @@ namespace tools
 
     std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_unmixable_sweep_transactions();
 
-    fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
-          res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list);
+    fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.amounts_by_dest_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
+          res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list, res.spent_key_images_list);
 
     return {};
   }
@@ -1440,10 +1462,10 @@ namespace tools
 
     {
       uint32_t priority = convert_priority(req.priority);
-      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_all(req.below_amount, dsts[0].addr, dsts[0].is_subaddress, req.outputs, CRYPTONOTE_DEFAULT_TX_MIXIN, req.unlock_time, priority, extra, req.account_index, subaddr_indices);
+      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_all(req.below_amount, dsts[0].addr, dsts[0].is_subaddress, req.outputs, cryptonote::TX_OUTPUT_DECOYS, req.unlock_time, priority, extra, req.account_index, subaddr_indices);
 
-      fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
-            res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list);
+      fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.amounts_by_dest_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
+            res.tx_hash_list, req.get_tx_hex, res.tx_blob_list, req.get_tx_metadata, res.tx_metadata_list, res.spent_key_images_list);
     }
     return res;
   }
@@ -1472,7 +1494,7 @@ namespace tools
 
     {
       uint32_t priority = convert_priority(req.priority);
-      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_single(ki, dsts[0].addr, dsts[0].is_subaddress, req.outputs, CRYPTONOTE_DEFAULT_TX_MIXIN, req.unlock_time, priority, extra);
+      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_single(ki, dsts[0].addr, dsts[0].is_subaddress, req.outputs, cryptonote::TX_OUTPUT_DECOYS, req.unlock_time, priority, extra);
 
       if (ptx_vector.empty())
         throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "No outputs found"};
@@ -1482,8 +1504,8 @@ namespace tools
       if (ptx.selected_transfers.size() > 1)
         throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "The transaction uses multiple inputs, which is not supposed to happen"};
 
-      fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
-          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata);
+      fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.amounts_by_dest, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, priority == tx_priority_flash,
+          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata, res.spent_key_images);
     }
     return res;
   }
@@ -2397,24 +2419,35 @@ namespace tools
     if (req.threads_count < 1 || max_mining_threads_count < req.threads_count)
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "The specified number of threads is inappropriate."};
 
-    rpc::START_MINING::request daemon_req{};
-    daemon_req.miner_address = m_wallet->get_account().get_public_address_str(m_wallet->nettype());
-    daemon_req.threads_count = req.threads_count;
-
-    rpc::START_MINING::response daemon_res{};
-    bool r = m_wallet->invoke_http<rpc::START_MINING>(daemon_req, daemon_res);
-    if (!r || daemon_res.status != rpc::STATUS_OK)
+    nlohmann::json req_params{
+      {"miner_address", m_wallet->get_account().get_public_address_str(m_wallet->nettype())},
+      {"threads_count", req.threads_count}
+    };
+    try
+    {
+      nlohmann::json res = m_wallet->json_rpc("start_mining", req_params);
+      if (res["status"] != rpc::STATUS_OK)
+        throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Couldn't start mining due to unknown error."};
+    }
+    catch (...) {
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Couldn't start mining due to unknown error."};
+    }
+
     return {};
   }
   //------------------------------------------------------------------------------------------------------------------------------
   STOP_MINING::response wallet_rpc_server::invoke(STOP_MINING::request&& req)
   {
     require_open();
-    rpc::STOP_MINING::response daemon_res{};
-    bool r = m_wallet->invoke_http<rpc::STOP_MINING>({}, daemon_res);
-    if (!r || daemon_res.status != rpc::STATUS_OK)
+    try
+    {
+      nlohmann::json res = m_wallet->json_rpc("stop_mining", {});
+      if (res["status"] != rpc::STATUS_OK)
+        throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Couldn't stop mining due to unknown error."};
+    }
+    catch (...) {
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Couldn't stop mining due to unknown error."};
+    }
     return {};
   }
   //------------------------------------------------------------------------------------------------------------------------------
@@ -2484,12 +2517,15 @@ namespace {
     if (!req.hardware_wallet)
       wal->set_seed_language(req.language);
 
-    rpc::GET_HEIGHT::request hreq{};
-    rpc::GET_HEIGHT::response hres{};
-    hres.height = 0;
-    bool r = wal->invoke_http<rpc::GET_HEIGHT>(hreq, hres);
-    if (r)
-      wal->set_refresh_from_block_height(hres.height);
+    nlohmann::json req_params{
+      {"height", 0}
+    };
+    try
+    {
+      nlohmann::json res = wal->json_rpc("get_height", req_params);
+      wal->set_refresh_from_block_height(res["height"].get<uint64_t>());
+    }
+    catch (...) {}
 
     if (req.hardware_wallet)
       wal->restore_from_device(wallet_file, req.password, req.device_name.empty() ? "Ledger" : req.device_name);
@@ -2934,38 +2970,38 @@ namespace {
   {
     VALIDATE_ADDRESS::response res{};
     cryptonote::address_parse_info info;
-    const struct { cryptonote::network_type type; const char *stype; } net_types[] = {
-      { cryptonote::MAINNET, "mainnet" },
-      { cryptonote::TESTNET, "testnet" },
-      { cryptonote::DEVNET, "devnet" },
+    constexpr std::pair<cryptonote::network_type, std::string_view> net_types[] = {
+      { cryptonote::network_type::MAINNET, "mainnet" },
+      { cryptonote::network_type::TESTNET, "testnet" },
+      { cryptonote::network_type::DEVNET, "devnet" },
     };
     if (!req.any_net_type && !m_wallet)
       require_open();
 
-    for (const auto &net_type: net_types)
+    for (const auto& [type, type_str] : net_types)
     {
-      if (!req.any_net_type && (!m_wallet || net_type.type != m_wallet->nettype()))
+      if (!req.any_net_type && (!m_wallet || type != m_wallet->nettype()))
         continue;
       if (req.allow_openalias)
       {
         res.valid = false;
         try {
-          info = extract_account_addr(net_type.type, req.address);
+          info = extract_account_addr(type, req.address);
           res.valid = true;
         } catch (...) {}
 
         if (res.valid)
-          res.openalias_address = info.as_str(net_type.type);
+          res.openalias_address = info.as_str(type);
       }
       else
       {
-        res.valid = cryptonote::get_account_address_from_str(info, net_type.type, req.address);
+        res.valid = cryptonote::get_account_address_from_str(info, type, req.address);
       }
       if (res.valid)
       {
         res.integrated = info.has_payment_id;
         res.subaddress = info.is_subaddress;
-        res.nettype = net_type.stype;
+        res.nettype = type_str;
         return res;
       }
     }
@@ -3034,8 +3070,8 @@ namespace {
 
     std::vector<tools::wallet2::pending_tx> ptx_vector = {stake_result.ptx};
 
-    fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
-          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata);
+    fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.amounts_by_dest, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
+          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata, res.spent_key_images);
 
     return res;
   }
@@ -3060,8 +3096,8 @@ namespace {
       throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, register_result.msg};
 
     std::vector<tools::wallet2::pending_tx> ptx_vector = {register_result.ptx};
-    fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
-          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata);
+    fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.amounts_by_dest, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
+          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata, res.spent_key_images);
 
     return res;
   }
@@ -3149,6 +3185,7 @@ namespace {
                            req.get_tx_key,
                            res.tx_key,
                            res.amount,
+                           res.amounts_by_dest,
                            res.fee,
                            res.multisig_txset,
                            res.unsigned_txset,
@@ -3158,7 +3195,8 @@ namespace {
                            req.get_tx_hex,
                            res.tx_blob,
                            req.get_tx_metadata,
-                           res.tx_metadata);
+                           res.tx_metadata,
+                           res.spent_key_images);
 
     return res;
   }
@@ -3183,6 +3221,7 @@ namespace {
                            req.get_tx_key,
                            res.tx_key,
                            res.amount,
+                           res.amounts_by_dest,
                            res.fee,
                            res.multisig_txset,
                            res.unsigned_txset,
@@ -3192,7 +3231,8 @@ namespace {
                            req.get_tx_hex,
                            res.tx_blob,
                            req.get_tx_metadata,
-                           res.tx_metadata);
+                           res.tx_metadata,
+                           res.spent_key_images);
 
     return res;
   }
@@ -3232,6 +3272,7 @@ namespace {
                            req.get_tx_key,
                            res.tx_key,
                            res.amount,
+                           res.amounts_by_dest,
                            res.fee,
                            res.multisig_txset,
                            res.unsigned_txset,
@@ -3241,7 +3282,8 @@ namespace {
                            req.get_tx_hex,
                            res.tx_blob,
                            req.get_tx_metadata,
-                           res.tx_metadata);
+                           res.tx_metadata,
+                           res.spent_key_images);
 
     return res;
   }
@@ -3286,6 +3328,7 @@ namespace {
 
   BNS_KNOWN_NAMES::response wallet_rpc_server::invoke(BNS_KNOWN_NAMES::request&& req)
   {
+    //TODO sean this needs to fit the new request format
     require_open();
     BNS_KNOWN_NAMES::response res{};
 
@@ -3299,105 +3342,80 @@ namespace {
     }
 
     auto nettype = m_wallet->nettype();
-    rpc::BNS_NAMES_TO_OWNERS::request lookup_req{};
-    lookup_req.include_expired = req.include_expired;
+    nlohmann::json req_params{{"include_expired", req.include_expired}};
+    auto& name_hash = (req_params["name_hash"] = nlohmann::json::array());
+    name_hash.get_ref<nlohmann::json::array_t&>().reserve(
+            std::min(rpc::BNS_NAMES_TO_OWNERS::MAX_REQUEST_ENTRIES, res.known_names.size()));
 
     uint64_t curr_height = req.include_expired ? m_wallet->get_blockchain_current_height() : 0;
 
     // Query beldexd for the full record info
     for (auto it = res.known_names.begin(); it != res.known_names.end(); )
     {
-      const size_t num_entries = std::distance(it, res.known_names.end());
-      const auto end = num_entries < rpc::BNS_NAMES_TO_OWNERS::MAX_REQUEST_ENTRIES
+      const size_t remaining = std::distance(it, res.known_names.end());
+      const auto batch_end = remaining < rpc::BNS_NAMES_TO_OWNERS::MAX_REQUEST_ENTRIES
           ? res.known_names.end()
           : it + rpc::BNS_NAMES_TO_OWNERS::MAX_REQUEST_ENTRIES;
-      lookup_req.entries.clear();
-      lookup_req.entries.reserve(std::distance(it, end));
-      for (auto it2 = it; it2 != end; it2++)
-      {
-        auto& name_hash = lookup_req.entries.emplace_back();
-        name_hash = it2->hashed;
-      }
 
-      if (auto [success, records] = m_wallet->bns_names_to_owners(lookup_req); success)
+      // Build name_hash list for the batch
+      name_hash.clear();
+      for (auto it2 = it; it2 != batch_end; ++it2)
+        name_hash.push_back(it2->hashed);
+
+      if (auto [success, records] = m_wallet->bns_names_to_owners(req_params); success)
       {
-        size_t type_offset = std::distance(res.known_names.begin(), it);
-        for (auto& rec : records)
+        size_t base_index = std::distance(res.known_names.begin(), it);
+
+        auto decrypt_and_store = [&](const std::optional<std::string>& encrypted, bns::mapping_type type, std::optional<std::string>& out_value, const std::string& name)
         {
-          if (rec.entry_index >= num_entries)
+          if (!req.decrypt || !encrypted || encrypted->empty() || !oxenc::is_hex(*encrypted))
+          return;
+
+          bns::mapping_value value;
+          std::string errmsg;
+          if (bns::mapping_value::validate_encrypted(type, oxenc::from_hex(*encrypted), &value, &errmsg) &&
+          value.decrypt(name, type))
+          out_value = value.to_readable_value(nettype, type);
+          else
+          MWARNING("Failed to decrypt BNS value for " << name << (errmsg.empty() ? ""s : ": " + errmsg));
+        };
+
+        for (const auto& rec : records)
+        {
+          size_t index = rec["entry_index"].get<size_t>();
+          if (index >= remaining)
           {
-            MWARNING("Got back invalid entry_index " << rec.entry_index << " for a request for " << num_entries << " entries");
+            MWARNING("Invalid entry_index " << index << " for batch size " << remaining);
             continue;
           }
 
-          auto& res_e = *(it + rec.entry_index);
-          res_e.owner = std::move(rec.owner);
-          res_e.backup_owner = std::move(rec.backup_owner);
-          res_e.encrypted_bchat_value = std::move(rec.encrypted_bchat_value);
-          res_e.encrypted_wallet_value = std::move(rec.encrypted_wallet_value);
-          res_e.encrypted_belnet_value = std::move(rec.encrypted_belnet_value);
-          res_e.encrypted_eth_addr_value = std::move(rec.encrypted_eth_addr_value);
-          res_e.update_height = rec.update_height;
-          res_e.expiration_height = rec.expiration_height;
+          auto& res_e = *(it + index);
+          res_e.owner = rec["owner"];
+          if (rec.contains("backup_owner") && !rec["backup_owner"].is_null())
+            res_e.backup_owner = rec["backup_owner"].get<std::string>();
+          if (rec.contains("encrypted_bchat_value") && !rec["encrypted_bchat_value"].empty())
+            res_e.encrypted_bchat_value = rec["encrypted_bchat_value"];
+          if (rec.contains("encrypted_wallet_value") && !rec["encrypted_wallet_value"].empty())
+            res_e.encrypted_wallet_value = rec["encrypted_wallet_value"];
+          if (rec.contains("encrypted_belnet_value") && !rec["encrypted_belnet_value"].empty())
+            res_e.encrypted_belnet_value = rec["encrypted_belnet_value"];
+          if (rec.contains("encrypted_eth_addr_value") && !rec["encrypted_eth_addr_value"].empty())
+            res_e.encrypted_eth_addr_value = rec["encrypted_eth_addr_value"];
+          res_e.update_height = rec["update_height"].get<uint64_t>();
+          res_e.expiration_height = rec["expiration_height"].get<uint64_t>();
+          res_e.txid = rec["txid"];
+
           if (req.include_expired && res_e.expiration_height)
-            res_e.expired = *res_e.expiration_height < curr_height;
-          res_e.txid = std::move(rec.txid);
+            res_e.expired = res_e.expiration_height < curr_height;
 
-          //BCHAT
-          if (req.decrypt && !res_e.encrypted_bchat_value.empty() && oxenc::is_hex(res_e.encrypted_bchat_value))
-          {
-            bns::mapping_value value;
-            const auto type = bns::mapping_type::bchat;
-            std::string errmsg;
-            if (bns::mapping_value::validate_encrypted(type, oxenc::from_hex(res_e.encrypted_bchat_value), &value, &errmsg)
-                && value.decrypt(res_e.name, type))
-              res_e.value_bchat = value.to_readable_value(nettype, type);
-            else
-              MWARNING("Failed to decrypt BNS value for " << res_e.name << (errmsg.empty() ? ""s : ": " + errmsg));
-          }
-
-          //ETH_ADDR
-          if (req.decrypt && !res_e.encrypted_eth_addr_value.empty() && oxenc::is_hex(res_e.encrypted_eth_addr_value))
-          {
-            bns::mapping_value value;
-            const auto type = bns::mapping_type::eth_addr;
-            std::string errmsg;
-            if (bns::mapping_value::validate_encrypted(type, oxenc::from_hex(res_e.encrypted_eth_addr_value), &value, &errmsg)
-                && value.decrypt(res_e.name, type))
-              res_e.value_eth_addr = value.to_readable_value(nettype, type);
-            else
-              MWARNING("Failed to decrypt BNS value for " << res_e.name << (errmsg.empty() ? ""s : ": " + errmsg));
-          }
-
-          //WALLET
-          if (req.decrypt && !res_e.encrypted_wallet_value.empty() && oxenc::is_hex(res_e.encrypted_wallet_value))
-          {
-            bns::mapping_value value;
-            const auto type = bns::mapping_type::wallet;
-            std::string errmsg;
-            if (bns::mapping_value::validate_encrypted(type, oxenc::from_hex(res_e.encrypted_wallet_value), &value, &errmsg)
-                && value.decrypt(res_e.name, type))
-              res_e.value_wallet = value.to_readable_value(nettype, type);
-            else
-              MWARNING("Failed to decrypt BNS value for " << res_e.name << (errmsg.empty() ? ""s : ": " + errmsg));
-          }
-
-          //BELNET
-          if (req.decrypt && !res_e.encrypted_belnet_value.empty() && oxenc::is_hex(res_e.encrypted_belnet_value))
-          {
-            bns::mapping_value value;
-            const auto type = bns::mapping_type::belnet;
-            std::string errmsg;
-            if (bns::mapping_value::validate_encrypted(type, oxenc::from_hex(res_e.encrypted_belnet_value), &value, &errmsg)
-                && value.decrypt(res_e.name, type))
-              res_e.value_belnet = value.to_readable_value(nettype, type);
-            else
-              MWARNING("Failed to decrypt BNS value for " << res_e.name << (errmsg.empty() ? ""s : ": " + errmsg));
-          }
+          decrypt_and_store(res_e.encrypted_bchat_value, bns::mapping_type::bchat, res_e.value_bchat, res_e.name);
+          decrypt_and_store(res_e.encrypted_eth_addr_value, bns::mapping_type::eth_addr, res_e.value_eth_addr, res_e.name);
+          decrypt_and_store(res_e.encrypted_wallet_value, bns::mapping_type::wallet, res_e.value_wallet, res_e.name);
+          decrypt_and_store(res_e.encrypted_belnet_value, bns::mapping_type::belnet, res_e.value_belnet, res_e.name);
         }
       }
 
-      it = end;
+      it = batch_end;
     }
 
     // Erase anything we didn't get a response for (it will have update_height of 0)
@@ -3456,7 +3474,7 @@ namespace {
     std::string reason;
     bns::mapping_type type = {};
 
-    std::optional<uint8_t> hf_version = m_wallet->get_hard_fork_version();
+    auto hf_version = m_wallet->get_hard_fork_version();
     if (!hf_version) throw wallet_rpc_error{error_code::HF_QUERY_FAILED, tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED};
     {
       if (!bns::validate_mapping_type(req.type, *hf_version, &type, &reason))
@@ -3490,7 +3508,7 @@ namespace {
       throw wallet_rpc_error{error_code::BNS_VALUE_TOO_LONG, "BNS value '" + req.value + "' is too long"};
 
     std::string reason;
-    std::optional<uint8_t> hf_version = m_wallet->get_hard_fork_version();
+    auto hf_version = m_wallet->get_hard_fork_version();
     if (!hf_version) throw wallet_rpc_error{error_code::HF_QUERY_FAILED, tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED};
 
     bns::mapping_type type;
@@ -3504,7 +3522,7 @@ namespace {
     if (!bns::mapping_value::validate(m_wallet->nettype(), type, req.value, &value, &reason))
       throw wallet_rpc_error{error_code::BNS_BAD_VALUE, "Invalid BNS value '" + req.value + "': " + reason};
 
-    bool old_argon2 = type == bns::mapping_type::bchat && *hf_version < cryptonote::network_version_17_POS;
+    bool old_argon2 = type == bns::mapping_type::bchat && *hf_version < cryptonote::hf::hf17_POS;
     if (!value.encrypt(req.name, nullptr, old_argon2))
       throw wallet_rpc_error{error_code::BNS_VALUE_ENCRYPT_FAILED, "Value encryption failure"};
 

@@ -36,6 +36,7 @@
 #include "epee/copyable_atomic.h"
 #include "crypto/hash.h"
 
+using namespace std::literals;
 namespace cryptonote
 {
 
@@ -46,7 +47,6 @@ namespace cryptonote
       state_before_handshake = 0, //default state
       state_synchronizing,
       state_standby,
-      state_idle,
       state_normal
     };
 
@@ -62,46 +62,31 @@ namespace cryptonote
     epee::copyable_atomic m_callback_request_count{0}; //in debug purpose: problem with double callback rise
     crypto::hash m_last_known_hash{crypto::null_hash};
     uint32_t m_pruning_seed{0};
-    uint16_t m_rpc_port{0};
     bool m_anchor{false};
     //size_t m_score{0};  TODO: add score calculations
   };
 
-  inline std::string get_protocol_state_string(cryptonote_connection_context::state s)
+  constexpr std::string_view get_protocol_state_string(cryptonote_connection_context::state s)
   {
     switch (s)
     {
-    case cryptonote_connection_context::state_before_handshake:
-      return "before_handshake";
-    case cryptonote_connection_context::state_synchronizing:
-      return "synchronizing";
-    case cryptonote_connection_context::state_standby:
-      return "standby";
-    case cryptonote_connection_context::state_idle:
-      return "idle";
-    case cryptonote_connection_context::state_normal:
-      return "normal";
-    default:
-      return "unknown";
+      case cryptonote_connection_context::state_before_handshake: return "before_handshake"sv;
+      case cryptonote_connection_context::state_synchronizing:    return "synchronizing"sv;
+      case cryptonote_connection_context::state_standby:          return "standby"sv;
+      case cryptonote_connection_context::state_normal:           return "normal"sv;
+      default: return "unknown"sv;
     }
   }
 
-  inline char get_protocol_state_char(cryptonote_connection_context::state s)
+  constexpr char get_protocol_state_char(cryptonote_connection_context::state s)
   {
     switch (s)
     {
-    case cryptonote_connection_context::state_before_handshake:
-      return 'h';
-    case cryptonote_connection_context::state_synchronizing:
-      return 's';
-    case cryptonote_connection_context::state_standby:
-      return 'w';
-    case cryptonote_connection_context::state_idle:
-      return 'i';
-    case cryptonote_connection_context::state_normal:
-      return 'n';
-    default:
-      return 'u';
+      case cryptonote_connection_context::state_before_handshake: return 'h';
+      case cryptonote_connection_context::state_synchronizing:    return 's';
+      case cryptonote_connection_context::state_standby:          return 'w';
+      case cryptonote_connection_context::state_normal:           return 'n';
+      default: return 'u';
     }
   }
 

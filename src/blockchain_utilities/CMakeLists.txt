@@ -87,7 +87,7 @@ target_link_libraries(blockchain_depth PRIVATE blockchain_tools_common_libs)
 beldex_add_executable(blockchain_stats "beldex-blockchain-stats"
   blockchain_stats.cpp
   )
-target_link_libraries(blockchain_stats PRIVATE blockchain_tools_common_libs)
+target_link_libraries(blockchain_stats PRIVATE blockchain_tools_common_libs date::date)
 
 # TODO(beldex): Blockchain pruning not supported in Beldex yet
 # beldex_add_executable(blockchain_prune_known_spent_data "beldex-blockchain-prune-known-spent-data"

@@ -100,7 +100,7 @@ namespace hw::core {
             epee::mlocked<tools::scrubbed_arr<char, sizeof(view_key) + sizeof(spend_key) + 1>> data;
             memcpy(data.data(), &view_key, sizeof(view_key));
             memcpy(data.data() + sizeof(view_key), &spend_key, sizeof(spend_key));
-            data[sizeof(data) - 1] = config::HASH_KEY_WALLET;
+            data[sizeof(data) - 1] = cryptonote::hashkey::WALLET;
             crypto::generate_chacha_key(data.data(), sizeof(data), key, kdf_rounds);
             return true;
         }
@@ -190,13 +190,13 @@ namespace hw::core {
         }
 
         crypto::secret_key  device_default::get_subaddress_secret_key(const crypto::secret_key &a, const cryptonote::subaddress_index &index) {
-            char data[config::HASH_KEY_SUBADDRESS.size() + sizeof(crypto::secret_key) + 2 * sizeof(uint32_t)];
-            memcpy(data, config::HASH_KEY_SUBADDRESS.data(), config::HASH_KEY_SUBADDRESS.size());
-            memcpy(data + config::HASH_KEY_SUBADDRESS.size(), &a, sizeof(crypto::secret_key));
+            char data[cryptonote::hashkey::SUBADDRESS.size() + sizeof(crypto::secret_key) + 2 * sizeof(uint32_t)];
+            memcpy(data, cryptonote::hashkey::SUBADDRESS.data(), cryptonote::hashkey::SUBADDRESS.size());
+            memcpy(data + cryptonote::hashkey::SUBADDRESS.size(), &a, sizeof(crypto::secret_key));
             uint32_t idx = SWAP32LE(index.major);
-            memcpy(data + config::HASH_KEY_SUBADDRESS.size() + sizeof(crypto::secret_key), &idx, sizeof(uint32_t));
+            memcpy(data + cryptonote::hashkey::SUBADDRESS.size() + sizeof(crypto::secret_key), &idx, sizeof(uint32_t));
             idx = SWAP32LE(index.minor);
-            memcpy(data + config::HASH_KEY_SUBADDRESS.size() + sizeof(crypto::secret_key) + sizeof(uint32_t), &idx, sizeof(uint32_t));
+            memcpy(data + cryptonote::hashkey::SUBADDRESS.size() + sizeof(crypto::secret_key) + sizeof(uint32_t), &idx, sizeof(uint32_t));
             crypto::secret_key m;
             crypto::hash_to_scalar(data, sizeof(data), m);
             return m;
@@ -375,7 +375,7 @@ namespace hw::core {
                 return false;
 
             memcpy(data, &derivation, 32);
-            data[32] = config::HASH_KEY_ENCRYPTED_PAYMENT_ID;
+            data[32] = cryptonote::hashkey::ENCRYPTED_PAYMENT_ID;
             cn_fast_hash(data, 33, hash);
 
             for (size_t b = 0; b < 8; ++b)

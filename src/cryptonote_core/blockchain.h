@@ -29,7 +29,8 @@
 // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 
 #pragma once
-#include <boost/asio/io_service.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/serialization/serialization.hpp>
 #include <boost/serialization/version.hpp>
 
@@ -38,6 +39,10 @@
 #if BOOST_VERSION == 107400
 #include <boost/serialization/library_version_type.hpp>
 #endif
+
+namespace boost::asio {
+using io_service = io_context;
+}
 
 #include <boost/serialization/list.hpp>
 #include <boost/multi_index_container.hpp>
@@ -57,6 +62,7 @@
 #include "common/util.h"
 #include "cryptonote_protocol/cryptonote_protocol_defs.h"
 #include "rpc/core_rpc_server_commands_defs.h"
+#include "rpc/core_rpc_server_binary_commands.h"
 #include "cryptonote_basic/difficulty.h"
 #include "cryptonote_tx_utils.h"
 #include "cryptonote_basic/verification_context.h"
@@ -639,7 +645,7 @@ namespace cryptonote
      *
      * @return pair of {per-size, per-output} fees
      */
-    static byte_and_output_fees get_dynamic_base_fee(uint64_t block_reward, size_t median_block_weight, uint8_t version);
+    static byte_and_output_fees get_dynamic_base_fee(uint64_t block_reward, size_t median_block_weight, hf version);
 
     /**
      * @brief get dynamic per kB or byte fee estimate for the next few blocks
@@ -717,25 +723,25 @@ namespace cryptonote
      *
      * @param block_ids a vector of block hashes for which to get the corresponding blocks
      * @param blocks return-by-reference a vector to store result blocks in
-     * @param missed_bs return-by-reference a vector to store missed blocks in
+     * @param missed_bs optional pointer to an unordered_set to add missed blocks ids to
      *
      * @return false if an unexpected exception occurs, else true
      */
-    bool get_blocks(const std::vector<crypto::hash>& block_ids, std::vector<std::pair<cryptonote::blobdata,block>>& blocks, std::vector<crypto::hash>& missed_bs) const;
+    bool get_blocks(const std::vector<crypto::hash>& block_ids, std::vector<std::pair<cryptonote::blobdata,block>>& blocks, std::unordered_set<crypto::hash>* missed_bs = nullptr) const;
 
     /**
      * @brief gets transactions based on a list of transaction hashes
      *
      * @param txs_ids a vector of hashes for which to get the corresponding transactions
      * @param txs return-by-reference a vector to store result transactions in
-     * @param missed_txs return-by-reference a vector to store missed transactions in
+     * @param missed_txs optional pointer to an unordered set to add missed transactions ids to
      * @param pruned whether to return full or pruned blobs
      *
      * @return false if an unexpected exception occurs, else true
      */
-    bool get_transactions_blobs(const std::vector<crypto::hash>& txs_ids, std::vector<blobdata>& txs, std::vector<crypto::hash>& missed_txs, bool pruned = false) const;
-    bool get_split_transactions_blobs(const std::vector<crypto::hash>& txs_ids, std::vector<std::tuple<crypto::hash, cryptonote::blobdata, crypto::hash, cryptonote::blobdata>>& txs, std::vector<crypto::hash>& missed_txs) const;
-    bool get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<transaction>& txs, std::vector<crypto::hash>& missed_txs) const;
+    bool get_transactions_blobs(const std::vector<crypto::hash>& txs_ids, std::vector<blobdata>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr, bool pruned = false) const;
+    bool get_split_transactions_blobs(const std::vector<crypto::hash>& txs_ids, std::vector<std::tuple<crypto::hash, cryptonote::blobdata, crypto::hash, cryptonote::blobdata>>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
+    bool get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<transaction>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
 
     /**
      * @brief looks up transactions based on a list of transaction hashes and returns the block
@@ -801,7 +807,7 @@ namespace cryptonote
      *
      * @return the version
      */
-    uint8_t get_network_version(std::optional<uint64_t> height = std::nullopt) const;
+    hf get_network_version(std::optional<uint64_t> height = std::nullopt) const;
 
     /**
      * @brief remove transactions from the transaction pool (if present)
@@ -1022,6 +1028,8 @@ namespace cryptonote
      */
     void flush_invalid_blocks();
 
+    bool load_missing_blocks_into_beldex_subsystems();
+
 #ifndef IN_UNIT_TESTS
   private:
 #endif
@@ -1048,8 +1056,6 @@ namespace cryptonote
     };
 
     bool create_block_template_internal(block& b, const crypto::hash *from_block, block_template_info const &info, difficulty_type& di, uint64_t& height, uint64_t& expected_reward, const blobdata& ex_nonce);
-
-    bool load_missing_blocks_into_beldex_subsystems();
 
     // TODO: evaluate whether or not each of these typedefs are left over from blockchain_storage
     typedef std::unordered_set<crypto::key_image> key_images_container;
@@ -1087,8 +1093,8 @@ namespace cryptonote
     bool m_db_sync_on_blocks;
     uint64_t m_db_sync_threshold;
     uint64_t m_max_prepare_blocks_threads;
-    uint64_t m_fake_pow_calc_time;
-    uint64_t m_fake_scan_time;
+    std::chrono::nanoseconds m_fake_pow_calc_time;
+    std::chrono::nanoseconds m_fake_scan_time;
     uint64_t m_sync_counter;
     uint64_t m_bytes_to_sync;
 
@@ -1118,7 +1124,8 @@ namespace cryptonote
 
     boost::asio::io_service m_async_service;
     std::thread m_async_thread;
-    std::unique_ptr<boost::asio::io_service::work> m_async_work_idle;
+    using work_type = boost::asio::executor_work_guard<decltype(m_async_service.get_executor())>;
+    std::unique_ptr<work_type> m_async_work_idle;
 
     // some invalid blocks
     std::set<crypto::hash> m_invalid_blocks;
@@ -1312,7 +1319,7 @@ namespace cryptonote
      *
      * @return false if anything is found wrong with the miner transaction, otherwise true
      */
-    bool prevalidate_miner_transaction(const block& b, uint64_t height, uint8_t hf_version);
+    bool prevalidate_miner_transaction(const block& b, uint64_t height, hf hf_version);
 
     /**
      * @brief validates a miner (coinbase) transaction
@@ -1329,7 +1336,7 @@ namespace cryptonote
      *
      * @return false if anything is found wrong with the miner transaction, otherwise true
      */
-    bool validate_miner_transaction(const block& b, size_t cumulative_block_weight, uint64_t fee, uint64_t& base_reward, uint64_t already_generated_coins, uint8_t version);
+    bool validate_miner_transaction(const block& b, size_t cumulative_block_weight, uint64_t fee, uint64_t& base_reward, uint64_t already_generated_coins, hf version);
 
     /**
      * @brief reverts the blockchain to its previous state following a failed switch

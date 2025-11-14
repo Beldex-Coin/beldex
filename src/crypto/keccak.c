@@ -110,7 +110,7 @@ void keccak(const uint8_t *in, size_t inlen, uint8_t *md, int mdlen)
       for (i = 0; i < rsizw; i++) {
         uint64_t ina;
         memcpy(&ina, in + i * 8, 8);
-        st[i] ^= swap64le(ina);
+        st[i] ^= SWAP64LE(ina);
       }
       keccakf(st, KECCAK_ROUNDS);
     }
@@ -128,7 +128,7 @@ void keccak(const uint8_t *in, size_t inlen, uint8_t *md, int mdlen)
     temp[rsiz - 1] |= 0x80;
 
     for (i = 0; i < rsizw; i++)
-        st[i] ^= swap64le(((uint64_t *) temp)[i]);
+        st[i] ^= SWAP64LE(((uint64_t *) temp)[i]);
 
     keccakf(st, KECCAK_ROUNDS);
 
@@ -151,7 +151,7 @@ void keccak1600(const uint8_t *in, size_t inlen, uint8_t *md)
 #define IS_ALIGNED_64(p) (0 == (7 & ((const char*)(p) - (const char*)0)))
 #define KECCAK_PROCESS_BLOCK(st, block) { \
     for (int i_ = 0; i_ < KECCAK_WORDS; i_++){ \
-        ((st))[i_] ^= swap64le(((block))[i_]); \
+        ((st))[i_] ^= SWAP64LE(((block))[i_]); \
     }; \
     keccakf(st, KECCAK_ROUNDS); }
 

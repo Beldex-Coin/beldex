@@ -65,8 +65,8 @@ struct beldex_name_system_large_reorg                                           
 struct beldex_name_system_name_renewal                                                 : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };
 struct beldex_name_system_name_value_max_lengths                                       : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };
 struct beldex_name_system_update_mapping_after_expiry_fails                            : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };
-struct beldex_name_system_update_mapping                                               : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); virtual uint8_t hf(); };
-struct beldex_name_system_update_mapping_argon2                                        : public beldex_name_system_update_mapping { uint8_t hf() override; };
+struct beldex_name_system_update_mapping                                               : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); virtual cryptonote::hf hf(); };
+struct beldex_name_system_update_mapping_argon2                                        : public beldex_name_system_update_mapping { cryptonote::hf hf() override; };
 struct beldex_name_system_update_mapping_multiple_owners                               : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };
 struct beldex_name_system_update_mapping_non_existent_name_fails                       : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };
 struct beldex_name_system_update_mapping_invalid_signature                             : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };

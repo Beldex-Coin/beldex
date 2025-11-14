@@ -104,7 +104,7 @@ namespace nodetool
     size_t get_white_peers_count(){std::lock_guard lock{m_peerlist_lock}; return m_peers_white.size();}
     size_t get_gray_peers_count(){std::lock_guard lock{m_peerlist_lock}; return m_peers_gray.size();}
     bool merge_peerlist(const std::vector<peerlist_entry>& outer_bs, const std::function<bool(const peerlist_entry&)> &f = NULL);
-    bool get_peerlist_head(std::vector<peerlist_entry>& bs_head, bool anonymize, uint32_t depth = P2P_DEFAULT_PEERS_IN_HANDSHAKE);
+    bool get_peerlist_head(std::vector<peerlist_entry>& bs_head, bool anonymize, uint32_t depth = cryptonote::p2p::DEFAULT_PEERS_IN_HANDSHAKE);
     void get_peerlist(std::vector<peerlist_entry>& pl_gray, std::vector<peerlist_entry>& pl_white);
     void get_peerlist(peerlist_types& peers);
     bool get_white_peer_by_index(peerlist_entry& p, size_t i);
@@ -113,7 +113,7 @@ namespace nodetool
     bool append_with_peer_white(const peerlist_entry& pr);
     bool append_with_peer_gray(const peerlist_entry& pr);
     bool append_with_peer_anchor(const anchor_peerlist_entry& ple);
-    bool set_peer_just_seen(peerid_type peer, const epee::net_utils::network_address& addr, uint32_t pruning_seed, uint16_t rpc_port);
+    bool set_peer_just_seen(peerid_type peer, const epee::net_utils::network_address& addr, uint32_t pruning_seed);
     bool is_host_allowed(const epee::net_utils::network_address &address);
     bool get_random_gray_peer(peerlist_entry& pe);
     bool remove_from_peer_gray(const peerlist_entry& pe);
@@ -197,7 +197,7 @@ namespace nodetool
   //--------------------------------------------------------------------------------------------------
   inline void peerlist_manager::trim_gray_peerlist()
   {
-    while(m_peers_gray.size() > P2P_LOCAL_GRAY_PEERLIST_LIMIT)
+    while(m_peers_gray.size() > cryptonote::p2p::LOCAL_GRAY_PEERLIST_LIMIT)
     {
       peers_indexed::index<by_time>::type& sorted_index=m_peers_gray.get<by_time>();
       sorted_index.erase(sorted_index.begin());
@@ -206,7 +206,7 @@ namespace nodetool
   //--------------------------------------------------------------------------------------------------
   inline void peerlist_manager::trim_white_peerlist()
   {
-    while(m_peers_white.size() > P2P_LOCAL_WHITE_PEERLIST_LIMIT)
+    while(m_peers_white.size() > cryptonote::p2p::LOCAL_WHITE_PEERLIST_LIMIT)
     {
       peers_indexed::index<by_time>::type& sorted_index=m_peers_white.get<by_time>();
       sorted_index.erase(sorted_index.begin());
@@ -317,7 +317,7 @@ namespace nodetool
   }
   //--------------------------------------------------------------------------------------------------
   inline
-  bool peerlist_manager::set_peer_just_seen(peerid_type peer, const epee::net_utils::network_address& addr, uint32_t pruning_seed, uint16_t rpc_port)
+  bool peerlist_manager::set_peer_just_seen(peerid_type peer, const epee::net_utils::network_address& addr, uint32_t pruning_seed)
   {
     TRY_ENTRY();
     std::lock_guard lock{m_peerlist_lock};
@@ -327,7 +327,6 @@ namespace nodetool
     ple.id = peer;
     ple.last_seen = time(NULL);
     ple.pruning_seed = pruning_seed;
-    ple.rpc_port = rpc_port;
     return append_with_peer_white(ple);
     CATCH_ENTRY_L0("peerlist_manager::set_peer_just_seen()", false);
   }
@@ -353,8 +352,6 @@ namespace nodetool
       peerlist_entry new_ple = ple;
       if (by_addr_it_wt->pruning_seed && ple.pruning_seed == 0) // guard against older nodes not passing pruning info around
         new_ple.pruning_seed = by_addr_it_wt->pruning_seed;
-      if (by_addr_it_wt->rpc_port && ple.rpc_port == 0) // guard against older nodes not passing RPC port around
-        new_ple.rpc_port = by_addr_it_wt->rpc_port;
       new_ple.last_seen = by_addr_it_wt->last_seen; // do not overwrite the last seen timestamp, incoming peer list are untrusted
       m_peers_white.replace(by_addr_it_wt, new_ple);
     }
@@ -394,8 +391,6 @@ namespace nodetool
       peerlist_entry new_ple = ple;
       if (by_addr_it_gr->pruning_seed && ple.pruning_seed == 0) // guard against older nodes not passing pruning info around
         new_ple.pruning_seed = by_addr_it_gr->pruning_seed;
-      if (by_addr_it_gr->rpc_port && ple.rpc_port == 0) // guard against older nodes not passing RPC port around
-        new_ple.rpc_port = by_addr_it_gr->rpc_port;
       new_ple.last_seen = by_addr_it_gr->last_seen; // do not overwrite the last seen timestamp, incoming peer list are untrusted
       m_peers_gray.replace(by_addr_it_gr, new_ple);
     }

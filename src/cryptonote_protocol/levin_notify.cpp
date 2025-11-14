@@ -46,19 +46,12 @@
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "net.p2p.tx"
 
-namespace cryptonote
+namespace cryptonote::levin
 {
-namespace levin
-{
+  using epee::connection_id_t;
   namespace
   {
     constexpr std::size_t connection_id_reserve_size = 100;
-
-    constexpr const std::chrono::minutes noise_min_epoch{CRYPTONOTE_NOISE_MIN_EPOCH};
-    constexpr const std::chrono::seconds noise_epoch_range{CRYPTONOTE_NOISE_EPOCH_RANGE};
-
-    constexpr const std::chrono::seconds noise_min_delay{CRYPTONOTE_NOISE_MIN_DELAY};
-    constexpr const std::chrono::seconds noise_delay_range{CRYPTONOTE_NOISE_DELAY_RANGE};
 
     /*! Select a randomized duration from 0 to `range`. The precision will be to
         the systems `steady_clock`. As an example, supplying 3 seconds to this
@@ -74,20 +67,20 @@ namespace levin
     }
 
     //! \return All outgoing connections supporting fragments in `connections`.
-    std::vector<boost::uuids::uuid> get_out_connections(connections& p2p)
+
+    std::vector<connection_id_t> get_out_connections(connections &p2p)
     {
-      std::vector<boost::uuids::uuid> outs;
-      outs.reserve(connection_id_reserve_size);
+      std::vector<connection_id_t> outs;
 
       /* The foreach call is serialized with a lock, but should be quick due to
          the reserve call so a strand is not used. Investigate if there is lots
          of waiting in here. */
 
-      p2p.foreach_connection([&outs] (detail::p2p_context& context) {
+      p2p.foreach_connection([&outs](detail::p2p_context &context)
+                             {
         if (!context.m_is_income)
           outs.emplace_back(context.m_connection_id);
-        return true;
-      });
+        return true; });
 
       return outs;
     }
@@ -168,7 +161,7 @@ namespace levin
         : queue(),
           strand(io_service),
           next_noise(io_service),
-          connection(boost::uuids::nil_uuid())
+          connection{}
       {}
 
       // `asio::io_service::strand` cannot be copied or moved
@@ -181,7 +174,7 @@ namespace levin
       std::deque<epee::shared_sv> queue;
       boost::asio::io_service::strand strand;
       boost::asio::steady_timer next_noise;
-      boost::uuids::uuid connection;
+      connection_id_t connection;
     };
   } // anonymous
 
@@ -199,7 +192,7 @@ namespace levin
           connection_count(0),
           is_public(is_public)
       {
-        for (std::size_t count = 0; !noise.view.empty() && count < CRYPTONOTE_NOISE_CHANNELS; ++count)
+        for (std::size_t count = 0; !noise.view.empty() && count < NOISE_CHANNELS; ++count)
           channels.emplace_back(io_service);
       }
 
@@ -254,10 +247,10 @@ namespace levin
     {
       std::shared_ptr<detail::zone> zone_;
       epee::shared_sv message_; // Requires manual copy
-      boost::uuids::uuid source_;
+      connection_id_t source_;
 
     public:
-      explicit flood_notify(std::shared_ptr<detail::zone> zone, epee::shared_sv message, const boost::uuids::uuid& source)
+      explicit flood_notify(std::shared_ptr<detail::zone> zone, epee::shared_sv message, const connection_id_t& source)
         : zone_(std::move(zone)), message_(message), source_(source)
       {}
 
@@ -279,7 +272,7 @@ namespace levin
            algorithm changes or the locking strategy within the levin config
            class changes. */
 
-        std::vector<boost::uuids::uuid> connections;
+        std::vector<connection_id_t> connections;
         connections.reserve(connection_id_reserve_size);
         zone_->p2p->foreach_connection([this, &connections] (detail::p2p_context& context) {
           /* Only send to outgoing connections when "flooding" over i2p/tor.
@@ -290,7 +283,7 @@ namespace levin
           return true;
         });
 
-        for (const boost::uuids::uuid& connection : connections)
+        for (const connection_id_t& connection : connections)
           zone_->p2p->send(message_, connection);
       }
     };
@@ -300,7 +293,7 @@ namespace levin
     {
       std::shared_ptr<detail::zone> zone_;
       const std::size_t channel_;
-      const boost::uuids::uuid connection_;
+      const connection_id_t connection_;
 
       //! \pre Called within `stem_.strand`.
       void operator()() const
@@ -311,7 +304,7 @@ namespace levin
         noise_channel& channel = zone_->channels.at(channel_);
         assert(channel.strand.running_in_this_thread());
         static_assert(
-          CRYPTONOTE_MAX_FRAGMENTS <= (noise_min_epoch / (noise_min_delay + noise_delay_range)),
+          MAX_FRAGMENTS <= static_cast<size_t>(NOISE_MIN_EPOCH / (NOISE_MIN_DELAY + NOISE_DELAY_RANGE)),
           "Max fragments more than the max that can be sent in an epoch"
         );
 
@@ -332,7 +325,7 @@ namespace levin
     struct update_channels
     {
       std::shared_ptr<detail::zone> zone_;
-      std::vector<boost::uuids::uuid> out_connections_;
+      std::vector<connection_id_t> out_connections_;
 
       //! \pre Called within `zone->strand`.
       static void post(std::shared_ptr<detail::zone> zone)
@@ -346,7 +339,7 @@ namespace levin
         for (auto id = zone->map.begin(); id != zone->map.end(); ++id)
         {
           const std::size_t i = id - zone->map.begin();
-          zone->channels[i].strand.post(update_channel{zone, i, *id});
+          zone->channels[i].strand.post(update_channel{zone, i, *id}, std::allocator<void>{});
         }
       }
 
@@ -403,7 +396,7 @@ namespace levin
           return;
 
         noise_channel& channel = zone->channels.at(index);
-        channel.next_noise.expires_at(start + noise_min_delay + random_duration(noise_delay_range));
+        channel.next_noise.expires_at(start + NOISE_MIN_DELAY + random_duration(NOISE_DELAY_RANGE));
         channel.next_noise.async_wait(
           channel.strand.wrap(send_noise{std::move(zone), index})
         );
@@ -444,13 +437,14 @@ namespace levin
           else
           {
             channel.active = {};
-            channel.connection = boost::uuids::nil_uuid();
+            channel.connection = {};
 
             auto connections = get_out_connections(*zone_->p2p);
             if (connections.empty())
               MWARNING("Lost all outbound connections to anonymity network - currently unable to send transaction(s)");
 
-            zone_->strand.post(update_channels{zone_, std::move(connections)});
+            zone_->strand.post(
+                            update_channels{zone_, std::move(connections)}, std::allocator<void>{});
           }
         }
 
@@ -478,8 +472,11 @@ namespace levin
 
         const auto start = std::chrono::steady_clock::now();
         zone_->strand.dispatch(
-          change_channels{zone_, net::dandelionpp::connection_map{get_out_connections(*(zone_->p2p)), count_}}
-        );
+                    change_channels{
+                            zone_,
+                            net::dandelionpp::connection_map{
+                                    get_out_connections(*(zone_->p2p)), count_}},
+                    std::allocator<void>{});
 
         detail::zone& alias = *zone_;
         alias.next_epoch.expires_at(start + min_epoch_ + random_duration(epoch_range_));
@@ -497,7 +494,7 @@ namespace levin
     if (!zone_->noise.view.empty())
     {
       const auto now = std::chrono::steady_clock::now();
-      start_epoch{zone_, noise_min_epoch, noise_epoch_range, CRYPTONOTE_NOISE_CHANNELS}();
+      start_epoch{zone_, NOISE_MIN_EPOCH, NOISE_EPOCH_RANGE, NOISE_CHANNELS}();
       for (std::size_t channel = 0; channel < zone_->channels.size(); ++channel)
         send_noise::wait(now, zone_, channel);
     }
@@ -511,17 +508,16 @@ namespace levin
     if (!zone_)
       return {false, false};
 
-    return {!zone_->noise.view.empty(), CRYPTONOTE_NOISE_CHANNELS <= zone_->connection_count};
+    return {!zone_->noise.view.empty(), NOISE_CHANNELS <= zone_->connection_count};
   }
 
   void notify::new_out_connection()
   {
-    if (!zone_ || zone_->noise.view.empty() || CRYPTONOTE_NOISE_CHANNELS <= zone_->connection_count)
+    if (!zone_ || zone_->noise.view.empty() || NOISE_CHANNELS <= zone_->connection_count)
       return;
 
     zone_->strand.dispatch(
-      update_channels{zone_, get_out_connections(*(zone_->p2p))}
-    );
+        update_channels{zone_, get_out_connections(*(zone_->p2p))}, std::allocator<void>{});
   }
 
   void notify::run_epoch()
@@ -540,7 +536,7 @@ namespace levin
       channel.next_noise.cancel();
   }
 
-  bool notify::send_txs(std::vector<blobdata> txs, const boost::uuids::uuid& source, const bool pad_txs)
+  bool notify::send_txs(std::vector<blobdata> txs, const connection_id_t& source, const bool pad_txs)
   {
 
 
@@ -557,7 +553,7 @@ namespace levin
         MINFO("send_txs covert send in \"noise\" channel");
       // covert send in "noise" channel
       static_assert(
-        CRYPTONOTE_MAX_FRAGMENTS * CRYPTONOTE_NOISE_BYTES <= LEVIN_DEFAULT_MAX_PACKET_SIZE, "most nodes will reject this fragment setting"
+        MAX_FRAGMENTS * NOISE_BYTES <= LEVIN_DEFAULT_MAX_PACKET_SIZE, "most nodes will reject this fragment setting"
       );
 
       // padding is not useful when using noise mode
@@ -565,7 +561,7 @@ namespace levin
       epee::shared_sv message{epee::levin::make_fragmented_notify(
         zone_->noise.view, NOTIFY_NEW_TRANSACTIONS::ID, epee::strspan<std::uint8_t>(payload)
       )};
-      if (CRYPTONOTE_MAX_FRAGMENTS * zone_->noise.size() < message.size())
+      if (MAX_FRAGMENTS * zone_->noise.size() < message.size())
       {
         MERROR("notify::send_txs provided message exceeding covert fragment size");
         return false;
@@ -574,8 +570,7 @@ namespace levin
       for (std::size_t channel = 0; channel < zone_->channels.size(); ++channel)
       {
         zone_->channels[channel].strand.dispatch(
-          queue_covert_notify{zone_, message, channel}
-        );
+                    queue_covert_notify{zone_, message, channel}, std::allocator<void>{});
       }
     }
     else
@@ -586,10 +581,10 @@ namespace levin
         epee::levin::make_notify(NOTIFY_NEW_TRANSACTIONS::ID, epee::strspan<std::uint8_t>(payload))};
 
       // traditional monero send technique
-      zone_->strand.dispatch(flood_notify{zone_, std::move(message), source});
+      zone_->strand.dispatch(
+                flood_notify{zone_, std::move(message), source}, std::allocator<void>{});
     }
 
     return true;
   }
-} // levin
-} // net
+} // cryptonote::levin

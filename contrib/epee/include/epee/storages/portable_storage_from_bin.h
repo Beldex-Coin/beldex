@@ -29,7 +29,8 @@
 #pragma once 
 
 #include "portable_storage_base.h"
-#include <boost/endian/conversion.hpp>
+#include <oxenc/endian.h>
+#include <oxenc/variant.h>
 
 namespace epee
 {
@@ -110,7 +111,7 @@ namespace epee
       static_assert(std::is_integral_v<T>);
       read(&v, sizeof(T));
       if constexpr (sizeof(T) > 1)
-        boost::endian::little_to_native(v);
+        oxenc::little_to_host(v);
     }
 
     template <class T>
@@ -157,7 +158,7 @@ namespace epee
         case SERIALIZE_TYPE_TAG<std::string>: return read_ae<std::string>();
         case SERIALIZE_TYPE_TAG<section>:     return read_ae<section>();
         //case SERIALIZE_TYPE_ARRAY:  return read_ae<array_entry>(); // nested arrays not supported
-        default: CHECK_AND_ASSERT_THROW_MES(false, "unknown entry_type code = " << (int)type);
+        default: { CHECK_AND_ASSERT_THROW_MES(false, "unknown entry_type code = " << (int)type); return {}; }
       }
     }
 
@@ -210,7 +211,7 @@ namespace epee
         case SERIALIZE_TYPE_TAG<std::string>: return read_se<std::string>();
         case SERIALIZE_TYPE_TAG<section>:     return read_se<section>();
         //case SERIALIZE_TYPE_ARRAY:  return read_se<array_entry>(); // nested arrays not supported
-        default: CHECK_AND_ASSERT_THROW_MES(false, "unknown entry_type code = " << (int)ent_type);
+        default: { CHECK_AND_ASSERT_THROW_MES(false, "unknown entry_type code = " << (int)ent_type); return {}; }
       }
     }
     inline 

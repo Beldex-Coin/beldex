@@ -42,11 +42,12 @@ class command_parser_executor final
 private:
   rpc_command_executor m_executor;
 public:
-  /// Invokes via remote RPC
-  command_parser_executor(std::string daemon_url, const std::optional<tools::login>& login);
-
-  /// Invokes via local daemon
-  command_parser_executor(cryptonote::rpc::core_rpc_server& rpc_server);
+  
+  /// Creators a command parser; arguments are forwarded to the rpc_command_executor constructor
+  template <typename... T>
+  command_parser_executor(T&&... args)
+    : m_executor{std::forward<T>(args)...}
+  {}
 
   bool print_checkpoints(const std::vector<std::string>& args);
 
@@ -55,10 +56,6 @@ public:
   bool print_peer_list_stats(const std::vector<std::string>& args);
 
   bool save_blockchain(const std::vector<std::string>& args);
-
-  bool show_hash_rate(const std::vector<std::string>& args);
-
-  bool hide_hash_rate(const std::vector<std::string>& args);
 
   bool show_difficulty(const std::vector<std::string>& args);
 
@@ -106,13 +103,7 @@ public:
 
   bool stop_daemon(const std::vector<std::string>& args);
 
-  bool print_status(const std::vector<std::string>& args);
-
   bool set_limit(const std::vector<std::string>& args);
-
-  bool set_limit_up(const std::vector<std::string>& args);
-
-  bool set_limit_down(const std::vector<std::string>& args);
 
   bool out_peers(const std::vector<std::string>& args);
 

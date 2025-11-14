@@ -190,7 +190,7 @@ bool beldex_checkpointing_alt_chain_receive_checkpoint_votes_should_reorg_back::
 
   gen.add_event_msg("Fork generate two checkpoints worth of blocks.");
   uint64_t first_checkpointed_height    = fork.height();
-  uint64_t first_checkpointed_height_hf = fork.top().block.major_version;
+  cryptonote::hf first_checkpointed_height_hf = fork.top().block.major_version;
   crypto::hash first_checkpointed_hash  = cryptonote::get_block_hash(fork.top().block);
   std::shared_ptr<const master_nodes::quorum> first_quorum = fork.get_quorum(master_nodes::quorum_type::checkpointing, gen.height());
 
@@ -438,12 +438,12 @@ bool beldex_checkpointing_master_node_checkpoints_check_reorg_windows::generate(
 
 bool beldex_core_block_reward_unpenalized_pre_POS::generate(std::vector<test_event_entry>& events)
 {
-  auto hard_forks = beldex_generate_hard_fork_table(cryptonote::network_version_17_POS - 1);
+  auto hard_forks = beldex_generate_hard_fork_table(cryptonote::hf::hf16);
   beldex_chain_generator gen(events, hard_forks);
   gen.add_blocks_until_version(hard_forks.back().version);
 
-  uint8_t newest_hf = hard_forks.back().version;
-  assert(newest_hf >= cryptonote::network_version_14_enforce_checkpoints);
+  cryptonote::hf newest_hf = hard_forks.back().version;
+  assert(newest_hf >= cryptonote::hf::hf15_flash);
 
   gen.add_mined_money_unlock_blocks();
 
@@ -477,11 +477,11 @@ bool beldex_core_block_reward_unpenalized_pre_POS::generate(std::vector<test_eve
 
 bool beldex_core_block_reward_unpenalized_post_POS::generate(std::vector<test_event_entry>& events)
 {
-  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::network_version_count -1, 150 /*Proof Of Stake Delay*/);
+  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::hf::hf20_bulletproof_plus, 150 /*Proof Of Stake Delay*/);
   beldex_chain_generator gen(events, hard_forks);
 
-  uint8_t const newest_hf = hard_forks.back().version;
-  assert(newest_hf >= cryptonote::network_version_14_enforce_checkpoints);
+  const cryptonote::hf newest_hf = hard_forks.back().version;
+  assert(newest_hf >= cryptonote::hf::hf15_flash);
 
   gen.add_blocks_until_version(hard_forks.back().version);
   gen.add_mined_money_unlock_blocks();
@@ -497,12 +497,12 @@ bool beldex_core_block_reward_unpenalized_post_POS::generate(std::vector<test_ev
     {
       beldex_master_node_contribution &entry = contributions[i];
       entry.contributor                     = gen.add_account().get_keys().m_account_address;
-      entry.portions                        = STAKING_PORTIONS / 4;
+      entry.portions                        = cryptonote::old::STAKING_PORTIONS / 4;
     }
 
     txs[i] = gen.create_registration_tx(gen.first_miner(),
                                         cryptonote::keypair{hw::get_device("default")},
-                                        STAKING_PORTIONS / 4, /*operator portions*/
+                                        cryptonote::old::STAKING_PORTIONS / 4, /*operator portions*/
                                         0,                    /*operator cut*/
                                         contributions,
                                         3);
@@ -511,7 +511,7 @@ bool beldex_core_block_reward_unpenalized_post_POS::generate(std::vector<test_ev
   }
   gen.create_and_add_next_block(txs);
 
-  uint64_t unpenalized_reward = cryptonote::master_node_reward_formula(BLOCK_REWARD_HF17, newest_hf);
+  uint64_t unpenalized_reward = cryptonote::master_node_reward_formula(beldex::BLOCK_REWARD_HF17, newest_hf);
   beldex_register_callback(events, "check_block_rewards", [unpenalized_reward, tx_fee](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_block_rewards");
@@ -544,8 +544,8 @@ bool beldex_core_fee_burning::generate(std::vector<test_event_entry>& events)
   beldex_chain_generator gen(events, hard_forks);
   gen.add_blocks_until_version(hard_forks.back().version);
 
-  uint8_t newest_hf = hard_forks.back().version;
-  assert(newest_hf >= cryptonote::network_version_15_flash);
+  cryptonote::hf newest_hf = hard_forks.back().version;
+  assert(newest_hf >= cryptonote::hf::hf15_flash);
 
   gen.add_mined_money_unlock_blocks();
 
@@ -622,12 +622,12 @@ bool beldex_core_fee_burning::generate(std::vector<test_event_entry>& events)
 
 bool beldex_core_governance_batched_reward::generate(std::vector<test_event_entry>& events)
 {
-  auto hard_forks = beldex_generate_hard_fork_table(cryptonote::network_version_10_bulletproofs);
+  auto hard_forks = beldex_generate_hard_fork_table(cryptonote::hf::hf10_bulletproofs);
 
   uint64_t hf10_height = 0;
   for (const auto& [maj, mn_rev, height, ts] : hard_forks)
   {
-    if (maj == cryptonote::network_version_10_bulletproofs)
+    if (maj == cryptonote::hf::hf10_bulletproofs)
     {
       hf10_height = height;
       break;
@@ -638,8 +638,8 @@ bool beldex_core_governance_batched_reward::generate(std::vector<test_event_entr
   uint64_t expected_total_governance_paid = 0;
   beldex_chain_generator batched_governance_generator(events, hard_forks);
   {
-    batched_governance_generator.add_blocks_until_version(cryptonote::network_version_10_bulletproofs);
-    constexpr auto& network = cryptonote::get_config(cryptonote::FAKECHAIN);
+    batched_governance_generator.add_blocks_until_version(cryptonote::hf::hf10_bulletproofs);
+    constexpr auto& network = cryptonote::get_config(cryptonote::network_type::FAKECHAIN);
     uint64_t blocks_to_gen = network.GOVERNANCE_REWARD_INTERVAL_IN_BLOCKS - batched_governance_generator.height();
     batched_governance_generator.add_n_blocks(blocks_to_gen);
   }
@@ -649,9 +649,9 @@ bool beldex_core_governance_batched_reward::generate(std::vector<test_event_entr
     // you don't atleast progress and generate blocks from hf8 you will run into
     // problems
     std::vector<cryptonote::hard_fork> other_hard_forks = {
-        {7,0,0,0},
-        {8,0,1,0},
-        {9,0,hf10_height,0}};
+        {cryptonote::hf::hf7,0,0,0},
+        {cryptonote::hf::hf8,0,1,0},
+        {cryptonote::hf::hf9_master_nodes,0,hf10_height,0}};
 
     std::vector<test_event_entry> unused_events;
     beldex_chain_generator no_batched_governance_generator(unused_events, other_hard_forks);
@@ -684,7 +684,7 @@ bool beldex_core_governance_batched_reward::generate(std::vector<test_event_entr
     for (size_t block_height = hf10_height; block_height < blockchain.size(); ++block_height)
     {
       const cryptonote::block &block = blockchain[block_height];
-      if (cryptonote::block_has_governance_output(cryptonote::FAKECHAIN, block))
+      if (cryptonote::block_has_governance_output(cryptonote::network_type::FAKECHAIN, block))
         governance += block.miner_tx.vout.back().amount;
     }
 
@@ -697,20 +697,20 @@ bool beldex_core_governance_batched_reward::generate(std::vector<test_event_entr
 
 bool beldex_core_block_rewards_lrc6::generate(std::vector<test_event_entry>& events)
 {
-  constexpr auto& network = cryptonote::get_config(cryptonote::FAKECHAIN);
-  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::network_version_16);
-  hard_forks.push_back({cryptonote::network_version_17_POS,0, hard_forks.back().height + network.GOVERNANCE_REWARD_INTERVAL_IN_BLOCKS + 10});
-  hard_forks.push_back({cryptonote::network_version_18_bns,0, hard_forks.back().height + network.GOVERNANCE_REWARD_INTERVAL_IN_BLOCKS});
+  constexpr auto& network = cryptonote::get_config(cryptonote::network_type::FAKECHAIN);
+  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::hf::hf16);
+  hard_forks.push_back({cryptonote::hf::hf17_POS,0, hard_forks.back().height + network.GOVERNANCE_REWARD_INTERVAL_IN_BLOCKS + 10});
+  hard_forks.push_back({cryptonote::hf::hf18_bns,0, hard_forks.back().height + network.GOVERNANCE_REWARD_INTERVAL_IN_BLOCKS});
   beldex_chain_generator batched_governance_generator(events, hard_forks);
-  batched_governance_generator.add_blocks_until_version(cryptonote::network_version_18_bns);
+  batched_governance_generator.add_blocks_until_version(cryptonote::hf::hf18_bns);
   batched_governance_generator.add_n_blocks(network.GOVERNANCE_REWARD_INTERVAL_IN_BLOCKS);
 
   uint64_t hf15_height = 0, hf16_height = 0, hf17_height = 0;
   for (const auto &hf : hard_forks)
   {
-    if (hf.version == cryptonote::network_version_16)
+    if (hf.version == cryptonote::hf::hf16)
       hf15_height = hf.height;
-    else if (hf.version == cryptonote::network_version_17_POS)
+    else if (hf.version == cryptonote::hf::hf17_POS)
       hf16_height = hf.height;
     else
       hf17_height = hf.height;
@@ -729,12 +729,12 @@ bool beldex_core_block_rewards_lrc6::generate(std::vector<test_event_entry>& eve
     for (size_t block_height = hf15_height; block_height < hf16_height; ++block_height)
     {
       const cryptonote::block &block = blockchain[block_height];
-      CHECK_EQ(block.miner_tx.vout.at(0).amount, MINER_REWARD_HF16);
-      CHECK_EQ(block.miner_tx.vout.at(1).amount, MN_REWARD_HF16);
-      if (cryptonote::block_has_governance_output(cryptonote::FAKECHAIN, block))
+      CHECK_EQ(block.miner_tx.vout.at(0).amount, beldex::MINER_REWARD_HF16);
+      CHECK_EQ(block.miner_tx.vout.at(1).amount, beldex::MN_REWARD_HF16);
+      if (cryptonote::block_has_governance_output(cryptonote::network_type::FAKECHAIN, block))
       {
         hf15_gov++;
-        CHECK_EQ(block.miner_tx.vout.at(2).amount, FOUNDATION_REWARD_HF17 * interval);
+        CHECK_EQ(block.miner_tx.vout.at(2).amount, beldex::FOUNDATION_REWARD_HF17 * interval);
         CHECK_EQ(block.miner_tx.vout.size(), 3);
       }
       else
@@ -744,8 +744,8 @@ bool beldex_core_block_rewards_lrc6::generate(std::vector<test_event_entry>& eve
     for (size_t block_height = hf16_height; block_height < hf17_height; ++block_height)
     {
       const cryptonote::block &block = blockchain[block_height];
-      CHECK_EQ(block.miner_tx.vout.at(0).amount, MN_REWARD_HF16);
-      if (cryptonote::block_has_governance_output(cryptonote::FAKECHAIN, block))
+      CHECK_EQ(block.miner_tx.vout.at(0).amount, beldex::MN_REWARD_HF16);
+      if (cryptonote::block_has_governance_output(cryptonote::network_type::FAKECHAIN, block))
       {
         hf16_gov++;
         CHECK_EQ(block.miner_tx.vout.at(1).amount, 0);
@@ -758,11 +758,11 @@ bool beldex_core_block_rewards_lrc6::generate(std::vector<test_event_entry>& eve
     for (size_t block_height = hf17_height; block_height < height; ++block_height)
     {
       const cryptonote::block &block = blockchain[block_height];
-      CHECK_EQ(block.miner_tx.vout.at(0).amount, MN_REWARD_HF16);
-      if (cryptonote::block_has_governance_output(cryptonote::FAKECHAIN, block))
+      CHECK_EQ(block.miner_tx.vout.at(0).amount, beldex::MN_REWARD_HF16);
+      if (cryptonote::block_has_governance_output(cryptonote::network_type::FAKECHAIN, block))
       {
         hf17_gov++;
-        CHECK_EQ(block.miner_tx.vout.at(1).amount, FOUNDATION_REWARD_HF17 * interval);
+        CHECK_EQ(block.miner_tx.vout.at(1).amount, beldex::FOUNDATION_REWARD_HF17 * interval);
         CHECK_EQ(block.miner_tx.vout.size(), 2);
       }
       else
@@ -781,7 +781,7 @@ bool beldex_core_block_rewards_lrc6::generate(std::vector<test_event_entry>& eve
 
 bool beldex_core_test_deregister_preferred::generate(std::vector<test_event_entry> &events)
 {
-  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::network_version_9_master_nodes);
+  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::hf::hf9_master_nodes);
   beldex_chain_generator gen(events, hard_forks);
   const auto miner                 = gen.first_miner();
   const auto alice                 = gen.add_account();
@@ -838,7 +838,7 @@ bool beldex_core_test_deregister_preferred::generate(std::vector<test_event_entr
 // to test), they don't get deregistered.
 bool beldex_core_test_deregister_safety_buffer::generate(std::vector<test_event_entry> &events)
 {
-  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::network_version_9_master_nodes);
+  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::hf::hf9_master_nodes);
   beldex_chain_generator gen(events, hard_forks);
   const auto miner = gen.first_miner();
 
@@ -887,7 +887,7 @@ bool beldex_core_test_deregister_safety_buffer::generate(std::vector<test_event_
 // Daemon A accepts the block without X. Now X is too old and should not be added in future blocks.
 bool beldex_core_test_deregister_too_old::generate(std::vector<test_event_entry>& events)
 {
-  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::network_version_9_master_nodes);
+  std::vector<cryptonote::hard_fork> hard_forks = beldex_generate_hard_fork_table(cryptonote::hf::hf9_master_nodes);
   beldex_chain_generator gen(events, hard_forks);
   gen.add_blocks_until_version(hard_forks.back().version);
 
@@ -1052,8 +1052,8 @@ static bool verify_bns_mapping_record(char const *perr_context,
   if (expiration_height)
     CHECK_EQ(*record.expiration_height, *expiration_height);
   CHECK_EQ(record.txid,            txid);
-  CHECK_TEST_CONDITION_MSG(record.owner == owner, record.owner.to_string(cryptonote::FAKECHAIN) << " == "<< owner.to_string(cryptonote::FAKECHAIN));
-  CHECK_TEST_CONDITION_MSG(record.backup_owner == backup_owner, record.backup_owner.to_string(cryptonote::FAKECHAIN) << " == "<< backup_owner.to_string(cryptonote::FAKECHAIN));
+  CHECK_TEST_CONDITION_MSG(record.owner == owner, record.owner.to_string(cryptonote::network_type::FAKECHAIN) << " == "<< owner.to_string(cryptonote::network_type::FAKECHAIN));
+  CHECK_TEST_CONDITION_MSG(record.backup_owner == backup_owner, record.backup_owner.to_string(cryptonote::network_type::FAKECHAIN) << " == "<< backup_owner.to_string(cryptonote::network_type::FAKECHAIN));
   return true;
 }
 
@@ -1115,7 +1115,7 @@ static bns_keys_t make_bns_keys(cryptonote::account_base const &src)
 
 // belnet FAKECHAIN BNS expiry blocks
 uint64_t bns_expiry(bns::mapping_years map_years) {
-  auto exp = bns::expiry_blocks(cryptonote::FAKECHAIN, map_years);
+  auto exp = bns::expiry_blocks(cryptonote::network_type::FAKECHAIN, map_years);
   if (!exp) throw std::logic_error{"test suite bug: bns_expiry called with non-mapping years"};
   return *exp;
 }
@@ -1154,8 +1154,8 @@ bool beldex_name_system_expiration::generate(std::vector<test_event_entry> &even
         CHECK_EQ(owner.loaded, true);
         CHECK_EQ(owner.id, 1);
         CHECK_TEST_CONDITION_MSG(miner_key.owner == owner.address,
-                                 miner_key.owner.to_string(cryptonote::FAKECHAIN)
-                                     << " == " << owner.address.to_string(cryptonote::FAKECHAIN));
+                                 miner_key.owner.to_string(cryptonote::network_type::FAKECHAIN)
+                                     << " == " << owner.address.to_string(cryptonote::network_type::FAKECHAIN));
 
         bns::mapping_record record = bns_db.get_mapping(name_hash);
         CHECK_TEST_CONDITION(verify_bns_mapping_record(perr_context, record, bns::mapping_type::belnet, record.encrypted_belnet_value, name, miner_key.belnet_value, height_of_bns_entry, height_of_bns_entry + bns_expiry(mapping_years), tx_hash, miner_key.owner, {} /*backup_owner*/));
@@ -1175,8 +1175,8 @@ bool beldex_name_system_expiration::generate(std::vector<test_event_entry> &even
         CHECK_EQ(owner.loaded, true);
         CHECK_EQ(owner.id, 1);
         CHECK_TEST_CONDITION_MSG(miner_key.owner == owner.address,
-                                 miner_key.owner.to_string(cryptonote::FAKECHAIN)
-                                     << " == " << owner.address.to_string(cryptonote::FAKECHAIN));
+                                 miner_key.owner.to_string(cryptonote::network_type::FAKECHAIN)
+                                     << " == " << owner.address.to_string(cryptonote::network_type::FAKECHAIN));
 
         bns::mapping_record record = bns_db.get_mapping(name_hash);
         CHECK_TEST_CONDITION(verify_bns_mapping_record(perr_context, record, bns::mapping_type::belnet, record.encrypted_belnet_value, name, miner_key.belnet_value, height_of_bns_entry, height_of_bns_entry + bns_expiry(mapping_years), tx_hash, miner_key.owner, {} /*backup_owner*/));
@@ -1256,7 +1256,7 @@ bool beldex_name_system_get_mappings_by_owner::generate(std::vector<test_event_e
   crypto::hash wallet_name1_txid = {}, wallet_name2_txid = {};
   if (bns::mapping_type_allowed(gen.hardfork(), bns::mapping_type::wallet))
   {
-    std::string bob_addr = cryptonote::get_account_address_as_str(cryptonote::FAKECHAIN, false, bob.get_keys().m_account_address);
+    std::string bob_addr = cryptonote::get_account_address_as_str(cryptonote::network_type::FAKECHAIN, false, bob.get_keys().m_account_address);
     cryptonote::transaction tx1 = gen.create_and_add_beldex_name_system_tx(bob, gen.hardfork(), mapping_years, wallet_name1, bob_key.bchat_value, bob_key.wallet_value, bob_key.belnet_value, bob_key.eth_addr_value);
     cryptonote::transaction tx2 = gen.create_and_add_beldex_name_system_tx(miner, gen.hardfork(), mapping_years, wallet_name2, bob_key.bchat_value, bob_key.wallet_value, bob_key.belnet_value, bob_key.eth_addr_value, &bob_key.owner);
     gen.create_and_add_next_block({tx1, tx2});
@@ -1480,8 +1480,8 @@ bool beldex_name_system_handles_duplicate_in_bns_db::generate(std::vector<test_e
     CHECK_EQ(owner.loaded, true);
     CHECK_EQ(owner.id, 1);
     CHECK_TEST_CONDITION_MSG(miner_key.owner == owner.address,
-                             miner_key.owner.to_string(cryptonote::FAKECHAIN)
-                                 << " == " << owner.address.to_string(cryptonote::FAKECHAIN));
+                             miner_key.owner.to_string(cryptonote::network_type::FAKECHAIN)
+                                 << " == " << owner.address.to_string(cryptonote::network_type::FAKECHAIN));
 
     std::string bchat_name_hash = bns::name_to_base64_hash(bchat_name);
     bns::mapping_record record1 = bns_db.get_mapping(bchat_name_hash);
@@ -1557,7 +1557,7 @@ bool beldex_name_system_invalid_tx_extra_params::generate(std::vector<test_event
                                              bool valid,
                                              char const *reason) -> void {
       uint64_t new_height    = cryptonote::get_block_height(gen.top().block) + 1;
-      uint8_t new_hf_version = gen.get_hf_version_at(new_height);
+      auto new_hf_version = gen.get_hf_version_at(new_height);
       uint64_t burn_requirement = bns::burn_needed(new_hf_version, mapping_years);
 
       std::vector<uint8_t> extra;
@@ -1903,8 +1903,8 @@ bool beldex_name_system_name_renewal::generate(std::vector<test_event_entry> &ev
     CHECK_EQ(owner.loaded, true);
     CHECK_EQ(owner.id, 1);
     CHECK_TEST_CONDITION_MSG(miner_key.owner == owner.address,
-                             miner_key.owner.to_string(cryptonote::FAKECHAIN)
-                                 << " == " << owner.address.to_string(cryptonote::FAKECHAIN));
+                             miner_key.owner.to_string(cryptonote::network_type::FAKECHAIN)
+                                 << " == " << owner.address.to_string(cryptonote::network_type::FAKECHAIN));
 
     std::string name_hash = bns::name_to_base64_hash(name);
     bns::mapping_record record = bns_db.get_mapping(name_hash);
@@ -1929,8 +1929,8 @@ bool beldex_name_system_name_renewal::generate(std::vector<test_event_entry> &ev
     CHECK_EQ(owner.loaded, true);
     CHECK_EQ(owner.id, 1);
     CHECK_TEST_CONDITION_MSG(miner_key.owner == owner.address,
-                             miner_key.owner.to_string(cryptonote::FAKECHAIN)
-                                 << " == " << owner.address.to_string(cryptonote::FAKECHAIN));
+                             miner_key.owner.to_string(cryptonote::network_type::FAKECHAIN)
+                                 << " == " << owner.address.to_string(cryptonote::network_type::FAKECHAIN));
 
     std::string name_hash = bns::name_to_base64_hash(name);
     bns::mapping_record record = bns_db.get_mapping(name_hash);
@@ -1957,7 +1957,7 @@ bool beldex_name_system_name_value_max_lengths::generate(std::vector<test_event_
                                            cryptonote::tx_extra_beldex_name_system const &data) -> void {
 
     uint64_t new_height    = cryptonote::get_block_height(gen.top().block) + 1;
-    uint8_t new_hf_version = gen.get_hf_version_at(new_height);
+    auto new_hf_version = gen.get_hf_version_at(new_height);
     uint64_t burn_requirement = bns::burn_needed(new_hf_version, mapping_years);
     std::vector<uint8_t> extra;
     cryptonote::add_beldex_name_system_to_tx_extra(extra, data);
@@ -2056,8 +2056,8 @@ bool beldex_name_system_update_mapping_after_expiry_fails::generate(std::vector<
       CHECK_EQ(owner.loaded, true);
       CHECK_EQ(owner.id, 1);
       CHECK_TEST_CONDITION_MSG(miner_key.owner == owner.address,
-                               miner_key.owner.to_string(cryptonote::FAKECHAIN)
-                                   << " == " << owner.address.to_string(cryptonote::FAKECHAIN));
+                               miner_key.owner.to_string(cryptonote::network_type::FAKECHAIN)
+                                   << " == " << owner.address.to_string(cryptonote::network_type::FAKECHAIN));
 
       std::string name_hash        = bns::name_to_base64_hash(name);
       bns::mapping_record record = bns_db.get_mapping(name_hash);
@@ -2070,8 +2070,8 @@ bool beldex_name_system_update_mapping_after_expiry_fails::generate(std::vector<
   return true;
 }
 
-uint8_t beldex_name_system_update_mapping::hf() { return cryptonote::network_version_count - 1; }
-uint8_t beldex_name_system_update_mapping_argon2::hf() { return cryptonote::network_version_16; }
+cryptonote::hf beldex_name_system_update_mapping::hf() { return cryptonote::hf::hf20_bulletproof_plus; }
+cryptonote::hf beldex_name_system_update_mapping_argon2::hf() { return cryptonote::hf::hf16; }
 bool beldex_name_system_update_mapping::generate(std::vector<test_event_entry> &events)
 {
   auto hard_forks = beldex_generate_hard_fork_table(hf());
@@ -2108,7 +2108,7 @@ bool beldex_name_system_update_mapping::generate(std::vector<test_event_entry> &
   });
 
   // Test update mapping with same name fails
-  if (hf() == cryptonote::network_version_16) {
+  if (hf() == cryptonote::hf::hf16) {
     cryptonote::transaction tx1 = gen.create_beldex_name_system_tx_update(miner, gen.hardfork(), bns::mapping_type::bchat, bchat_name1, &miner_key.bchat_value, &miner_key.wallet_value, &miner_key.belnet_value, &miner_key.eth_addr_value);
     gen.add_tx(tx1, false /*can_be_added_to_blockchain*/, "Can not add a BNS TX that re-updates the underlying value to same value");
   }
@@ -2560,7 +2560,7 @@ bool beldex_name_system_wrong_burn::generate(std::vector<test_event_entry> &even
             assert("Unhandled type enum" == nullptr);
 
         uint64_t new_height      = cryptonote::get_block_height(gen.top().block) + 1;
-        uint8_t new_hf_version   = gen.get_hf_version_at(new_height);
+        auto new_hf_version   = gen.get_hf_version_at(new_height);
         uint64_t burn            = bns::burn_needed(new_hf_version, mapping_years);
         if (under_burn) burn -= 1;
         else            burn += 1;
@@ -2592,7 +2592,7 @@ bool beldex_name_system_wrong_version::generate(std::vector<test_event_entry> &e
   data.encrypted_bchat_value                 = miner_key.bchat_value.make_encrypted(name).to_string();
 
   uint64_t new_height       = cryptonote::get_block_height(gen.top().block) + 1;
-  uint8_t new_hf_version    = gen.get_hf_version_at(new_height);
+  auto new_hf_version    = gen.get_hf_version_at(new_height);
   uint64_t burn_requirement = bns::burn_needed(new_hf_version, mapping_years);
 
   std::vector<uint8_t> extra;
@@ -2701,7 +2701,7 @@ bool beldex_master_nodes_checkpoint_quorum_size::generate(std::vector<test_event
 
 bool beldex_master_nodes_gen_nodes::generate(std::vector<test_event_entry> &events)
 {
-  const auto hard_forks = beldex_generate_hard_fork_table(cryptonote::network_version_9_master_nodes);
+  const auto hard_forks = beldex_generate_hard_fork_table(cryptonote::hf::hf9_master_nodes);
   beldex_chain_generator gen(events, hard_forks);
   const auto miner                      = gen.first_miner();
   const auto alice                      = gen.add_account();
@@ -2742,16 +2742,16 @@ bool beldex_master_nodes_gen_nodes::generate(std::vector<test_event_entry> &even
     return true;
   });
 
-  for (auto i = 0u; i < master_nodes::staking_num_lock_blocks(cryptonote::FAKECHAIN,cryptonote::network_version_17_POS); ++i)
+  for (auto i = 0u; i < master_nodes::staking_num_lock_blocks(cryptonote::network_type::FAKECHAIN,cryptonote::hf::hf17_POS); ++i)
     gen.create_and_add_next_block();
 
   beldex_register_callback(events, "check_expired", [&events, alice](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_expired");
-    const auto stake_lock_time = master_nodes::staking_num_lock_blocks(cryptonote::FAKECHAIN,cryptonote::network_version_17_POS);
+    const auto stake_lock_time = master_nodes::staking_num_lock_blocks(cryptonote::network_type::FAKECHAIN,cryptonote::hf::hf17_POS);
 
     std::vector<cryptonote::block> blocks;
-    size_t count = 15 + (2 * CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW) + stake_lock_time;
+    size_t count = 15 + (2 * cryptonote::MINED_MONEY_UNLOCK_WINDOW) + stake_lock_time;
     bool r = c.get_blocks((uint64_t)0, count, blocks);
     CHECK_TEST_CONDITION(r);
     std::vector<cryptonote::block> chain;
@@ -2855,7 +2855,7 @@ bool beldex_master_nodes_test_rollback::generate(std::vector<test_event_entry>& 
 bool beldex_master_nodes_test_swarms_basic::generate(std::vector<test_event_entry>& events)
 {
   const std::vector<cryptonote::hard_fork> hard_forks = {
-      {7,0,0,0}, {8,0,1,0}, {9,0,2,0}, {10,0,150,0}};
+      {cryptonote::hf::hf7,0,0,0}, {cryptonote::hf::hf8,0,1,0}, {cryptonote::hf::hf9_master_nodes,0,2,0}, {cryptonote::hf::hf10_bulletproofs,0,150,0}};
 
   beldex_chain_generator gen(events, hard_forks);
   gen.add_blocks_until_version(hard_forks.rbegin()[1].version);
@@ -2871,9 +2871,9 @@ bool beldex_master_nodes_test_swarms_basic::generate(std::vector<test_event_entr
 
   /// create a few blocks with active master nodes
   gen.add_n_blocks(5);
-  assert(gen.hf_version_ == cryptonote::network_version_9_master_nodes);
+  assert(gen.hf_version_ == cryptonote::hf::hf9_master_nodes);
 
-  gen.add_blocks_until_version(cryptonote::network_version_10_bulletproofs);
+  gen.add_blocks_until_version(cryptonote::hf::hf10_bulletproofs);
   beldex_register_callback(events, "test_initial_swarms", [](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("test_swarms_basic::test_initial_swarms");
@@ -2991,8 +2991,8 @@ bool beldex_master_nodes_insufficient_contribution::generate(std::vector<test_ev
   gen.add_blocks_until_version(hard_forks.back().version);
   gen.add_mined_money_unlock_blocks();
 
-  uint64_t operator_portions = STAKING_PORTIONS / 2;
-  uint64_t remaining_portions = STAKING_PORTIONS - operator_portions;
+  uint64_t operator_portions = cryptonote::old::STAKING_PORTIONS / 2;
+  uint64_t remaining_portions = cryptonote::old::STAKING_PORTIONS - operator_portions;
   cryptonote::keypair sn_keys{hw::get_device("default")};
   cryptonote::transaction register_tx = gen.create_registration_tx(gen.first_miner_, sn_keys, operator_portions);
   gen.add_tx(register_tx);
@@ -3023,8 +3023,8 @@ static beldex_chain_generator setup_POS_tests(std::vector<test_event_entry> &eve
   result.add_blocks_until_version(hard_forks.back().version);
   result.add_mined_money_unlock_blocks();
 
-  std::vector<cryptonote::transaction> registration_txs(master_nodes::POS_min_master_nodes(cryptonote::FAKECHAIN));
-  for (auto i = 0u; i < master_nodes::POS_min_master_nodes(cryptonote::FAKECHAIN); ++i)
+  std::vector<cryptonote::transaction> registration_txs(master_nodes::POS_min_master_nodes(cryptonote::network_type::FAKECHAIN));
+  for (auto i = 0u; i < master_nodes::POS_min_master_nodes(cryptonote::network_type::FAKECHAIN); ++i)
     registration_txs[i] = result.create_and_add_registration_tx(result.first_miner());
 
   // NOTE: Generate Valid Blocks
@@ -3105,7 +3105,7 @@ bool beldex_POS_non_participating_validator::generate(std::vector<test_event_ent
     {
       std::vector<master_nodes::pubkey_and_mninfo> active_mnode_list = params.prev.master_node_state.active_master_nodes_infos();
       std::vector<crypto::hash> entropy = master_nodes::get_POS_entropy_for_next_block(gen.db_, params.prev.block, entry.block.POS.round);
-      quorum = generate_POS_quorum(cryptonote::FAKECHAIN, params.block_leader.key, entry.block.major_version, active_mnode_list, entropy, entry.block.POS.round);
+      quorum = generate_POS_quorum(cryptonote::network_type::FAKECHAIN, params.block_leader.key, entry.block.major_version, active_mnode_list, entropy, entry.block.POS.round);
       assert(quorum.validators.size() == master_nodes::POS_QUORUM_NUM_VALIDATORS);
       assert(quorum.workers.size() == 1);
     }
@@ -3195,7 +3195,7 @@ bool beldex_POS_generate_blocks::generate(std::vector<test_event_entry> &events)
   gen.add_blocks_until_version(hard_forks.back().version);
   gen.add_mined_money_unlock_blocks();
 
-  add_master_nodes(gen, master_nodes::POS_min_master_nodes(cryptonote::FAKECHAIN));
+  add_master_nodes(gen, master_nodes::POS_min_master_nodes(cryptonote::network_type::FAKECHAIN));
   gen.add_n_blocks(40); // Chain genereator will generate blocks via POS quorums
 
   beldex_register_callback(events, "check_POS_blocks", [](cryptonote::core &c, size_t ev_index)
@@ -3219,7 +3219,7 @@ bool beldex_POS_fallback_to_pow_and_back::generate(std::vector<test_event_entry>
   gen.add_blocks_until_version(hard_forks.back().version);
   gen.add_mined_money_unlock_blocks();
 
-  add_master_nodes(gen, master_nodes::POS_min_master_nodes(cryptonote::FAKECHAIN));
+  add_master_nodes(gen, master_nodes::POS_min_master_nodes(cryptonote::network_type::FAKECHAIN));
   gen.create_and_add_next_block();
 
   gen.add_event_msg("Deregister 1 node, we now have insufficient nodes for POS");
@@ -3266,7 +3266,7 @@ bool beldex_POS_chain_split::generate(std::vector<test_event_entry> &events)
 
   gen.add_blocks_until_version(hard_forks.back().version);
   gen.add_mined_money_unlock_blocks();
-  add_master_nodes(gen, std::max(master_nodes::POS_min_master_nodes(cryptonote::FAKECHAIN), master_nodes::CHECKPOINT_QUORUM_SIZE));
+  add_master_nodes(gen, std::max(master_nodes::POS_min_master_nodes(cryptonote::network_type::FAKECHAIN), master_nodes::CHECKPOINT_QUORUM_SIZE));
 
   gen.create_and_add_next_block();
 
@@ -3311,7 +3311,7 @@ bool beldex_POS_chain_split_with_no_checkpoints::generate(std::vector<test_event
 
   gen.add_blocks_until_version(hard_forks.back().version);
   gen.add_mined_money_unlock_blocks();
-  add_master_nodes(gen, std::max(master_nodes::POS_min_master_nodes(cryptonote::FAKECHAIN), master_nodes::CHECKPOINT_QUORUM_SIZE));
+  add_master_nodes(gen, std::max(master_nodes::POS_min_master_nodes(cryptonote::network_type::FAKECHAIN), master_nodes::CHECKPOINT_QUORUM_SIZE));
 
   gen.create_and_add_next_block();
 

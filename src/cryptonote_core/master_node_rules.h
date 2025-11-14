@@ -6,34 +6,34 @@
 #include <chrono>
 
 namespace master_nodes {
-  constexpr size_t POS_QUORUM_ENTROPY_LAG    = 21; // How many blocks back from the tip of the Blockchain to source entropy for the POS quorums.
+  inline constexpr size_t POS_QUORUM_ENTROPY_LAG    = 21; // How many blocks back from the tip of the Blockchain to source entropy for the POS quorums.
 #if defined(BELDEX_ENABLE_INTEGRATION_TEST_HOOKS)
-  constexpr auto POS_ROUND_TIME                                   = 20s;
-  constexpr auto POS_WAIT_FOR_HANDSHAKES_DURATION                 = 3s;
-  constexpr auto POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION = 3s;
-  constexpr auto POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION             = 3s;
-  constexpr auto POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION          = 3s;
-  constexpr auto POS_WAIT_FOR_RANDOM_VALUE_DURATION               = 3s;
-  constexpr auto POS_WAIT_FOR_SIGNED_BLOCK_DURATION               = 5s;
+  inline constexpr auto POS_ROUND_TIME                                   = 20s;
+  inline constexpr auto POS_WAIT_FOR_HANDSHAKES_DURATION                 = 3s;
+  inline constexpr auto POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION = 3s;
+  inline constexpr auto POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION             = 3s;
+  inline constexpr auto POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION          = 3s;
+  inline constexpr auto POS_WAIT_FOR_RANDOM_VALUE_DURATION               = 3s;
+  inline constexpr auto POS_WAIT_FOR_SIGNED_BLOCK_DURATION               = 5s;
 
-  constexpr size_t POS_QUORUM_NUM_VALIDATORS     = 7;
-  constexpr size_t POS_BLOCK_REQUIRED_SIGNATURES = 6;  // A block must have exactly N signatures to be considered properly
+  inline constexpr size_t POS_QUORUM_NUM_VALIDATORS     = 7;
+  inline constexpr size_t POS_BLOCK_REQUIRED_SIGNATURES = 6;  // A block must have exactly N signatures to be considered properly
 #else
-  constexpr auto POS_ROUND_TIME                                   = 60s;
-  constexpr auto POS_WAIT_FOR_HANDSHAKES_DURATION                 = 10s;
-  constexpr auto POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION = 10s;
-  constexpr auto POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION             = 10s;
-  constexpr auto POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION          = 10s;
-  constexpr auto POS_WAIT_FOR_RANDOM_VALUE_DURATION               = 10s;
-  constexpr auto POS_WAIT_FOR_SIGNED_BLOCK_DURATION               = 10s;
+  inline constexpr auto POS_ROUND_TIME                                   = 60s;
+  inline constexpr auto POS_WAIT_FOR_HANDSHAKES_DURATION                 = 10s;
+  inline constexpr auto POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION = 10s;
+  inline constexpr auto POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION             = 10s;
+  inline constexpr auto POS_WAIT_FOR_RANDOM_VALUE_HASH_DURATION          = 10s;
+  inline constexpr auto POS_WAIT_FOR_RANDOM_VALUE_DURATION               = 10s;
+  inline constexpr auto POS_WAIT_FOR_SIGNED_BLOCK_DURATION               = 10s;
 
-  constexpr size_t POS_QUORUM_NUM_VALIDATORS     = 11;
-  constexpr size_t POS_BLOCK_REQUIRED_SIGNATURES = 7;  // A block must have exactly N signatures to be considered properly
+  inline constexpr size_t POS_QUORUM_NUM_VALIDATORS     = 11;
+  inline constexpr size_t POS_BLOCK_REQUIRED_SIGNATURES = 7;  // A block must have exactly N signatures to be considered properly
 #endif
 
-  constexpr auto POS_MIN_TARGET_BLOCK_TIME = TARGET_BLOCK_TIME - 15s;
-  constexpr auto POS_MAX_TARGET_BLOCK_TIME = TARGET_BLOCK_TIME + 15s;
-  constexpr size_t POS_QUORUM_SIZE = POS_QUORUM_NUM_VALIDATORS + 1 /*Leader*/;
+  inline constexpr auto POS_MIN_TARGET_BLOCK_TIME = cryptonote::TARGET_BLOCK_TIME - 15s;
+  inline constexpr auto POS_MAX_TARGET_BLOCK_TIME = cryptonote::TARGET_BLOCK_TIME + 15s;
+  inline constexpr size_t POS_QUORUM_SIZE = POS_QUORUM_NUM_VALIDATORS + 1 /*Leader*/;
 
   static_assert(POS_ROUND_TIME >=
                 POS_WAIT_FOR_HANDSHAKES_DURATION +
@@ -48,10 +48,10 @@ namespace master_nodes {
 
   constexpr size_t POS_min_master_nodes(cryptonote::network_type nettype)
   {
-    return (nettype == cryptonote::MAINNET) ? 50 : POS_QUORUM_SIZE;
+    return (nettype == cryptonote::network_type::MAINNET) ? 50 : POS_QUORUM_SIZE;
   }
-  static_assert(POS_min_master_nodes(cryptonote::MAINNET) >= POS_QUORUM_SIZE);
-  static_assert(POS_min_master_nodes(cryptonote::TESTNET) >= POS_QUORUM_SIZE);
+  static_assert(POS_min_master_nodes(cryptonote::network_type::MAINNET) >= POS_QUORUM_SIZE);
+  static_assert(POS_min_master_nodes(cryptonote::network_type::TESTNET) >= POS_QUORUM_SIZE);
 
   constexpr uint16_t POS_validator_bit_mask()
   {
@@ -82,11 +82,11 @@ namespace master_nodes {
   // decommission time: the first quorum test after the credit expires determines whether the server
   // gets recommissioned or decommissioned).
 
-  inline constexpr int64_t DECOMMISSION_CREDIT_PER_DAY      = BLOCKS_PER_DAY / 30;
-  inline constexpr int64_t DECOMMISSION_INITIAL_CREDIT      = BLOCKS_PER_HOUR * 2;
-  inline constexpr int64_t DECOMMISSION_MAX_CREDIT          = BLOCKS_PER_DAY * 2;
-  inline constexpr int64_t DECOMMISSION_MINIMUM             = BLOCKS_PER_HOUR * 2;
-  inline constexpr int64_t DECOMMISSION_INITIAL_CREDIT_V18  = BLOCKS_PER_HOUR * 3;
+  inline constexpr int64_t DECOMMISSION_CREDIT_PER_DAY      = cryptonote::BLOCKS_PER_DAY / 30;
+  inline constexpr int64_t DECOMMISSION_INITIAL_CREDIT      = cryptonote::BLOCKS_PER_HOUR * 2;
+  inline constexpr int64_t DECOMMISSION_MAX_CREDIT          = cryptonote::BLOCKS_PER_DAY * 2;
+  inline constexpr int64_t DECOMMISSION_MINIMUM             = cryptonote::BLOCKS_PER_HOUR * 2;
+  inline constexpr int64_t DECOMMISSION_INITIAL_CREDIT_V18  = cryptonote::BLOCKS_PER_HOUR * 3;
 
   static_assert(DECOMMISSION_INITIAL_CREDIT <= DECOMMISSION_MAX_CREDIT, "Initial registration decommission credit cannot be larger than the maximum decommission credit");
   static_assert(DECOMMISSION_INITIAL_CREDIT_V18 <= DECOMMISSION_MAX_CREDIT, "Initial registration decommission credit cannot be larger than the maximum decommission credit");
@@ -133,51 +133,51 @@ namespace master_nodes {
           "Recommission credit should not be negative");
 
 
-  constexpr uint64_t  CHECKPOINT_NUM_CHECKPOINTS_FOR_CHAIN_FINALITY = 2;  // Number of consecutive checkpoints before, blocks preceeding the N checkpoints are locked in
-  constexpr uint64_t  CHECKPOINT_INTERVAL                           = 4;  // Checkpoint every 4 blocks and prune when too old except if (height % CHECKPOINT_STORE_PERSISTENTLY_INTERVAL == 0)
-  constexpr uint64_t  CHECKPOINT_STORE_PERSISTENTLY_INTERVAL        = 60; // Persistently store the checkpoints at these intervals
-  constexpr uint64_t  CHECKPOINT_VOTE_LIFETIME                      = CHECKPOINT_STORE_PERSISTENTLY_INTERVAL; // Keep the last 60 blocks worth of votes
+  inline constexpr uint64_t  CHECKPOINT_NUM_CHECKPOINTS_FOR_CHAIN_FINALITY = 2;  // Number of consecutive checkpoints before, blocks preceeding the N checkpoints are locked in
+  inline constexpr uint64_t  CHECKPOINT_INTERVAL                           = 4;  // Checkpoint every 4 blocks and prune when too old except if (height % CHECKPOINT_STORE_PERSISTENTLY_INTERVAL == 0)
+  inline constexpr uint64_t  CHECKPOINT_STORE_PERSISTENTLY_INTERVAL        = 60; // Persistently store the checkpoints at these intervals
+  inline constexpr uint64_t  CHECKPOINT_VOTE_LIFETIME                      = CHECKPOINT_STORE_PERSISTENTLY_INTERVAL; // Keep the last 60 blocks worth of votes
 
-  constexpr int16_t QUORUM_VOTE_CHECK_COUNT       = 8;
-  constexpr int16_t POS_MAX_MISSABLE_VOTES      = 4;
-  constexpr int16_t CHECKPOINT_MAX_MISSABLE_VOTES = 4;
-  constexpr int16_t TIMESTAMP_MAX_MISSABLE_VOTES  = 4;
-  constexpr int16_t TIMESYNC_MAX_UNSYNCED_VOTES   = 4;
+  inline constexpr int16_t QUORUM_VOTE_CHECK_COUNT       = 8;
+  inline constexpr int16_t POS_MAX_MISSABLE_VOTES      = 4;
+  inline constexpr int16_t CHECKPOINT_MAX_MISSABLE_VOTES = 4;
+  inline constexpr int16_t TIMESTAMP_MAX_MISSABLE_VOTES  = 4;
+  inline constexpr int16_t TIMESYNC_MAX_UNSYNCED_VOTES   = 4;
   static_assert(CHECKPOINT_MAX_MISSABLE_VOTES < QUORUM_VOTE_CHECK_COUNT,
                 "The maximum number of votes a master node can miss cannot be greater than the amount of checkpoint "
                 "quorums they must participate in before we check if they should be deregistered or not.");
 
-  constexpr int FLASH_QUORUM_INTERVAL = 5; // We generate a new sub-quorum every N blocks (two consecutive quorums are needed for a flash signature)
-  constexpr int FLASH_QUORUM_LAG      = 7 * FLASH_QUORUM_INTERVAL; // The lag (which must be a multiple of FLASH_QUORUM_INTERVAL) in determining the base flash quorum height
-  constexpr int FLASH_EXPIRY_BUFFER   = FLASH_QUORUM_LAG + 10; // We don't select any MNs that have a scheduled unlock within this many blocks (measured from the lagged height)
+  inline constexpr int FLASH_QUORUM_INTERVAL = 5; // We generate a new sub-quorum every N blocks (two consecutive quorums are needed for a flash signature)
+  inline constexpr int FLASH_QUORUM_LAG      = 7 * FLASH_QUORUM_INTERVAL; // The lag (which must be a multiple of FLASH_QUORUM_INTERVAL) in determining the base flash quorum height
+  inline constexpr int FLASH_EXPIRY_BUFFER   = FLASH_QUORUM_LAG + 10; // We don't select any MNs that have a scheduled unlock within this many blocks (measured from the lagged height)
   static_assert(FLASH_QUORUM_LAG % FLASH_QUORUM_INTERVAL == 0, "FLASH_QUORUM_LAG must be an integral multiple of FLASH_QUORUM_INTERVAL");
   static_assert(FLASH_EXPIRY_BUFFER > FLASH_QUORUM_LAG + FLASH_QUORUM_INTERVAL, "FLASH_EXPIRY_BUFFER is too short to cover a flash quorum height range");
 
   // State change quorums are in charge of policing the network by changing the state of a master
   // node on the network: temporary decommissioning, recommissioning, and permanent deregistration.
-  constexpr size_t   STATE_CHANGE_NTH_OF_THE_NETWORK_TO_TEST = 100;
-  constexpr size_t   STATE_CHANGE_MIN_NODES_TO_TEST          = 50;
-  constexpr uint64_t VOTE_LIFETIME                           = BLOCKS_PER_HOUR * 2;
+  inline constexpr size_t   STATE_CHANGE_NTH_OF_THE_NETWORK_TO_TEST = 100;
+  inline constexpr size_t   STATE_CHANGE_MIN_NODES_TO_TEST          = 50;
+  inline constexpr uint64_t VOTE_LIFETIME                           = cryptonote::BLOCKS_PER_HOUR * 2;
 
     // Small Stake prevented from unlocking stake until a certain number of blocks have passed
-  constexpr uint64_t SMALL_CONTRIBUTOR_UNLOCK_TIMER =  2880 * 30;
-  constexpr uint64_t SMALL_CONTRIBUTOR_THRESHOLD = 2500;
+  inline constexpr uint64_t SMALL_CONTRIBUTOR_UNLOCK_TIMER =  2880 * 30;
+  inline constexpr uint64_t SMALL_CONTRIBUTOR_THRESHOLD = 2500;
 
 #if defined(BELDEX_ENABLE_INTEGRATION_TEST_HOOKS)
-  constexpr size_t STATE_CHANGE_QUORUM_SIZE               = 5;
-  constexpr size_t STATE_CHANGE_MIN_VOTES_TO_CHANGE_STATE = 1;
-  constexpr int    MIN_TIME_IN_S_BEFORE_VOTING            = 0;
-  constexpr size_t CHECKPOINT_QUORUM_SIZE                 = 5;
-  constexpr size_t CHECKPOINT_MIN_VOTES                   = 1;
-  constexpr int    FLASH_SUBQUORUM_SIZE                   = 5;
-  constexpr int    FLASH_MIN_VOTES                        = 1;
+  inline constexpr size_t STATE_CHANGE_QUORUM_SIZE               = 5;
+  inline constexpr size_t STATE_CHANGE_MIN_VOTES_TO_CHANGE_STATE = 1;
+  inline constexpr int    MIN_TIME_IN_S_BEFORE_VOTING            = 0;
+  inline constexpr size_t CHECKPOINT_QUORUM_SIZE                 = 5;
+  inline constexpr size_t CHECKPOINT_MIN_VOTES                   = 1;
+  inline constexpr int    FLASH_SUBQUORUM_SIZE                   = 5;
+  inline constexpr int    FLASH_MIN_VOTES                        = 1;
 #else
-  constexpr size_t STATE_CHANGE_MIN_VOTES_TO_CHANGE_STATE = 7;
-  constexpr size_t STATE_CHANGE_QUORUM_SIZE               = 10;
-  constexpr size_t CHECKPOINT_QUORUM_SIZE                 = 20;
-  constexpr size_t CHECKPOINT_MIN_VOTES                   = 13;
-  constexpr int    FLASH_SUBQUORUM_SIZE                   = 10;
-  constexpr int    FLASH_MIN_VOTES                        = 7;
+  inline constexpr size_t STATE_CHANGE_MIN_VOTES_TO_CHANGE_STATE = 7;
+  inline constexpr size_t STATE_CHANGE_QUORUM_SIZE               = 10;
+  inline constexpr size_t CHECKPOINT_QUORUM_SIZE                 = 20;
+  inline constexpr size_t CHECKPOINT_MIN_VOTES                   = 13;
+  inline constexpr int    FLASH_SUBQUORUM_SIZE                   = 10;
+  inline constexpr int    FLASH_MIN_VOTES                        = 7;
 #endif
 
   static_assert(STATE_CHANGE_MIN_VOTES_TO_CHANGE_STATE <= STATE_CHANGE_QUORUM_SIZE, "The number of votes required to kick can't exceed the actual quorum size, otherwise we never kick.");
@@ -188,65 +188,65 @@ namespace master_nodes {
 #endif
 
   // NOTE: We can reorg up to last 2 checkpoints + the number of extra blocks before the next checkpoint is set
-  constexpr uint64_t  REORG_SAFETY_BUFFER_BLOCKS_POST_HF12 = (CHECKPOINT_INTERVAL * CHECKPOINT_NUM_CHECKPOINTS_FOR_CHAIN_FINALITY) + (CHECKPOINT_INTERVAL - 1);
-  constexpr uint64_t  REORG_SAFETY_BUFFER_BLOCKS_PRE_HF12  = 20;
+  inline constexpr uint64_t  REORG_SAFETY_BUFFER_BLOCKS_POST_HF12 = (CHECKPOINT_INTERVAL * CHECKPOINT_NUM_CHECKPOINTS_FOR_CHAIN_FINALITY) + (CHECKPOINT_INTERVAL - 1);
+  inline constexpr uint64_t  REORG_SAFETY_BUFFER_BLOCKS_PRE_HF12  = 20;
 
   // A single public IP address is restricted from hosting more than 3 masternodes.
-  constexpr int16_t MAX_ALLOWED_MASTERNODES_PER_IP       = 3;
+  inline constexpr int16_t MAX_ALLOWED_MASTERNODES_PER_IP       = 3;
 
-  constexpr auto IP_CHANGE_WINDOW = 24h; // How far back an obligations quorum looks for multiple IPs (unless the following buffer is more recent)
-  constexpr auto IP_CHANGE_BUFFER = 2h; // After we bump a MN for an IP change we don't bump again for changes within this time period
+  inline constexpr auto IP_CHANGE_WINDOW = 24h; // How far back an obligations quorum looks for multiple IPs (unless the following buffer is more recent)
+  inline constexpr auto IP_CHANGE_BUFFER = 2h; // After we bump a MN for an IP change we don't bump again for changes within this time period
 
-  constexpr size_t   MAX_SWARM_SIZE                   = 10;
+  inline constexpr size_t   MAX_SWARM_SIZE                   = 10;
   // We never create a new swarm unless there are SWARM_BUFFER extra nodes
   // available in the queue.
-  constexpr size_t   SWARM_BUFFER                     = 5;
+  inline constexpr size_t   SWARM_BUFFER                     = 5;
   // if a swarm has strictly less nodes than this, it is considered unhealthy
   // and nearby swarms will mirror it's data. It will disappear, and is already considered gone.
-  constexpr size_t   MIN_SWARM_SIZE                   = 5;
-  constexpr size_t   IDEAL_SWARM_MARGIN               = 2;
-  constexpr size_t   IDEAL_SWARM_SIZE                 = MIN_SWARM_SIZE + IDEAL_SWARM_MARGIN;
-  // constexpr size_t   EXCESS_BASE                      = MIN_SWARM_SIZE;
-  constexpr size_t   NEW_SWARM_SIZE                   = IDEAL_SWARM_SIZE;
+  inline constexpr size_t   MIN_SWARM_SIZE                   = 5;
+  inline constexpr size_t   IDEAL_SWARM_MARGIN               = 2;
+  inline constexpr size_t   IDEAL_SWARM_SIZE                 = MIN_SWARM_SIZE + IDEAL_SWARM_MARGIN;
+  // inline constexpr size_t   EXCESS_BASE                      = MIN_SWARM_SIZE;
+  inline constexpr size_t   NEW_SWARM_SIZE                   = IDEAL_SWARM_SIZE;
   // The lower swarm percentile that will be randomly filled with new master nodes
-  constexpr size_t   FILL_SWARM_LOWER_PERCENTILE      = 25;
+  inline constexpr size_t   FILL_SWARM_LOWER_PERCENTILE      = 25;
   // Redistribute mnodes from decommissioned swarms to the smallest swarms
-  constexpr size_t   DECOMMISSIONED_REDISTRIBUTION_LOWER_PERCENTILE = 0;
+  inline constexpr size_t   DECOMMISSIONED_REDISTRIBUTION_LOWER_PERCENTILE = 0;
   // The upper swarm percentile that will be randomly selected during stealing
-  constexpr size_t   STEALING_SWARM_UPPER_PERCENTILE  = 75;
-  constexpr uint64_t KEY_IMAGE_AWAITING_UNLOCK_HEIGHT = 0;
+  inline constexpr size_t   STEALING_SWARM_UPPER_PERCENTILE  = 75;
+  inline constexpr uint64_t KEY_IMAGE_AWAITING_UNLOCK_HEIGHT = 0;
 
-  constexpr uint64_t STATE_CHANGE_TX_LIFETIME_IN_BLOCKS = VOTE_LIFETIME;
+  inline constexpr uint64_t STATE_CHANGE_TX_LIFETIME_IN_BLOCKS = VOTE_LIFETIME;
 
   // If we get an incoming vote of state change tx that is outside the acceptable range by this many
   // blocks then ignore it but don't trigger a connection drop; the sending side could be a couple
   // blocks out of sync and sending something that it thinks is legit.
-  constexpr uint64_t VOTE_OR_TX_VERIFY_HEIGHT_BUFFER    = 5;
+  inline constexpr uint64_t VOTE_OR_TX_VERIFY_HEIGHT_BUFFER    = 5;
 
-  constexpr std::array<uint16_t, 3> MIN_STORAGE_SERVER_VERSION{{2, 3, 0}};
-  constexpr std::array<uint16_t, 3> MIN_BELNET_VERSION{{0, 9, 7}};
+  inline constexpr std::array<uint16_t, 3> MIN_STORAGE_SERVER_VERSION{{2, 4, 0}};
+  inline constexpr std::array<uint16_t, 3> MIN_BELNET_VERSION{{0, 9, 8}};
 
   // The minimum accepted version number, broadcasted by Master Nodes via uptime proofs for each hardfork
  struct proof_version
   {
-    std::pair<uint8_t, uint8_t> hardfork_revision;
+    std::pair<cryptonote::hf, uint8_t> hardfork_revision;
     std::array<uint16_t, 3> beldexd;
     std::array<uint16_t, 3> belnet;
     std::array<uint16_t, 3> storage_server;
   };
 
-  constexpr proof_version MIN_UPTIME_PROOF_VERSIONS[] = {
-    proof_version{{cryptonote::network_version_19, 0}, {6,0,0}, {0,9,7}, {2,3,0}},
-    proof_version{{cryptonote::network_version_18_bns, 0}, {5,0,0}, {0,9,7}, {2,3,0}},
-    proof_version{{cryptonote::network_version_17_POS, 0}, {4,0,0}, {0,9,5}, {2,2,0}},
-    proof_version{{cryptonote::network_version_16, 0}, {4,0,0}, {0,9,5}, {2,2,0}},
-    proof_version{{cryptonote::network_version_15_flash, 0}, {4,0,0}, {0,9,5}, {2,2,0}},
-    proof_version{{cryptonote::network_version_14_enforce_checkpoints, 0}, {4,0,0}, {0,9,5}, {2,2,0}},
-    proof_version{{cryptonote::network_version_13_checkpointing, 0}, {4,0,0}, {0,9,5}, {2,2,0}},
+  inline constexpr proof_version MIN_UPTIME_PROOF_VERSIONS[] = {
+    proof_version{{cryptonote::hf::hf20_bulletproof_plus,   0}, {7,0,0}, {0,9,8}, {2,4,0}},
+    proof_version{{cryptonote::hf::hf19_enhance_bns,        0}, {6,0,0}, {0,9,7}, {2,3,0}},
+    proof_version{{cryptonote::hf::hf18_bns,                0}, {5,0,0}, {0,9,7}, {2,3,0}},
+    proof_version{{cryptonote::hf::hf17_POS,                0}, {4,0,0}, {0,9,5}, {2,2,0}},
+    proof_version{{cryptonote::hf::hf16,                    0}, {4,0,0}, {0,9,5}, {2,2,0}},
+    proof_version{{cryptonote::hf::hf15_flash,              0}, {4,0,0}, {0,9,5}, {2,2,0}},
+    proof_version{{cryptonote::hf::hf13_checkpointing,      0}, {4,0,0}, {0,9,5}, {2,2,0}},
   };
 
-  using swarm_id_t                         = uint64_t;
-  constexpr swarm_id_t UNASSIGNED_SWARM_ID = UINT64_MAX;
+  using swarm_id_t = uint64_t;
+  inline constexpr swarm_id_t UNASSIGNED_SWARM_ID = UINT64_MAX;
 
   constexpr size_t min_votes_for_quorum_type(quorum_type q) {
     return
@@ -256,36 +256,36 @@ namespace master_nodes {
       std::numeric_limits<size_t>::max();
   };
 
-  constexpr quorum_type max_quorum_type_for_hf(uint8_t hf_version)
+  constexpr quorum_type max_quorum_type_for_hf(cryptonote::hf hf_version)
   {
     return
-        hf_version <= cryptonote::network_version_13_checkpointing ? quorum_type::obligations :
-        hf_version <  cryptonote::network_version_15_flash         ? quorum_type::checkpointing :
-        hf_version <  cryptonote::network_version_17_POS         ? quorum_type::flash :
+        hf_version <= cryptonote::hf::hf13_checkpointing ? quorum_type::obligations :
+        hf_version <  cryptonote::hf::hf15_flash         ? quorum_type::checkpointing :
+        hf_version <  cryptonote::hf::hf17_POS           ? quorum_type::flash :
         quorum_type::POS;
   }
 
-  constexpr uint64_t staking_num_lock_blocks(cryptonote::network_type nettype,uint8_t hf_version)
+  constexpr uint64_t staking_num_lock_blocks(cryptonote::network_type nettype, cryptonote::hf hf_version)
   {
-    auto blocks_per_day = (hf_version>=cryptonote::network_version_17_POS) ? BLOCKS_PER_DAY : BLOCKS_PER_DAY_OLD ;
+    auto blocks_per_day = (hf_version >= cryptonote::hf::hf17_POS) ? cryptonote::BLOCKS_PER_DAY : cryptonote::old::BLOCKS_PER_DAY_12 ;
     switch (nettype)
     {
-      case cryptonote::FAKECHAIN: return 30;
-      case cryptonote::TESTNET:   return 2 * blocks_per_day;
+      case cryptonote::network_type::FAKECHAIN: return 30;
+      case cryptonote::network_type::TESTNET:   return 2 * blocks_per_day;
       default:                    return 30 * blocks_per_day;
     }
   }
 
 //If a nodes timestamp varies by this amount of seconds they will be considered out of sync
-  constexpr uint8_t THRESHOLD_SECONDS_OUT_OF_SYNC = 30;
+inline constexpr uint8_t THRESHOLD_SECONDS_OUT_OF_SYNC = 30;
 
-  //If the below percentage of service nodes are out of sync we will consider our clock out of sync
-  constexpr uint8_t MAXIMUM_EXTERNAL_OUT_OF_SYNC = 80;
+  //If the below percentage of master nodes are out of sync we will consider our clock out of sync
+inline constexpr uint8_t MAXIMUM_EXTERNAL_OUT_OF_SYNC = 80;
 
-static_assert(STAKING_PORTIONS != UINT64_MAX, "UINT64_MAX is used as the invalid value for failing to calculate the min_node_contribution");
+static_assert(cryptonote::old::STAKING_PORTIONS != UINT64_MAX, "UINT64_MAX is used as the invalid value for failing to calculate the min_node_contribution");
 // return: UINT64_MAX if (num_contributions > the max number of contributions), otherwise the amount in beldex atomic units
-uint64_t get_min_node_contribution            (uint8_t version, uint64_t staking_requirement, uint64_t total_reserved, size_t num_contributions);
-uint64_t get_min_node_contribution_in_portions(uint8_t version, uint64_t staking_requirement, uint64_t total_reserved, size_t num_contributions);
+uint64_t get_min_node_contribution            (cryptonote::hf version, uint64_t staking_requirement, uint64_t total_reserved, size_t num_contributions);
+uint64_t get_min_node_contribution_in_portions(cryptonote::hf version, uint64_t staking_requirement, uint64_t total_reserved, size_t num_contributions);
 
 // Gets the maximum allowed stake amount.  This is used to prevent significant overstaking.  The
 // wallet tries to avoid this when submitting a stake, but it can still happen when competing stakes
@@ -294,7 +294,7 @@ uint64_t get_min_node_contribution_in_portions(uint8_t version, uint64_t staking
 // of stake despite locking 8k.
 // Starting in HF16, we disallow a stake if it is more than MAXIMUM_ACCEPTABLE_STAKE ratio of the
 // available contribution room, which allows slight overstaking but disallows larger overstakes.
-uint64_t get_max_node_contribution(uint8_t version, uint64_t staking_requirement, uint64_t total_reserved);
+uint64_t get_max_node_contribution(cryptonote::hf version, uint64_t staking_requirement, uint64_t total_reserved);
 
 uint64_t get_staking_requirement(uint64_t height);
 
@@ -302,13 +302,13 @@ uint64_t portions_to_amount(uint64_t portions, uint64_t staking_requirement);
 
 /// Check if portions are sufficiently large (provided the contributions
 /// are made in the specified order) and don't exceed the required amount
-bool check_master_node_portions(uint8_t version, const std::vector<uint64_t>& portions);
+bool check_master_node_portions(cryptonote::hf version, const std::vector<uint64_t>& portions);
 
 crypto::hash generate_request_stake_unlock_hash(uint32_t nonce);
-uint64_t     get_locked_key_image_unlock_height(cryptonote::network_type nettype, uint64_t curr_height,uint8_t version);
+uint64_t     get_locked_key_image_unlock_height(cryptonote::network_type nettype, uint64_t curr_height, cryptonote::hf version);
 
 // Returns lowest x such that (staking_requirement * x/STAKING_PORTIONS) >= amount
-uint64_t get_portions_to_make_amount(uint64_t staking_requirement, uint64_t amount, uint64_t max_portions = STAKING_PORTIONS);
+uint64_t get_portions_to_make_amount(uint64_t staking_requirement, uint64_t amount, uint64_t max_portions = cryptonote::old::STAKING_PORTIONS);
 
 bool get_portions_from_percent_str(std::string cut_str, uint64_t& portions);
 }

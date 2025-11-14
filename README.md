@@ -45,7 +45,7 @@ library archives (`.a`).
 | pkg-config   | any           | NO       | `pkg-config`           | `base-devel` | `pkgconf`           | NO       |                  |
 | Boost        | 1.65          | NO       | `libboost-all-dev`[2]  | `boost`      | `boost-devel`       | NO       | C++ libraries    |
 | libzmq       | 4.3.0         | YES      | `libzmq3-dev`          | `zeromq`     | `zeromq-devel`      | NO       | ZeroMQ library   |
-| sqlite3      | ?             | YES      | `libsqlite3-dev`       | `sqlite`     | `sqlite-devel`      | NO       | Beldex Name System |
+| sqlite3      | 3.24.0        | YES      | `libsqlite3-dev`       | `sqlite`     | `sqlite-devel`      | NO       | Beldex Name System |
 | libsodium    | 1.0.9         | YES      | `libsodium-dev`        | `libsodium`  | `libsodium-devel`   | NO       | cryptography     |
 | libcurl      | 4.0           | NO       | `curl`                 | `curl-devel` | NO                  | HTTP     | RPC              |
 | libuv (Win)  | any           | NO       | (Windows only)         | --           | --                  | NO       | RPC event loop   |
@@ -413,7 +413,7 @@ See [README.i18n.md](README.i18n.md).
 > feature allows connecting over IPv4 and Tor simulatenously - IPv4 is used for
 > relaying blocks and relaying transactions received by peers whereas Tor is
 > used solely for relaying transactions received over local RPC. This provides
-> privacy and better protection against surrounding node (sybil) attacks.
+> confidential transactions and better protection against surrounding node (sybil) attacks.
 
 While Beldex isn't made to integrate with Tor, it can be used wrapped with torsocks, by
 setting the following configuration parameters and environment variables:

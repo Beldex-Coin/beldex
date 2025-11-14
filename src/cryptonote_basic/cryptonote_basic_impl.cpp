@@ -65,40 +65,35 @@ namespace cryptonote {
     constexpr cryptonote::POS_random_value empty_random_value = {};
     bool bitset        = blk_header.POS.validator_bitset > 0;
     bool random_value  = !(blk_header.POS.random_value == empty_random_value);
-    uint8_t hf_version = blk_header.major_version;
-    bool result        = hf_version >= cryptonote::network_version_17_POS && (bitset || random_value);
+    auto hf_version    = blk_header.major_version;
+    bool result        = hf_version >= hf::hf17_POS && (bitset || random_value);
     return result;
   }
   //-----------------------------------------------------------------------------------------------
   bool block_has_POS_components(block const &blk)
   {
     bool signatures    = blk.signatures.size();
-    uint8_t hf_version = blk.major_version;
+    auto hf_version    = blk.major_version;
     bool result =
-        (hf_version >= cryptonote::network_version_17_POS && signatures) || block_header_has_POS_components(blk);
+        (hf_version >= hf::hf17_POS && signatures) || block_header_has_POS_components(blk);
     return result;
   }
   //-----------------------------------------------------------------------------------------------
-  size_t get_min_block_weight(uint8_t version)
+  size_t get_min_block_weight(hf version)
   {
-    return CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V5;
-  }
-  //-----------------------------------------------------------------------------------------------
-  size_t get_max_tx_size()
-  {
-    return CRYPTONOTE_MAX_TX_SIZE;
+    return BLOCK_GRANTED_FULL_REWARD_ZONE_V5;
   }
   //-----------------------------------------------------------------------------------------------
   // TODO(beldex): Move into beldex_economy, this will require access to beldex::exp2
-  uint64_t block_reward_unpenalized_formula_v7(uint8_t version, uint64_t already_generated_coins, uint64_t height)
+  uint64_t block_reward_unpenalized_formula_v7(hf version, uint64_t already_generated_coins, uint64_t height)
   {
-    const int target = version < 2 ? DIFFICULTY_TARGET_V1 : DIFFICULTY_TARGET_V2;
+    const int target = version <= hf::hf1 ? DIFFICULTY_TARGET_V1 : DIFFICULTY_TARGET_V2;
     const int target_minutes = target / 60;
       const int emission_speed_factor = EMISSION_SPEED_FACTOR_PER_MINUTE - (target_minutes-1);
 
-      uint64_t result = (MONEY_SUPPLY - already_generated_coins) >> emission_speed_factor;
+      uint64_t result = (beldex::MONEY_SUPPLY - already_generated_coins) >> emission_speed_factor;
 
-      if (version < network_version_7 )
+      if (version < hf::hf7)
       {
         if (result < FINAL_SUBSIDY_PER_MINUTE*target_minutes)
         {
@@ -119,26 +114,26 @@ namespace cryptonote {
     return result;
   }
 
-  bool get_base_block_reward(size_t median_weight, size_t current_block_weight, uint64_t already_generated_coins, uint64_t &reward, uint64_t &reward_unpenalized, uint8_t version, uint64_t height) 
+  bool get_base_block_reward(size_t median_weight, size_t current_block_weight, uint64_t already_generated_coins, uint64_t &reward, uint64_t &reward_unpenalized, hf version, uint64_t height) 
   {
     //premine reward
     if (height == 1)
     {
-      reward = 1400000000000000000;
+      reward = 1400000000 * beldex::COIN;
       return true;
     }
 
-    if((height>=56500) && (version<network_version_17_POS))
+    if((height>=56500) && (version< hf::hf17_POS))
     {
-      reward = COIN * 2;
+      reward = 2 * beldex::COIN;
       return true;
     }
-	  static_assert(TARGET_BLOCK_TIME_OLD % 1 == 0s, "difficulty targets must be a multiple of 60");
+	  static_assert(old::TARGET_BLOCK_TIME_12 % 1 == 0s, "difficulty targets must be a multiple of 60");
     static_assert(TARGET_BLOCK_TIME % 1 == 0s, "difficulty targets must be a multiple of 60");
 
     uint64_t base_reward =
-      version >= network_version_17_POS ? BLOCK_REWARD_HF17_POS :
-      version >= network_version_16 ? BLOCK_REWARD_HF16 :
+      version >= hf::hf17_POS ? beldex::BLOCK_REWARD_HF17_POS :
+      version >= hf::hf16 ? beldex::BLOCK_REWARD_HF16 :
         block_reward_unpenalized_formula_v7(version, already_generated_coins, height);
 
     uint64_t full_reward_zone = get_min_block_weight(version);
@@ -206,8 +201,8 @@ namespace cryptonote {
     , account_public_address const & adr
     )
   {
-    uint64_t address_prefix = subaddress ? get_config(nettype).CRYPTONOTE_PUBLIC_SUBADDRESS_BASE58_PREFIX : get_config(nettype).CRYPTONOTE_PUBLIC_ADDRESS_BASE58_PREFIX;
-
+    auto& conf = get_config(nettype);
+    uint64_t address_prefix = subaddress ? conf.PUBLIC_SUBADDRESS_BASE58_PREFIX : conf.PUBLIC_ADDRESS_BASE58_PREFIX;
     return tools::base58::encode_addr(address_prefix, t_serializable_object_to_blob(adr));
   }
   //-----------------------------------------------------------------------
@@ -217,7 +212,7 @@ namespace cryptonote {
     , crypto::hash8 const & payment_id
     )
   {
-    uint64_t integrated_address_prefix = get_config(nettype).CRYPTONOTE_PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX;
+    uint64_t integrated_address_prefix = get_config(nettype).PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX;
 
     integrated_address iadr = {
       adr, payment_id
@@ -236,9 +231,10 @@ namespace cryptonote {
     , const std::string_view str
     )
   {
-    uint64_t address_prefix = get_config(nettype).CRYPTONOTE_PUBLIC_ADDRESS_BASE58_PREFIX;
-    uint64_t integrated_address_prefix = get_config(nettype).CRYPTONOTE_PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX;
-    uint64_t subaddress_prefix = get_config(nettype).CRYPTONOTE_PUBLIC_SUBADDRESS_BASE58_PREFIX;
+    auto& conf = get_config(nettype);
+    uint64_t address_prefix = conf.PUBLIC_ADDRESS_BASE58_PREFIX;
+    uint64_t integrated_address_prefix = conf.PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX;
+    uint64_t subaddress_prefix = conf.PUBLIC_SUBADDRESS_BASE58_PREFIX;
 
     blobdata data;
     uint64_t prefix{0};

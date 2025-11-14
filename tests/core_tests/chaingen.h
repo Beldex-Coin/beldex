@@ -315,7 +315,7 @@ public:
     bf_hf_version= 1 << 8
   };
 
-  explicit test_generator(int hf_version = 7) : m_hf_version(hf_version) {}
+  explicit test_generator(cryptonote::hf hf_version = cryptonote::hf::hf7) : m_hf_version(hf_version) {}
   void get_block_chain(std::vector<block_info>& blockchain,        const crypto::hash& head, size_t n) const;
   void get_block_chain(std::vector<cryptonote::block>& blockchain, const crypto::hash& head, size_t n) const;
   void get_last_n_block_weights(std::vector<uint64_t>& block_weights, const crypto::hash& head, size_t n) const;
@@ -331,7 +331,7 @@ public:
     const std::list<cryptonote::transaction>& tx_list = std::list<cryptonote::transaction>(), const master_nodes::payout &block_leader = {});
 
   bool construct_block_manually(cryptonote::block& blk, const cryptonote::block& prev_block,
-    const cryptonote::account_base& miner_acc, int actual_params = bf_none, uint8_t major_ver = 0,
+    const cryptonote::account_base& miner_acc, int actual_params = bf_none, cryptonote::hf major_ver = cryptonote::hf::none,
     uint8_t minor_ver = 0, uint64_t timestamp = 0, const crypto::hash& prev_id = crypto::hash(),
     const cryptonote::difficulty_type& diffic = 1, const cryptonote::transaction& miner_tx = cryptonote::transaction(),
     const std::vector<crypto::hash>& tx_hashes = std::vector<crypto::hash>(), size_t txs_sizes = 0, size_t txn_fee = 0);
@@ -339,7 +339,7 @@ public:
     const cryptonote::account_base& miner_acc, const std::vector<crypto::hash>& tx_hashes, size_t txs_size);
 
 
-  int m_hf_version;
+  cryptonote::hf m_hf_version = cryptonote::hf::none;
   std::unordered_map<crypto::hash, block_info> m_blocks_info;
 
   private:
@@ -907,7 +907,7 @@ inline bool replay_events_through_core_plain(cryptonote::core& cr, const std::ve
 //--------------------------------------------------------------------------
 template<typename t_test_class>
 struct get_test_options {
-  const std::vector<cryptonote::hard_fork> hard_forks = {{7, 0, 0, 0}};
+  const std::vector<cryptonote::hard_fork> hard_forks = {{cryptonote::hf::hf7, 0, 0, 0}};
   const cryptonote::test_options test_options = {
     hard_forks, 0
   };
@@ -1082,12 +1082,12 @@ inline bool do_replay_file(const std::string& filename)
     BLK_NAME = blk_last;                                                              \
   }
 
-#define REWIND_BLOCKS(VEC_EVENTS, BLK_NAME, PREV_BLOCK, MINER_ACC) REWIND_BLOCKS_N(VEC_EVENTS, BLK_NAME, PREV_BLOCK, MINER_ACC, CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW)
+#define REWIND_BLOCKS(VEC_EVENTS, BLK_NAME, PREV_BLOCK, MINER_ACC) REWIND_BLOCKS_N(VEC_EVENTS, BLK_NAME, PREV_BLOCK, MINER_ACC, cryptonote::MINED_MONEY_UNLOCK_WINDOW)
 
 // NOTE(beldex): These macros assume hardfork version 7 and are from the old Monero testing code
 #define MAKE_TX_MIX(VEC_EVENTS, TX_NAME, FROM, TO, AMOUNT, NMIX, HEAD)                       \
   cryptonote::transaction TX_NAME;                                                           \
-  beldex_tx_builder(VEC_EVENTS, TX_NAME, HEAD, FROM, TO.get_keys().m_account_address, AMOUNT, cryptonote::network_version_7).build(); \
+  beldex_tx_builder(VEC_EVENTS, TX_NAME, HEAD, FROM, TO.get_keys().m_account_address, AMOUNT, cryptonote::hf::hf7).build(); \
   VEC_EVENTS.push_back(TX_NAME);
 
 #define MAKE_TX_MIX_RCT(VEC_EVENTS, TX_NAME, FROM, TO, AMOUNT, NMIX, HEAD)                       \
@@ -1100,7 +1100,7 @@ inline bool do_replay_file(const std::string& filename)
 #define MAKE_TX_MIX_LIST(VEC_EVENTS, SET_NAME, FROM, TO, AMOUNT, NMIX, HEAD)             \
   {                                                                                      \
     cryptonote::transaction t;                                                             \
-    beldex_tx_builder(VEC_EVENTS, t, HEAD, FROM, TO.get_keys().m_account_address, AMOUNT, cryptonote::network_version_7).build(); \
+    beldex_tx_builder(VEC_EVENTS, t, HEAD, FROM, TO.get_keys().m_account_address, AMOUNT, cryptonote::hf::hf7).build(); \
     SET_NAME.push_back(t);                                                               \
     VEC_EVENTS.push_back(t);                                                             \
   }
@@ -1142,7 +1142,7 @@ inline bool do_replay_file(const std::string& filename)
                           TX,                                                                                          \
                           cryptonote::beldex_miner_tx_context::miner_block(cryptonote::FAKECHAIN, miner_account.get_keys().m_account_address), \
                           {},                                                                                          \
-                          7))                                                                                          \
+                          cryptonote::hf::hf7))                                                                        \
     return false;
 
 #define MAKE_TX_LIST_START_RCT(VEC_EVENTS, SET_NAME, FROM, TO, AMOUNT, NMIX, HEAD) \
@@ -1235,7 +1235,7 @@ inline bool do_replay_file(const std::string& filename)
 #define CHECK_TEST_CONDITION_MSG(cond, msg) CHECK_AND_ASSERT_MES(cond, false, "[" << perr_context << "] failed: \"" << QUOTEME(cond) << "\", msg: " << msg)
 #define CHECK_EQ(v1, v2) CHECK_AND_ASSERT_MES(v1 == v2, false, "[" << perr_context << "] failed: \"" << QUOTEME(v1) << " == " << QUOTEME(v2) << "\", " << v1 << " != " << v2)
 #define CHECK_NOT_EQ(v1, v2) CHECK_AND_ASSERT_MES(!(v1 == v2), false, "[" << perr_context << "] failed: \"" << QUOTEME(v1) << " != " << QUOTEME(v2) << "\", " << v1 << " == " << v2)
-#define MK_COINS(amount) (UINT64_C(amount) * COIN)
+#define MK_COINS(amount) (UINT64_C(amount) * beldex::COIN)
 
 inline std::string make_junk() {
   std::string junk;
@@ -1276,7 +1276,7 @@ public:
             const cryptonote::account_base& from,
             const cryptonote::account_public_address& to,
             uint64_t amount,
-            uint8_t hf_version)
+            cryptonote::hf hf_version)
     : m_events(events)
     , m_tx(tx)
     , m_head(head)
@@ -1367,7 +1367,7 @@ public:
 
 void                                      fill_nonce_with_beldex_generator          (struct beldex_chain_generator const *generator, cryptonote::block& blk, const cryptonote::difficulty_type& diffic, uint64_t height);
 void                                      beldex_register_callback                  (std::vector<test_event_entry> &events, std::string const &callback_name, beldex_callback callback);
-std::vector<cryptonote::hard_fork> beldex_generate_hard_fork_table(uint8_t max_hf_version = cryptonote::network_version_count - 1, uint64_t pos_delay = 60);
+std::vector<cryptonote::hard_fork> beldex_generate_hard_fork_table(cryptonote::hf max_hf_version = cryptonote::hf::hf20_bulletproof_plus, uint64_t pos_delay = 60);
 
 struct beldex_blockchain_entry
 {
@@ -1411,7 +1411,7 @@ enum struct beldex_create_block_type
 struct beldex_create_block_params
 {
   beldex_create_block_type               type;
-  uint8_t                              hf_version;
+  cryptonote::hf                         hf_version;
   beldex_blockchain_entry                prev;
   cryptonote::account_base             miner_acc;
   uint64_t                             timestamp;
@@ -1432,7 +1432,7 @@ struct beldex_chain_generator
   uint64_t                                                           last_cull_height_ = 0;
   std::shared_ptr<bns::name_system_db>                               bns_db_ = std::make_shared<bns::name_system_db>();
   beldex_chain_generator_db                                            db_;
-  uint8_t                                                            hf_version_ = cryptonote::network_version_7;
+  cryptonote::hf                                                    hf_version_ = cryptonote::hf::hf7;
   std::vector<test_event_entry>&                                     events_;
   const std::vector<cryptonote::hard_fork>                          hard_forks_;
   cryptonote::account_base                                           first_miner_;
@@ -1441,41 +1441,41 @@ struct beldex_chain_generator
 
   uint64_t                                             height()       const { return cryptonote::get_block_height(db_.blocks.back().block); }
   uint64_t                                             chain_height() const { return height() + 1; }
-  const std::vector<beldex_blockchain_entry>&            blocks()       const { return db_.blocks; }
+  const std::vector<beldex_blockchain_entry>&          blocks()       const { return db_.blocks; }
   size_t                                               event_index()  const { return events_.size() - 1; }
-  uint8_t                                              hardfork()     const { return get_hf_version_at(height()); }
+  cryptonote::hf                                       hardfork()     const { return get_hf_version_at(height()); }
 
-  const beldex_blockchain_entry&                         top() const { return db_.blocks.back(); }
+  const beldex_blockchain_entry&                      top() const { return db_.blocks.back(); }
   master_nodes::quorum_manager                        top_quorum() const;
   master_nodes::quorum_manager                        quorum(uint64_t height) const;
   std::shared_ptr<const master_nodes::quorum>         get_quorum(master_nodes::quorum_type type, uint64_t height) const;
-  master_nodes::master_node_keys                     get_cached_keys(const crypto::public_key &pubkey) const;
+  master_nodes::master_node_keys                      get_cached_keys(const crypto::public_key &pubkey) const;
 
   cryptonote::account_base                             add_account();
-  beldex_blockchain_entry                               &add_block(beldex_blockchain_entry const &entry, bool can_be_added_to_blockchain = true, std::string const &fail_msg = {});
-  void                                                 add_blocks_until_version(uint8_t hf_version);
+  beldex_blockchain_entry                              &add_block(beldex_blockchain_entry const &entry, bool can_be_added_to_blockchain = true, std::string const &fail_msg = {});
+  void                                                 add_blocks_until_version(cryptonote::hf hf_version);
   void                                                 add_n_blocks(int n);
   bool                                                 add_blocks_until_next_checkpointable_height();
   void                                                 add_master_node_checkpoint(uint64_t block_height, size_t num_votes);
-  void                                                 add_mined_money_unlock_blocks(); // NOTE: Unlock all Loki generated from mining prior to this call i.e. CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW
-  void                                                 add_transfer_unlock_blocks(uint8_t hf_version); // Unlock funds from (standard) transfers prior to this call, i.e. CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE
+  void                                                 add_mined_money_unlock_blocks(); // NOTE: Unlock all Loki generated from mining prior to this call i.e. cryptonote::MINED_MONEY_UNLOCK_WINDOW
+  void                                                 add_transfer_unlock_blocks(cryptonote::hf hf_version); // Unlock funds from (standard) transfers prior to this call, i.e. DEFAULT_TX_SPENDABLE_AGE
 
   // NOTE: Add an event that is just a user specified message to signify progress in the test
   void                                                 add_event_msg(std::string const &msg) { events_.push_back(msg); }
   void                                                 add_tx(cryptonote::transaction const &tx, bool can_be_added_to_blockchain = true, std::string const &fail_msg = {}, bool kept_by_block = false);
 
-  beldex_create_block_params                             next_block_params() const;
+  beldex_create_block_params                           next_block_params() const;
 
   // NOTE: Add constructed TX to events_ and assume that it is valid to add to the blockchain. If the TX is meant to be unaddable to the blockchain use the individual create + add functions to
   // be able to mark the add TX event as something that should trigger a failure.
-  cryptonote::transaction                              create_and_add_beldex_name_system_tx(cryptonote::account_base const &src, uint8_t hf_version, bns::mapping_years mapping_years, std::string const &name, bns::mapping_value const &value_bchat, bns::mapping_value const &value_wallet, bns::mapping_value const &value_belnet, bns::mapping_value const &value_eth_addr, bns::generic_owner const *owner = nullptr, bns::generic_owner const *backup_owner = nullptr, bool kept_by_block = false);
-  cryptonote::transaction                              create_and_add_beldex_name_system_tx_update(cryptonote::account_base const &src, uint8_t hf_version, bns::mapping_type type, std::string const &name, bns::mapping_value const *value_bchat, bns::mapping_value const *value_wallet, bns::mapping_value const *value_belnet, bns::mapping_value const *value_eth_addr, bns::generic_owner const *owner = nullptr, bns::generic_owner const *backup_owner = nullptr, bns::generic_signature *signature = nullptr, bool kept_by_block = false);
-  cryptonote::transaction                              create_and_add_beldex_name_system_tx_renew(cryptonote::account_base const &src, uint8_t hf_version, bns::mapping_years mapping_years, std::string const &name, bns::generic_signature *signature = nullptr, bool kept_by_block = false);
+  cryptonote::transaction                              create_and_add_beldex_name_system_tx(cryptonote::account_base const &src, cryptonote::hf hf_version, bns::mapping_years mapping_years, std::string const &name, bns::mapping_value const &value_bchat, bns::mapping_value const &value_wallet, bns::mapping_value const &value_belnet, bns::mapping_value const &value_eth_addr, bns::generic_owner const *owner = nullptr, bns::generic_owner const *backup_owner = nullptr, bool kept_by_block = false);
+  cryptonote::transaction                              create_and_add_beldex_name_system_tx_update(cryptonote::account_base const &src, cryptonote::hf hf_version, bns::mapping_type type, std::string const &name, bns::mapping_value const *value_bchat, bns::mapping_value const *value_wallet, bns::mapping_value const *value_belnet, bns::mapping_value const *value_eth_addr, bns::generic_owner const *owner = nullptr, bns::generic_owner const *backup_owner = nullptr, bns::generic_signature *signature = nullptr, bool kept_by_block = false);
+  cryptonote::transaction                              create_and_add_beldex_name_system_tx_renew(cryptonote::account_base const &src, cryptonote::hf hf_version, bns::mapping_years mapping_years, std::string const &name, bns::generic_signature *signature = nullptr, bool kept_by_block = false);
   cryptonote::transaction                              create_and_add_tx                 (const cryptonote::account_base& src, const cryptonote::account_public_address& dest, uint64_t amount, uint64_t fee = TESTS_DEFAULT_FEE, bool kept_by_block = false);
   cryptonote::transaction                              create_and_add_state_change_tx(master_nodes::new_state state, const crypto::public_key& pub_key, uint16_t reasons_all, uint16_t reasons_any, uint64_t height = -1, const std::vector<uint64_t>& voters = {}, uint64_t fee = 0, bool kept_by_block = false);
   cryptonote::transaction                              create_and_add_registration_tx(const cryptonote::account_base& src, const cryptonote::keypair& sn_keys = cryptonote::keypair{hw::get_device("default")}, bool kept_by_block = false);
   cryptonote::transaction                              create_and_add_staking_tx     (const crypto::public_key &pub_key, const cryptonote::account_base &src, uint64_t amount, bool kept_by_block = false);
-  beldex_blockchain_entry                               &create_and_add_next_block     (const std::vector<cryptonote::transaction>& txs = {}, cryptonote::checkpoint_t const *checkpoint = nullptr, bool can_be_added_to_blockchain = true, std::string const &fail_msg = {});
+  beldex_blockchain_entry                              &create_and_add_next_block     (const std::vector<cryptonote::transaction>& txs = {}, cryptonote::checkpoint_t const *checkpoint = nullptr, bool can_be_added_to_blockchain = true, std::string const &fail_msg = {});
   // Same as create_and_add_tx, but also adds 95kB of junk into tx_extra to bloat up the tx size.
   cryptonote::transaction create_and_add_big_tx(const cryptonote::account_base& src, const cryptonote::account_public_address& dest, uint64_t amount, uint64_t junk_size = 95000, uint64_t fee = TESTS_DEFAULT_FEE, bool kept_by_block = false);
 
@@ -1483,7 +1483,7 @@ struct beldex_chain_generator
   cryptonote::transaction                              create_tx(const cryptonote::account_base &src, const cryptonote::account_public_address &dest, uint64_t amount, uint64_t fee) const;
   cryptonote::transaction                              create_registration_tx(const cryptonote::account_base &src,
                                                                               const cryptonote::keypair &master_node_keys = cryptonote::keypair{hw::get_device("default")},
-                                                                              uint64_t src_portions = STAKING_PORTIONS,
+                                                                              uint64_t src_portions = cryptonote::old::STAKING_PORTIONS,
                                                                               uint64_t src_operator_cut = 0,
                                                                               std::array<beldex_master_node_contribution, 3> const &contributors = {},
                                                                               int num_contributors = 0) const;
@@ -1493,20 +1493,20 @@ struct beldex_chain_generator
 
   // value: Takes the binary value NOT the human readable version, of the name->value mapping
   static const uint64_t ONS_AUTO_BURN = static_cast<uint64_t>(-1);
-  cryptonote::transaction                              create_beldex_name_system_tx(cryptonote::account_base const &src, uint8_t hf_version, bns::mapping_years mapping_years, std::string const &name, bns::mapping_value const &value_bchat, bns::mapping_value const &value_wallet, bns::mapping_value const &value_belnet, bns::mapping_value const &value_eth_addr, bns::generic_owner const *owner = nullptr, bns::generic_owner const *backup_owner = nullptr, std::optional<uint64_t> burn_override = std::nullopt) const;
-  cryptonote::transaction                              create_beldex_name_system_tx_update(cryptonote::account_base const &src, uint8_t hf_version, bns::mapping_type type, std::string const &name, bns::mapping_value const *value_bchat, bns::mapping_value const *value_wallet, bns::mapping_value const *value_belnet, bns::mapping_value const *value_eth_addr, bns::generic_owner const *owner = nullptr, bns::generic_owner const *backup_owner = nullptr, bns::generic_signature *signature = nullptr, bool use_asserts = false) const;
-  cryptonote::transaction                              create_beldex_name_system_tx_update_w_extra(cryptonote::account_base const &src, uint8_t hf_version, cryptonote::tx_extra_beldex_name_system const &ons_extra) const;
-  cryptonote::transaction                              create_beldex_name_system_tx_renew(cryptonote::account_base const &src, uint8_t hf_version, bns::mapping_years mapping_years, std::string const &name, bns::generic_signature *signature = nullptr, std::optional<uint64_t> burn_override = std::nullopt) const;
+  cryptonote::transaction                              create_beldex_name_system_tx(cryptonote::account_base const &src, cryptonote::hf hf_version, bns::mapping_years mapping_years, std::string const &name, bns::mapping_value const &value_bchat, bns::mapping_value const &value_wallet, bns::mapping_value const &value_belnet, bns::mapping_value const &value_eth_addr, bns::generic_owner const *owner = nullptr, bns::generic_owner const *backup_owner = nullptr, std::optional<uint64_t> burn_override = std::nullopt) const;
+  cryptonote::transaction                              create_beldex_name_system_tx_update(cryptonote::account_base const &src, cryptonote::hf hf_version, bns::mapping_type type, std::string const &name, bns::mapping_value const *value_bchat, bns::mapping_value const *value_wallet, bns::mapping_value const *value_belnet, bns::mapping_value const *value_eth_addr, bns::generic_owner const *owner = nullptr, bns::generic_owner const *backup_owner = nullptr, bns::generic_signature *signature = nullptr, bool use_asserts = false) const;
+  cryptonote::transaction                              create_beldex_name_system_tx_update_w_extra(cryptonote::account_base const &src, cryptonote::hf hf_version, cryptonote::tx_extra_beldex_name_system const &ons_extra) const;
+  cryptonote::transaction                              create_beldex_name_system_tx_renew(cryptonote::account_base const &src, cryptonote::hf hf_version, bns::mapping_years mapping_years, std::string const &name, bns::generic_signature *signature = nullptr, std::optional<uint64_t> burn_override = std::nullopt) const;
 
-  beldex_blockchain_entry                                create_genesis_block(const cryptonote::account_base &miner, uint64_t timestamp);
-  beldex_blockchain_entry                                create_next_block(const std::vector<cryptonote::transaction>& txs = {}, cryptonote::checkpoint_t const *checkpoint = nullptr);
+  beldex_blockchain_entry                              create_genesis_block(const cryptonote::account_base &miner, uint64_t timestamp);
+  beldex_blockchain_entry                              create_next_block(const std::vector<cryptonote::transaction>& txs = {}, cryptonote::checkpoint_t const *checkpoint = nullptr);
   bool                                                 create_block(beldex_blockchain_entry &entry, beldex_create_block_params &params, const std::vector<cryptonote::transaction> &tx_list) const;
 
   bool                                                 block_begin(beldex_blockchain_entry &entry, beldex_create_block_params &params, const std::vector<cryptonote::transaction> &tx_list) const;
   void                                                 block_fill_POS_data(beldex_blockchain_entry &entry, beldex_create_block_params const &params, uint8_t round) const;
   void                                                 block_end(beldex_blockchain_entry &entry, beldex_create_block_params const &params) const;
 
-  uint8_t                                              get_hf_version_at(uint64_t height) const;
+  cryptonote::hf                                       get_hf_version_at(uint64_t height) const;
   std::vector<uint64_t>                                last_n_block_weights(uint64_t height, uint64_t num) const;
   const cryptonote::account_base&                      first_miner() const { return first_miner_; }
 };

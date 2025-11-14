@@ -194,7 +194,7 @@ namespace epee
         if (m_read_status == state_cancelled)
           return false;
 
-        int retval = ::WaitForSingleObject(::GetStdHandle(STD_INPUT_HANDLE), 100);
+        auto retval = ::WaitForSingleObject(::GetStdHandle(STD_INPUT_HANDLE), 100);
         switch (retval)
         {
           case WAIT_FAILED:
@@ -529,8 +529,7 @@ eof:
       catch (const std::exception &e)
       {
         rdln::suspend_readline pause_readline;
-        std::cout << "Command errored: " << cmd.front() << ", " << e.what();
-      }
+        std::cout << "Command errored: " << cmd.front() << ", " << e.what() << "\n";      }
 
       return false;
     }

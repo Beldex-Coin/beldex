@@ -115,6 +115,19 @@ static void print_extra_fields(const std::vector<cryptonote::tx_extra_field> &fi
   }
 }
 
+constexpr static std::string_view network_type_str(network_type nettype)
+{
+  switch(nettype)
+  {
+    case network_type::MAINNET: return "Mainnet"sv;
+    case network_type::TESTNET: return "Testnet"sv;
+    case network_type::DEVNET: return "Devnet"sv;
+    case network_type::FAKECHAIN: return "Fakenet"sv;
+    case network_type::UNDEFINED: return "Undefined Net"sv;
+  }
+  return "Unhandled Net"sv;
+}
+
 int main(int argc, char* argv[])
 {
   uint32_t log_level = 0;
@@ -214,14 +227,14 @@ int main(int argc, char* argv[])
   else
   {
     bool addr_decoded = false;
-    for (uint8_t nettype = MAINNET; nettype < DEVNET + 1;  nettype++)
+    for (auto nettype : {network_type::MAINNET, network_type::TESTNET, network_type::DEVNET})
     {
       cryptonote::address_parse_info addr_info = {};
       if (cryptonote::get_account_address_from_str(addr_info, static_cast<cryptonote::network_type>(nettype), input))
       {
         addr_decoded = true;
         cryptonote::account_public_address const &address = addr_info.address;
-        std::cout << "Network Type: " << cryptonote::network_type_str(static_cast<cryptonote::network_type>(nettype)) << "\n";
+        std::cout << "Network Type: " << network_type_str(static_cast<cryptonote::network_type>(nettype)) << "\n";
         std::cout << "Address: " << input << "\n";
         std::cout << "Subaddress: " << (addr_info.is_subaddress ? "Yes" : "No") << "\n";
         std::cout << "Payment ID: " << (addr_info.has_payment_id ? tools::type_to_hex(addr_info.payment_id) : "(none)") << "\n";

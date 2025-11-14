@@ -132,13 +132,13 @@ inline std::string_view mapping_type_str(mapping_type type)
 }
 inline std::ostream &operator<<(std::ostream &os, mapping_type type) { return os << mapping_type_str(type); }
 
-constexpr bool mapping_type_allowed(uint8_t hf_version, mapping_type type) {
-  return (type == mapping_type::bchat && hf_version >= cryptonote::network_version_16)
-      || (type == mapping_type::belnet && hf_version >= cryptonote::network_version_17_POS) || (type == mapping_type::wallet && hf_version >= cryptonote::network_version_17_POS);
+constexpr bool mapping_type_allowed(cryptonote::hf hf_version, mapping_type type) {
+  return (type == mapping_type::bchat && hf_version >= cryptonote::hf::hf16)
+      || (type == mapping_type::belnet && hf_version >= cryptonote::hf::hf17_POS) || (type == mapping_type::wallet && hf_version >= cryptonote::hf::hf17_POS);
 }
 
 // Returns all mapping types supported for lookup as of the given hardfork.
-std::vector<mapping_type> all_mapping_types(uint8_t hf_version);
+std::vector<mapping_type> all_mapping_types(cryptonote::hf hf_version);
 
 sqlite3 *init_beldex_name_system(const fs::path& file_path, bool read_only);
 
@@ -149,6 +149,9 @@ constexpr uint16_t db_mapping_type(bns::mapping_type type) {
   return static_cast<uint16_t>(type);
 }
 constexpr std::string_view db_mapping_value(bns::mapping_type type) {
+  if(is_belnet_type(type))
+    type = mapping_type::belnet;
+
   switch(type)
   {
     case mapping_type::bchat: return "encrypted_bchat_value"sv;
@@ -191,7 +194,7 @@ enum struct bns_tx_type { lookup, buy, update, renew };
 // Currently accepts "bchat" or "belnet" for lookups, buys, updates, and renewals; for buys and renewals also accepts "belnet_Ny[ear]" for N=2,5,10
 // Lookups are implied by none of buy/update/renew.
 // mapping_type: (optional) if function returns true, the uint16_t value of the 'type' will be set
-bool         validate_mapping_type(std::string_view type, uint8_t hf_version, mapping_type *mapping_type, std::string *reason);
+bool         validate_mapping_type(std::string_view type, cryptonote::hf hf_version, mapping_type *mapping_type, std::string *reason);
 
 // Hashes an BNS name.  The name must already be lower-case (but this is only checked in debug builds).
 crypto::hash name_to_hash(std::string_view name, const std::optional<crypto::hash>& key = std::nullopt); // Takes a human readable name and hashes it.  Takes an optional value to use as a key to produce a keyed hash.
@@ -320,7 +323,7 @@ struct name_system_db
 
   // Validates an BNS transaction.  If the function returns true then entry will be populated with
   // the BNS details.  On a false return, `reason` is instead populated with the failure reason.
-  bool validate_bns_tx(uint8_t hf_version, uint64_t blockchain_height, cryptonote::transaction const &tx, cryptonote::tx_extra_beldex_name_system &entry, std::string *reason);
+  bool validate_bns_tx(cryptonote::hf hf_version, uint64_t blockchain_height, cryptonote::transaction const &tx, cryptonote::tx_extra_beldex_name_system &entry, std::string *reason);
 
   // Destructor; closes the sqlite3 database if one is open
   ~name_system_db();

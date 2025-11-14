@@ -27,12 +27,14 @@
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "cryptonote_config.h"
+#include "beldex_economy.h"
 #include "ringct/rctTypes.h"
 #include <functional>
 #include <algorithm>
 #include <chrono>
 #include <fmt/core.h>
-#include <boost/endian/conversion.hpp>
+#include <oxenc/endian.h>
+#include <date/date.h>
 
 extern "C" {
 #include <sodium.h>
@@ -51,7 +53,6 @@ extern "C" {
 #include "common/random.h"
 #include "common/lock.h"
 #include "common/hex.h"
-#include "epee/misc_os_dependent.h"
 #include "blockchain.h"
 #include "master_node_quorum_cop.h"
 
@@ -65,18 +66,20 @@ extern "C" {
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "master_nodes"
 
+using cryptonote::hf;
+
 namespace master_nodes
 {
   size_t constexpr STORE_LONG_TERM_STATE_INTERVAL = 10000;
 
   constexpr auto X25519_MAP_PRUNING_INTERVAL = 5min;
   constexpr auto X25519_MAP_PRUNING_LAG = 24h;
-  static_assert(X25519_MAP_PRUNING_LAG > config::UPTIME_PROOF_VALIDITY, "x25519 map pruning lag is too short!");
+  static_assert(X25519_MAP_PRUNING_LAG > cryptonote::config::UPTIME_PROOF_VALIDITY, "x25519 map pruning lag is too short!");
 
-  static uint64_t short_term_state_cull_height(uint8_t hf_version, uint64_t block_height)
+  static uint64_t short_term_state_cull_height(hf hf_version, uint64_t block_height)
   {
     size_t constexpr DEFAULT_SHORT_TERM_STATE_HISTORY = 6 * STATE_CHANGE_TX_LIFETIME_IN_BLOCKS;
-    static_assert(DEFAULT_SHORT_TERM_STATE_HISTORY >= 12 * BLOCKS_PER_HOUR, // Arbitrary, but raises a compilation failure if it gets shortened.
+    static_assert(DEFAULT_SHORT_TERM_STATE_HISTORY >= 12 * cryptonote::BLOCKS_PER_HOUR, // Arbitrary, but raises a compilation failure if it gets shortened.
         "not enough short term state storage for blink quorum retrieval!");
     uint64_t result =
         (block_height < DEFAULT_SHORT_TERM_STATE_HISTORY) ? 0 : block_height - DEFAULT_SHORT_TERM_STATE_HISTORY;
@@ -93,7 +96,7 @@ namespace master_nodes
   void master_node_list::init()
   {
     std::lock_guard lock(m_mn_mutex);
-    if (m_blockchain.get_network_version() < cryptonote::network_version_9_master_nodes)
+    if (m_blockchain.get_network_version() < hf::hf9_master_nodes)
     {
       reset(true);
       return;
@@ -120,7 +123,7 @@ namespace master_nodes
 
     std::sort(result.begin(), result.end(),
       [](const pubkey_and_mninfo &a, const pubkey_and_mninfo &b) {
-        return memcmp(reinterpret_cast<const void*>(&a), reinterpret_cast<const void*>(&b), sizeof(a)) < 0;
+        return a.first < b.first;
       });
     return result;
   }
@@ -327,15 +330,15 @@ namespace master_nodes
     return result;
   }
 
-  void validate_contributor_args(uint8_t hf_version, contributor_args_t const &contributor_args)
+  void validate_contributor_args(hf hf_version, contributor_args_t const &contributor_args)
   {
     if (contributor_args.portions.empty())
       throw invalid_contributions{"No portions given"};
     if (contributor_args.portions.size() != contributor_args.addresses.size())
       throw invalid_contributions{"Number of portions (" + std::to_string(contributor_args.portions.size()) + ") doesn't match the number of addresses (" + std::to_string(contributor_args.portions.size()) + ")"};
-    if (contributor_args.portions.size() > MAX_NUMBER_OF_CONTRIBUTORS)
+    if (contributor_args.portions.size() > beldex::MAX_NUMBER_OF_CONTRIBUTORS)
       throw invalid_contributions{"Too many contributors"};
-    if (contributor_args.portions_for_operator > STAKING_PORTIONS)
+    if (contributor_args.portions_for_operator > cryptonote::old::STAKING_PORTIONS)
       throw invalid_contributions{"Operator portions are too high"};
 
     if (!check_master_node_portions(hf_version, contributor_args.portions))
@@ -391,6 +394,7 @@ namespace master_nodes
           case rct::RCTType::Bulletproof:
           case rct::RCTType::Bulletproof2:
           case rct::RCTType::CLSAG:
+          case rct::RCTType::BulletproofPlus:
               money_transferred = rct::decodeRctSimple(tx.rct_signatures, rct::sk2rct(scalar1), i, mask, hwdev);
               break;
           case rct::RCTType::Full:
@@ -436,7 +440,7 @@ namespace master_nodes
   }
 
   bool tx_get_staking_components_and_amounts(cryptonote::network_type nettype,
-                                             uint8_t hf_version,
+                                             hf hf_version,
                                              cryptonote::transaction const &tx,
                                              uint64_t block_height,
                                              staking_components *contribution)
@@ -471,7 +475,7 @@ namespace master_nodes
     hw::device &hwdev         = hw::get_device("default");
     contribution->transferred = 0;
     bool stake_decoded        = true;
-    if (hf_version >= cryptonote::network_version_11_infinite_staking)
+    if (hf_version >= hf::hf11_infinite_staking)
     {
       // In Infinite Staking, we lock the key image that would be generated if
       // you tried to send your stake and prevent it from being transacted on
@@ -552,7 +556,7 @@ namespace master_nodes
       }
     }
 
-    if (hf_version < cryptonote::network_version_11_infinite_staking)
+    if (hf_version < hf::hf11_infinite_staking)
     {
       // Pre Infinite Staking, we only need to prove the amount sent is
       // sufficient to become a contributor to the Master Node and that there
@@ -566,7 +570,7 @@ namespace master_nodes
             unlock_time = tx.output_unlock_times[i];
 
           uint64_t min_height = block_height + staking_num_lock_blocks(nettype,hf_version);
-          has_correct_unlock_time = unlock_time < CRYPTONOTE_MAX_BLOCK_NUMBER && unlock_time >= min_height;
+          has_correct_unlock_time = unlock_time < cryptonote::MAX_BLOCK_NUMBER && unlock_time >= min_height;
         }
 
         if (has_correct_unlock_time)
@@ -599,7 +603,7 @@ namespace master_nodes
     if (tx.type != cryptonote::txtype::state_change)
       return false;
 
-    uint8_t const hf_version = block.major_version;
+    const auto hf_version = block.major_version;
     cryptonote::tx_extra_master_node_state_change state_change;
     if (!cryptonote::get_master_node_state_change_from_tx_extra(tx.extra, state_change, hf_version))
     {
@@ -670,7 +674,7 @@ namespace master_nodes
         else
           LOG_PRINT_L1("Deregistration for master node: " << key);
 
-        if (hf_version >= cryptonote::network_version_11_infinite_staking)
+        if (hf_version >= hf::hf11_infinite_staking)
         {
           for (const auto &contributor : info.contributors)
           {
@@ -689,7 +693,7 @@ namespace master_nodes
         return true;
 
       case new_state::decommission:
-        if (hf_version < cryptonote::network_version_13_checkpointing) {
+        if (hf_version < hf::hf13_checkpointing) {
           MERROR("Invalid decommission transaction seen before network v12");
           return false;
         }
@@ -710,7 +714,7 @@ namespace master_nodes
         info.last_decommission_reason_consensus_any = state_change.reason_consensus_any;
         info.decommission_count++;
 
-        if (hf_version >= cryptonote::network_version_14_enforce_checkpoints) {
+        if (hf_version >= hf::hf15_flash) {
           // Assigning invalid swarm id effectively kicks the node off
           // its current swarm; it will be assigned a new swarm id when it
           // gets recommissioned. Prior to HF13 this step was incorrectly
@@ -727,7 +731,7 @@ namespace master_nodes
         return true;
 
       case new_state::recommission: {
-        if (hf_version < cryptonote::network_version_13_checkpointing) {
+        if (hf_version < hf::hf13_checkpointing) {
           MERROR("Invalid recommission transaction seen before network v12");
           return false;
         }
@@ -772,7 +776,7 @@ namespace master_nodes
         return true;
       }
       case new_state::ip_change_penalty:
-        if (hf_version < cryptonote::network_version_13_checkpointing) {
+        if (hf_version < hf::hf13_checkpointing) {
           MERROR("Invalid ip_change_penalty transaction seen before network v12");
           return false;
         }
@@ -801,7 +805,7 @@ namespace master_nodes
     }
   }
 
-  bool master_node_list::state_t::process_key_image_unlock_tx(cryptonote::network_type nettype, uint64_t block_height, const cryptonote::transaction &tx,uint8_t version)
+  bool master_node_list::state_t::process_key_image_unlock_tx(cryptonote::network_type nettype, uint64_t block_height, const cryptonote::transaction &tx,hf version)
   {
     crypto::public_key mnode_key;
     if (!cryptonote::get_master_node_pubkey_from_tx_extra(tx.extra, mnode_key))
@@ -839,9 +843,9 @@ namespace master_nodes
       if (cit != contributor.locked_contributions.end())
       {
         // NOTE(beldex): This should be checked in blockchain check_tx_inputs already
-        if(version >= cryptonote::network_version_18_bns)
+        if(version >= hf::hf18_bns)
         {
-          if (cit->amount < (master_nodes::SMALL_CONTRIBUTOR_THRESHOLD*COIN) && (block_height - node_info.registration_height) < master_nodes::SMALL_CONTRIBUTOR_UNLOCK_TIMER)
+          if (cit->amount < (master_nodes::SMALL_CONTRIBUTOR_THRESHOLD * beldex::COIN) && (block_height - node_info.registration_height) < master_nodes::SMALL_CONTRIBUTOR_UNLOCK_TIMER)
           {
             LOG_PRINT_L1("Unlock TX: small contributor trying to unlock node before "
                 << std::to_string(master_nodes::SMALL_CONTRIBUTOR_UNLOCK_TIMER)
@@ -875,7 +879,7 @@ namespace master_nodes
     return *it->second;
   }
 
-  bool is_registration_tx(cryptonote::network_type nettype, uint8_t hf_version, const cryptonote::transaction& tx, uint64_t block_timestamp, uint64_t block_height, uint32_t index, crypto::public_key& key, master_node_info& info)
+  bool is_registration_tx(cryptonote::network_type nettype, hf hf_version, const cryptonote::transaction& tx, uint64_t block_timestamp, uint64_t block_height, uint32_t index, crypto::public_key& key, master_node_info& info)
   {
     contributor_args_t contributor_args = {};
     crypto::public_key master_node_key;
@@ -917,7 +921,7 @@ namespace master_nodes
       return false;
     }
 
-    if (hf_version >= cryptonote::network_version_17_POS)
+    if (hf_version >= hf::hf17_POS)
     {
       // In HF16 we start enforcing three things that were always done but weren't actually enforced:
       // 1. the staked amount in the tx must be a single output.
@@ -954,10 +958,10 @@ namespace master_nodes
 
       // Don't need this check for HF16+ because the number of reserved spots is already checked in
       // the registration details, and we disallow a non-operator registration.
-      if (total_num_of_addr > MAX_NUMBER_OF_CONTRIBUTORS)
+      if (total_num_of_addr > beldex::MAX_NUMBER_OF_CONTRIBUTORS)
       {
         LOG_PRINT_L1("Register TX: Number of participants: " << total_num_of_addr <<
-                     " exceeded the max number of contributors: " << MAX_NUMBER_OF_CONTRIBUTORS <<
+                     " exceeded the max number of contributors: " << beldex::MAX_NUMBER_OF_CONTRIBUTORS <<
                      " on height: " << block_height <<
                      " for tx: " << cryptonote::get_transaction_hash(tx));
         return false;
@@ -978,7 +982,7 @@ namespace master_nodes
     info.swarm_id                      = UNASSIGNED_SWARM_ID;
     info.last_ip_change_height         = block_height;
 
-    if(hf_version >= cryptonote::network_version_18_bns)
+    if(hf_version >= hf::hf18_bns)
       info.recommission_credit           = DECOMMISSION_INITIAL_CREDIT_V18;
 
     for (size_t i = 0; i < contributor_args.addresses.size(); i++)
@@ -993,7 +997,7 @@ namespace master_nodes
 
       uint64_t hi, lo, resulthi, resultlo;
       lo = mul128(info.staking_requirement, contributor_args.portions[i], &hi);
-      div128_64(hi, lo, STAKING_PORTIONS, &resulthi, &resultlo);
+      div128_64(hi, lo, cryptonote::old::STAKING_PORTIONS, &resulthi, &resultlo);
 
       info.contributors.emplace_back();
       auto &contributor = info.contributors.back();
@@ -1005,7 +1009,7 @@ namespace master_nodes
     // In HF16 we require that the amount staked in the registration tx be at least the amount
     // reserved for the operator.  Before HF16 it only had to be >= 25%, even if the operator
     // reserved amount was higher (though wallets would never actually do this).
-    if (hf_version >= cryptonote::network_version_17_POS && stake.transferred < info.contributors[0].reserved)
+    if (hf_version >= hf::hf17_POS && stake.transferred < info.contributors[0].reserved)
     {
       LOG_PRINT_L1("Register TX rejected: TX does not have sufficient operator stake");
       return false;
@@ -1016,7 +1020,7 @@ namespace master_nodes
 
   bool master_node_list::state_t::process_registration_tx(cryptonote::network_type nettype, const cryptonote::block &block, const cryptonote::transaction& tx, uint32_t index, const master_node_keys *my_keys)
   {
-    uint8_t const hf_version       = block.major_version;
+    const auto hf_version          = block.major_version;
     uint64_t const block_timestamp = block.timestamp;
     uint64_t const block_height    = cryptonote::get_block_height(block);
 
@@ -1026,7 +1030,7 @@ namespace master_nodes
     if (!is_registration_tx(nettype, hf_version, tx, block_timestamp, block_height, index, key, info))
       return false;
 
-    if (hf_version >= cryptonote::network_version_11_infinite_staking)
+    if (hf_version >= hf::hf11_infinite_staking)
     {
       // NOTE(beldex): Grace period is not used anymore with infinite staking. So, if someone somehow reregisters, we just ignore it
       const auto iter = master_nodes_infos.find(key);
@@ -1053,7 +1057,7 @@ namespace master_nodes
       const auto iter = master_nodes_infos.find(key);
       if (iter != master_nodes_infos.end())
       {
-        if (hf_version >= cryptonote::network_version_10_bulletproofs)
+        if (hf_version >= hf::hf10_bulletproofs)
         {
           master_node_info const &old_info = *iter->second;
           uint64_t expiry_height = old_info.registration_height + staking_num_lock_blocks(nettype,hf_version);
@@ -1095,7 +1099,7 @@ namespace master_nodes
   bool master_node_list::state_t::process_contribution_tx(cryptonote::network_type nettype, const cryptonote::block &block, const cryptonote::transaction& tx, uint32_t index)
   {
     uint64_t const block_height = cryptonote::get_block_height(block);
-    uint8_t const hf_version    = block.major_version;
+    const auto hf_version       = block.major_version;
 
     staking_components stake = {};
     if (!tx_get_staking_components_and_amounts(nettype, hf_version, tx, block_height, &stake))
@@ -1151,7 +1155,7 @@ namespace master_nodes
         other_reservations++;
     }
 
-    if (hf_version >= cryptonote::network_version_17_POS && stake.locked_contributions.size() != 1)
+    if (hf_version >= hf::hf17_POS && stake.locked_contributions.size() != 1)
     {
       // Nothing has ever created stake txes with multiple stake outputs, but we start enforcing
       // that in HF16.
@@ -1162,20 +1166,20 @@ namespace master_nodes
     // Check node contributor counts
     {
       bool too_many_contributions = false;
-      if (hf_version >= cryptonote::network_version_17_POS)
+      if (hf_version >= hf::hf17_POS)
         // Before HF16 we didn't properly take into account unfilled reservation spots
-        too_many_contributions = existing_contributions + other_reservations + 1 > MAX_NUMBER_OF_CONTRIBUTORS;
-      else if (hf_version >= cryptonote::network_version_11_infinite_staking)
+        too_many_contributions = existing_contributions + other_reservations + 1 > beldex::MAX_NUMBER_OF_CONTRIBUTORS;
+      else if (hf_version >= hf::hf11_infinite_staking)
         // As of HF11 we allow up to 4 stakes total (except for the loophole closed above)
-        too_many_contributions = existing_contributions + stake.locked_contributions.size() > MAX_NUMBER_OF_CONTRIBUTORS;
+        too_many_contributions = existing_contributions + stake.locked_contributions.size() > beldex::MAX_NUMBER_OF_CONTRIBUTORS;
       else
         // Before HF11 we allowed up to 4 contributors, but each can contribute multiple times
-        too_many_contributions = new_contributor && contributors.size() >= MAX_NUMBER_OF_CONTRIBUTORS;
+        too_many_contributions = new_contributor && contributors.size() >= beldex::MAX_NUMBER_OF_CONTRIBUTORS;
 
       if (too_many_contributions)
       {
         LOG_PRINT_L1("TX: Already hit the max number of contributions: "
-                     << MAX_NUMBER_OF_CONTRIBUTORS
+                     << beldex::MAX_NUMBER_OF_CONTRIBUTORS
                      << " for contributor: " << cryptonote::get_account_address_as_str(nettype, false, stake.address)
                      << " on height: " << block_height << " for tx: " << cryptonote::get_transaction_hash(tx));
         return false;
@@ -1184,11 +1188,11 @@ namespace master_nodes
 
     // Check that the contribution is large enough
     uint64_t min_contribution;
-    if (!new_contributor && hf_version < cryptonote::network_version_11_infinite_staking)
+    if (!new_contributor && hf_version < hf::hf11_infinite_staking)
     { // Follow-up contributions from an existing contributor could be any size before HF11
       min_contribution = 1;
     }
-    else if (hf_version < cryptonote::network_version_17_POS)
+    else if (hf_version < hf::hf17_POS)
     {
       // The implementation before HF16 was a bit broken w.r.t. properly handling reserved amounts
       min_contribution = get_min_node_contribution(hf_version, curinfo.staking_requirement, curinfo.total_reserved, existing_contributions);
@@ -1249,7 +1253,7 @@ namespace master_nodes
     info.last_reward_block_height = block_height;
     info.last_reward_transaction_index = index;
 
-    if (hf_version >= cryptonote::network_version_11_infinite_staking)
+    if (hf_version >= hf::hf11_infinite_staking)
       for (const auto &contribution : stake.locked_contributions)
         contributor.locked_contributions.push_back(contribution);
 
@@ -1342,7 +1346,7 @@ namespace master_nodes
 
       // TODO(doyle): Core tests need to generate coherent timestamps with
       // POS. So we relax the rules here for now.
-      if (nettype != cryptonote::FAKECHAIN)
+      if (nettype != cryptonote::network_type::FAKECHAIN)
       {
         auto round_begin_timestamp = timings.r0_timestamp + (block.POS.round * POS_ROUND_TIME);
         auto round_end_timestamp   = round_begin_timestamp + POS_ROUND_TIME;
@@ -1476,7 +1480,7 @@ namespace master_nodes
 
   void master_node_list::verify_block(const cryptonote::block &block, bool alt_block, cryptonote::checkpoint_t const *checkpoint)
   {
-    if (block.major_version < cryptonote::network_version_9_master_nodes)
+    if (block.major_version < hf::hf9_master_nodes)
       return;
 
     std::string_view block_type = alt_block ? "alt block "sv : "block "sv;
@@ -1484,7 +1488,7 @@ namespace master_nodes
     //
     // NOTE: Verify the checkpoint given on this height that locks in a block in the past.
     //
-    if (block.major_version >= cryptonote::network_version_14_enforce_checkpoints && checkpoint)
+    if (block.major_version >= hf::hf15_flash && checkpoint)
     {
       std::vector<std::shared_ptr<const master_nodes::quorum>> alt_quorums;
       std::shared_ptr<const quorum> quorum = get_quorum(quorum_type::checkpointing, checkpoint->height, false, alt_block ? &alt_quorums : nullptr);
@@ -1516,7 +1520,7 @@ namespace master_nodes
     //
     POS::timings timings = {};
     uint64_t height        = cryptonote::get_block_height(block);
-    if (block.major_version >= cryptonote::network_version_17_POS)
+    if (block.major_version >= hf::hf17_POS)
     {
       uint64_t prev_timestamp = 0;
       if (alt_block)
@@ -1546,8 +1550,8 @@ namespace master_nodes
     //
     std::shared_ptr<const quorum>              POS_quorum;
     std::vector<std::shared_ptr<const quorum>> alt_POS_quorums;
-    bool POS_hf = block.major_version >= cryptonote::network_version_17_POS;
-
+    bool POS_hf = block.major_version >= hf::hf17_POS;
+    
     if (POS_hf)
     {
       POS_quorum = get_quorum(quorum_type::POS,
@@ -1556,7 +1560,7 @@ namespace master_nodes
                                 alt_block ? &alt_POS_quorums : nullptr);
     }
 
-    if (m_blockchain.nettype() != cryptonote::FAKECHAIN)
+    if (m_blockchain.nettype() != cryptonote::network_type::FAKECHAIN)
     {
       // TODO(doyle): Core tests don't generate proper timestamps for detecting
       // timeout yet. So we don't do a timeout check and assume all blocks
@@ -1585,6 +1589,7 @@ namespace master_nodes
       // NOTE: No POS quorums are generated when the network has insufficient nodes to generate quorums
       //       Or, block specifies time after all the rounds have timed out
       bool miner_block = !POS_hf || !POS_quorum;
+      // std::cout << "miner_block : " << miner_block << std::endl;
 
       result = verify_block_components(m_blockchain.nettype(),
                                        block,
@@ -1602,7 +1607,7 @@ namespace master_nodes
 
   void master_node_list::block_add(const cryptonote::block& block, const std::vector<cryptonote::transaction>& txs, cryptonote::checkpoint_t const *checkpoint)
   {
-    if (block.major_version < cryptonote::network_version_9_master_nodes)
+    if (block.major_version < hf::hf9_master_nodes)
       return;
 
     std::lock_guard lock(m_mn_mutex);
@@ -1617,8 +1622,8 @@ namespace master_nodes
       bool newest_block           = m_blockchain.get_current_blockchain_height() == (block_height + 1);
 
       auto now                    = POS::clock::now().time_since_epoch();
-      auto earliest_time          = std::chrono::seconds(block.timestamp) - (block.major_version>=cryptonote::network_version_17_POS?TARGET_BLOCK_TIME:TARGET_BLOCK_TIME_OLD);
-      auto latest_time            = std::chrono::seconds(block.timestamp) + (block.major_version>=cryptonote::network_version_17_POS?TARGET_BLOCK_TIME:TARGET_BLOCK_TIME_OLD);
+      auto earliest_time          = std::chrono::seconds(block.timestamp) - (block.major_version >= hf::hf17_POS ? cryptonote::TARGET_BLOCK_TIME : cryptonote::old::TARGET_BLOCK_TIME_12);
+      auto latest_time            = std::chrono::seconds(block.timestamp) + (block.major_version >= hf::hf17_POS ? cryptonote::TARGET_BLOCK_TIME : cryptonote::old::TARGET_BLOCK_TIME_12);
 
       if (newest_block && (now >= earliest_time && now <= latest_time))
       {
@@ -1638,14 +1643,14 @@ namespace master_nodes
     }
   }
 
-  static std::mt19937_64 quorum_rng(uint8_t hf_version, crypto::hash const &hash, quorum_type type)
+  static std::mt19937_64 quorum_rng(hf hf_version, crypto::hash const &hash, quorum_type type)
   {
     std::mt19937_64 result;
-    if (hf_version >= cryptonote::network_version_17_POS)
+    if (hf_version >= hf::hf17_POS)
     {
       std::array<uint32_t, (sizeof(hash) / sizeof(uint32_t)) + 1> src = {static_cast<uint32_t>(type)};
       std::memcpy(&src[1], &hash, sizeof(hash));
-      for (uint32_t &val : src) boost::endian::little_to_native_inplace(val);
+      for (uint32_t &val : src) oxenc::little_to_host_inplace(val);
       std::seed_seq sequence(src.begin(), src.end());
       result.seed(sequence);
     }
@@ -1653,7 +1658,7 @@ namespace master_nodes
     {
       uint64_t seed = 0;
       std::memcpy(&seed, hash.data, sizeof(seed));
-      boost::endian::little_to_native_inplace(seed);
+      oxenc::little_to_host_inplace(seed);
       seed += static_cast<uint64_t>(type);
       result.seed(seed);
     }
@@ -1662,7 +1667,7 @@ namespace master_nodes
   }
 
   static std::vector<size_t> generate_shuffled_master_node_index_list(
-      uint8_t hf_version,
+      hf hf_version,
       size_t list_size,
       crypto::hash const &block_hash,
       quorum_type type,
@@ -1710,7 +1715,7 @@ namespace master_nodes
     {
       cryptonote::block const &block = *it;
       crypto::hash hash              = {};
-      if (block.major_version >= cryptonote::network_version_17_POS &&
+      if (block.major_version >= hf::hf17_POS &&
           cryptonote::block_has_POS_components(block))
       {
         std::array<uint8_t, 1 + sizeof(block.POS.random_value)> src = {POS_round};
@@ -1795,7 +1800,7 @@ namespace master_nodes
 
   master_nodes::quorum generate_POS_quorum(cryptonote::network_type nettype,
                                               crypto::public_key const &block_leader,
-                                              uint8_t hf_version,
+                                              hf hf_version,
                                               std::vector<pubkey_and_mninfo> const &active_mnode_list,
                                               std::vector<crypto::hash> const &POS_entropy,
                                               uint8_t POS_round)
@@ -1874,7 +1879,7 @@ namespace master_nodes
     return result;
   }
 
-  static void generate_other_quorums(master_node_list::state_t &state, std::vector<pubkey_and_mninfo> const &active_mnode_list, cryptonote::network_type nettype, uint8_t hf_version)
+  static void generate_other_quorums(master_node_list::state_t &state, std::vector<pubkey_and_mninfo> const &active_mnode_list, cryptonote::network_type nettype, hf hf_version)
   {
     assert(state.block_hash != crypto::null_hash);
 
@@ -1883,7 +1888,7 @@ namespace master_nodes
     // (i.e. the nodes to be tested) also include decommissioned master nodes.  (Prior to v12 there
     // are no decommissioned nodes, so this distinction is irrelevant for network concensus).
     std::vector<pubkey_and_mninfo> decomm_mnode_list;
-    if (hf_version >= cryptonote::network_version_13_checkpointing)
+    if (hf_version >= hf::hf13_checkpointing)
       decomm_mnode_list = state.decommissioned_master_nodes_infos();
 
     quorum_type const max_quorum_type = max_quorum_type_for_hf(hf_version);
@@ -1921,7 +1926,7 @@ namespace master_nodes
           size_t total_nodes = active_mnode_list.size();
 
           // TODO(beldex): Soft fork, remove when testnet gets reset
-          if (nettype == cryptonote::TESTNET && state.height < 85357)
+          if (nettype == cryptonote::network_type::TESTNET && state.height < 85357)
             total_nodes = active_mnode_list.size() + decomm_mnode_list.size();
 
           if (total_nodes >= CHECKPOINT_QUORUM_SIZE)
@@ -2004,7 +2009,7 @@ namespace master_nodes
     assert(height == block_height);
     quorums                  = {};
     block_hash               = cryptonote::get_block_hash(block);
-    uint8_t const hf_version = block.major_version;
+    const auto hf_version = block.major_version;
 
     //
     // Generate POS Quorum before any MN changes are applied to the list because,
@@ -2013,7 +2018,7 @@ namespace master_nodes
     //   i.e. before any deregistrations, registrations, decommissions, recommissions.
     //
     crypto::public_key winner_pubkey = cryptonote::get_master_node_winner_from_tx_extra(block.miner_tx.extra);
-    if (hf_version >= cryptonote::network_version_17_POS)
+    if (hf_version >= hf::hf17_POS)
     {
       std::vector<crypto::hash> entropy = get_POS_entropy_for_next_block(db, block.prev_id, block.POS.round);
       quorum POS_quorum = generate_POS_quorum(nettype, winner_pubkey, hf_version, active_master_nodes_infos(), entropy, block.POS.round);
@@ -2036,7 +2041,7 @@ namespace master_nodes
     //
     // Remove expired blacklisted key images
     //
-    if (hf_version >= cryptonote::network_version_11_infinite_staking)
+    if (hf_version >= hf::hf11_infinite_staking)
     {
       for (auto entry = key_image_blacklist.begin(); entry != key_image_blacklist.end();)
       {
@@ -2132,9 +2137,9 @@ namespace master_nodes
   void master_node_list::process_block(const cryptonote::block& block, const std::vector<cryptonote::transaction>& txs)
   {
     uint64_t block_height = cryptonote::get_block_height(block);
-    uint8_t hf_version    = block.major_version;
+    auto hf_version       = block.major_version;
 
-    if (hf_version < cryptonote::network_version_9_master_nodes)
+    if (hf_version < hf::hf9_master_nodes)
       return;
 
     // Cull old history
@@ -2226,7 +2231,7 @@ namespace master_nodes
 
   std::vector<crypto::public_key> master_node_list::state_t::get_expired_nodes(cryptonote::BlockchainDB const &db,
                                                                                cryptonote::network_type nettype,
-                                                                               uint8_t hf_version,
+                                                                               cryptonote::hf hf_version,
                                                                                uint64_t block_height) const
   {
     std::vector<crypto::public_key> expired_nodes;
@@ -2234,7 +2239,7 @@ namespace master_nodes
 
     // TODO(beldex): This should really use the registration height instead of getting the block and expiring nodes.
     // But there's something subtly off when using registration height causing syncing problems.
-    if (hf_version == cryptonote::network_version_9_master_nodes)
+    if (hf_version == hf::hf9_master_nodes)
     {
       if (block_height <= lock_blocks)
         return expired_nodes;
@@ -2251,7 +2256,7 @@ namespace master_nodes
         return expired_nodes;
       }
 
-      if (block.major_version < cryptonote::network_version_9_master_nodes)
+      if (block.major_version < hf::hf9_master_nodes)
         return expired_nodes;
 
       for (crypto::hash const &hash : block.tx_hashes)
@@ -2266,7 +2271,7 @@ namespace master_nodes
         uint32_t index = 0;
         crypto::public_key key;
         master_node_info info = {};
-        if (is_registration_tx(nettype, cryptonote::network_version_9_master_nodes, tx, block.timestamp, expired_nodes_block_height, index, key, info))
+        if (is_registration_tx(nettype, hf::hf9_master_nodes, tx, block.timestamp, expired_nodes_block_height, index, key, info))
           expired_nodes.push_back(key);
         index++;
       }
@@ -2278,7 +2283,7 @@ namespace master_nodes
       {
         crypto::public_key const &mnode_key = it->first;
         const master_node_info &info       = *it->second;
-        if (info.registration_hf_version >= cryptonote::network_version_11_infinite_staking)
+        if (info.registration_hf_version >= hf::hf11_infinite_staking)
         {
           if (info.requested_unlock_height != KEY_IMAGE_AWAITING_UNLOCK_HEIGHT && block_height > info.requested_unlock_height)
             expired_nodes.push_back(mnode_key);
@@ -2289,7 +2294,7 @@ namespace master_nodes
           /// registered in hardfork 9 and was scheduled for deregistration in hardfork 10
           /// will have its life is slightly prolonged by the "grace period", although it might
           /// look like we use the registration height to determine the expiry height.
-          uint64_t node_expiry_height = info.registration_height + lock_blocks + STAKING_REQUIREMENT_LOCK_BLOCKS_EXCESS;
+          uint64_t node_expiry_height = info.registration_height + lock_blocks + cryptonote::old::STAKING_REQUIREMENT_LOCK_BLOCKS_EXCESS;
           if (block_height > node_expiry_height)
             expired_nodes.push_back(mnode_key);
         }
@@ -2381,8 +2386,8 @@ namespace master_nodes
   {
     const auto& block = info.block;
     const auto& reward_parts = info.reward_parts;
-    uint8_t const hf_version = block.major_version;
-    if (hf_version < cryptonote::network_version_9_master_nodes)
+    const auto hf_version = block.major_version;
+    if (hf_version < hf::hf9_master_nodes)
       return;
 
     std::lock_guard lock(m_mn_mutex);
@@ -2481,7 +2486,7 @@ namespace master_nodes
       throw std::runtime_error{fmt::format("Expected {} block, the miner TX specifies a different amount of outputs vs the expected: {}, miner tx outputs: {}",type ,expected_vouts_size , miner_tx.vout.size())};
     }
 
-    if (hf_version >= cryptonote::network_version_17_POS)
+    if (hf_version >= hf::hf17_POS)
     {
       if (reward_parts.base_miner != 0)
       {
@@ -2503,7 +2508,7 @@ namespace master_nodes
 
         std::vector<uint64_t> split_rewards = cryptonote::distribute_reward_by_portions(block_leader.payouts,
                                                                                         reward_parts.master_node_total,
-                                                                                        hf_version >= cryptonote::network_version_17_POS /*distribute_remainder*/);
+                                                                                        hf_version >= hf::hf17_POS /*distribute_remainder*/);
 
         for (size_t i = 0; i < block_leader.payouts.size(); i++)
         {
@@ -2579,7 +2584,7 @@ namespace master_nodes
     // store into the alt-chain until it gathers enough blocks to cause
     // a reorganization (more checkpoints/PoW than the main chain).
     auto& block = info.block;
-    if (block.major_version < cryptonote::network_version_9_master_nodes)
+    if (block.major_version < hf::hf9_master_nodes)
       return;
 
     uint64_t block_height         = cryptonote::get_block_height(block);
@@ -2628,7 +2633,7 @@ namespace master_nodes
 
   //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-  static master_node_list::quorum_for_serialization serialize_quorum_state(uint8_t hf_version, uint64_t height, quorum_manager const &quorums)
+  static master_node_list::quorum_for_serialization serialize_quorum_state(hf hf_version, uint64_t height, quorum_manager const &quorums)
   {
     master_node_list::quorum_for_serialization result = {};
     result.height                                      = height;
@@ -2637,7 +2642,7 @@ namespace master_nodes
     return result;
   }
 
-  static master_node_list::state_serialized serialize_master_node_state_object(uint8_t hf_version, master_node_list::state_t const &state, bool only_serialize_quorums = false)
+  static master_node_list::state_serialized serialize_master_node_state_object(hf hf_version, master_node_list::state_t const &state, bool only_serialize_quorums = false)
   {
     master_node_list::state_serialized result = {};
     result.version                             = master_node_list::state_serialized::get_version(hf_version);
@@ -2662,8 +2667,8 @@ namespace master_nodes
     if (!m_blockchain.has_db())
         return false; // Haven't been initialized yet
 
-    uint8_t hf_version = m_blockchain.get_network_version();
-    if (hf_version < cryptonote::network_version_9_master_nodes)
+    auto hf_version = m_blockchain.get_network_version();
+    if (hf_version < hf::hf9_master_nodes)
       return true;
 
     data_for_serialization *data[] = {&m_transient.cache_long_term_data, &m_transient.cache_short_term_data};
@@ -2903,8 +2908,8 @@ namespace master_nodes
   bool master_node_list::handle_uptime_proof(cryptonote::NOTIFY_UPTIME_PROOF::request const &proof, bool &my_uptime_proof_confirmation, crypto::x25519_public_key &x25519_pkey)
   {
     auto vers = get_network_version_revision(m_blockchain.nettype(), m_blockchain.get_current_blockchain_height());
-    if (vers >= std::pair<uint8_t, uint8_t>{cryptonote::network_version_17_POS, 1})
-      REJECT_PROOF("Old format (non-bt) proofs are not acceptable from v18+1 onwards");
+    if (vers >= std::make_pair(hf::hf17_POS, uint8_t{1}))
+      REJECT_PROOF("Old format (non-bt) proofs are not acceptable from v17+1 onwards");
 
     auto& netconf = get_config(m_blockchain.nettype());
     auto now = std::chrono::system_clock::now();
@@ -2916,7 +2921,7 @@ namespace master_nodes
 
     for (auto const &min : MIN_UPTIME_PROOF_VERSIONS)
       if (vers >= min.hardfork_revision && proof.mnode_version < min.beldexd)
-        REJECT_PROOF("v" << tools::join(".", min.beldexd) << "+ beldexd version is required for v" << +vers.first << "." << +vers.second << "+ network proofs");
+        REJECT_PROOF("v" << tools::join(".", min.beldexd) << "+ beldexd version is required for v" << static_cast<int>(vers.first) << "." << +vers.second << "+ network proofs");
 
     if (!debug_allow_local_ips && !epee::net_utils::is_ip_public(proof.public_ip))
       REJECT_PROOF("public_ip is not actually public");
@@ -3010,11 +3015,11 @@ namespace master_nodes
     for (auto const &min : MIN_UPTIME_PROOF_VERSIONS) {
       if (vers >= min.hardfork_revision) {
         if (proof->version < min.beldexd)
-          REJECT_PROOF("v" << tools::join(".", min.beldexd) << "+ beldexd version is required for v" << +vers.first << "." << +vers.second << "+ network proofs");
+          REJECT_PROOF("v" << tools::join(".", min.beldexd) << "+ beldexd version is required for v" << static_cast<int>(vers.first) << "." << +vers.second << "+ network proofs");
         if (proof->belnet_version < min.belnet)
-          REJECT_PROOF("v" << tools::join(".", min.belnet) << "+ belnet version is required for v" << +vers.first << "." << +vers.second << "+ network proofs");
+          REJECT_PROOF("v" << tools::join(".", min.belnet) << "+ belnet version is required for v" << static_cast<int>(vers.first) << "." << +vers.second << "+ network proofs");
         if (proof->storage_server_version < min.storage_server)
-          REJECT_PROOF("v" << tools::join(".", min.storage_server) << "+ storage server version is required for v" << +vers.first << "." << +vers.second << "+ network proofs");
+          REJECT_PROOF("v" << tools::join(".", min.storage_server) << "+ storage server version is required for v" << static_cast<int>(vers.first) << "." << +vers.second << "+ network proofs");
       }
     }
 
@@ -3185,63 +3190,35 @@ namespace master_nodes
   void master_node_list::record_checkpoint_participation(crypto::public_key const &pubkey, uint64_t height, bool participated)
   {
     std::lock_guard lock(m_mn_mutex);
-    if (!m_state.master_nodes_infos.count(pubkey))
-      return;
-
-    participation_entry entry  = {};
-    entry.height               = height;
-    entry.voted                = participated;
-
-    auto &info = proofs[pubkey];
-    info.checkpoint_participation.add(entry);
+    if (m_state.master_nodes_infos.count(pubkey))
+      proofs[pubkey].checkpoint_participation.add({height, participated});
   }
 
   void master_node_list::record_POS_participation(crypto::public_key const &pubkey, uint64_t height, uint8_t round, bool participated)
   {
     std::lock_guard lock(m_mn_mutex);
-    if (!m_state.master_nodes_infos.count(pubkey))
-      return;
-
-    participation_entry entry  = {};
-    entry.is_POS             = true;
-    entry.height               = height;
-    entry.voted                = participated;
-    entry.POS.round          = round;
-
-    auto &info = proofs[pubkey];
-    info.POS_participation.add(entry);
+    if (m_state.master_nodes_infos.count(pubkey))
+      proofs[pubkey].POS_participation.add({height, round, participated});
   }
 
   void master_node_list::record_timestamp_participation(crypto::public_key const &pubkey, bool participated)
   {
     std::lock_guard lock(m_mn_mutex);
-    if (!m_state.master_nodes_infos.count(pubkey))
-      return;
-
-    timestamp_participation_entry entry  = {};
-    entry.participated                = participated;
-
-    auto &info = proofs[pubkey];
-    info.timestamp_participation.add(entry);
+    if (m_state.master_nodes_infos.count(pubkey))
+      proofs[pubkey].timestamp_participation.add({participated});
   }
 
   void master_node_list::record_timesync_status(crypto::public_key const &pubkey, bool synced)
   {
     std::lock_guard lock(m_mn_mutex);
-    if (!m_state.master_nodes_infos.count(pubkey))
-      return;
-
-    timesync_entry entry  = {};
-    entry.in_sync                = synced;
-
-    auto &info = proofs[pubkey];
-    info.timesync_status.add(entry);
+    if (m_state.master_nodes_infos.count(pubkey))
+      proofs[pubkey].timesync_status.add({synced});
   }
 
   std::optional<bool> proof_info::reachable_stats::reachable(const std::chrono::steady_clock::time_point& now) const {
     if (last_reachable >= last_unreachable)
       return true;
-    if (last_unreachable > now - config::REACHABLE_MAX_FAILURE_VALIDITY)
+    if (last_unreachable > now - cryptonote::config::REACHABLE_MAX_FAILURE_VALIDITY)
       return false;
     // Last result was a failure, but it was a while ago, so we don't know for sure that it isn't
     // reachable now:
@@ -3557,7 +3534,7 @@ namespace master_nodes
       m_blockchain.get_db().clear_master_node_data();
     }
 
-    m_state.height = hard_fork_begins(m_blockchain.nettype(), cryptonote::network_version_9_master_nodes).value_or(1) - 1;
+    m_state.height = hard_fork_begins(m_blockchain.nettype(), hf::hf9_master_nodes).value_or(1) - 1;
   }
 
   size_t master_node_info::total_num_locked_contributions() const
@@ -3571,7 +3548,7 @@ namespace master_nodes
   contributor_args_t convert_registration_args(cryptonote::network_type nettype,
                                                const std::vector<std::string> &args,
                                                uint64_t staking_requirement,
-                                               uint8_t hf_version)
+                                               hf hf_version)
   {
     contributor_args_t result = {};
     if (args.size() % 2 == 0 || args.size() < 3)
@@ -3580,24 +3557,24 @@ namespace master_nodes
       return result;
     }
 
-    if ((args.size()-1)/ 2 > MAX_NUMBER_OF_CONTRIBUTORS)
+    if ((args.size()-1)/ 2 > beldex::MAX_NUMBER_OF_CONTRIBUTORS)
     {
-      result.err_msg = tr("Exceeds the maximum number of contributors, which is ") + std::to_string(MAX_NUMBER_OF_CONTRIBUTORS);
+      result.err_msg = tr("Exceeds the maximum number of contributors, which is ") + std::to_string(beldex::MAX_NUMBER_OF_CONTRIBUTORS);
       return result;
     }
 
     try
     {
       result.portions_for_operator = boost::lexical_cast<uint64_t>(args[0]);
-      if (result.portions_for_operator > STAKING_PORTIONS)
+      if (result.portions_for_operator > cryptonote::old::STAKING_PORTIONS)
       {
-        result.err_msg = tr("Invalid portion amount: ") + args[0] + tr(". Must be between 0 and ") + std::to_string(STAKING_PORTIONS);
+        result.err_msg = tr("Invalid portion amount: ") + args[0] + tr(". Must be between 0 and ") + std::to_string(cryptonote::old::STAKING_PORTIONS);
         return result;
       }
     }
     catch (const std::exception &e)
     {
-      result.err_msg = tr("Invalid portion amount: ") + args[0] + tr(". Must be between 0 and ") + std::to_string(STAKING_PORTIONS);
+      result.err_msg = tr("Invalid portion amount: ") + args[0] + tr(". Must be between 0 and ") + std::to_string(cryptonote::old::STAKING_PORTIONS);
       return result;
     }
 
@@ -3649,8 +3626,8 @@ namespace master_nodes
     // This is temporary code to redistribute the insufficient portion dust
     // amounts between contributors. It should be removed in HF12.
     //
-    std::array<uint64_t, MAX_NUMBER_OF_CONTRIBUTORS> excess_portions;
-    std::array<uint64_t, MAX_NUMBER_OF_CONTRIBUTORS> min_contributions;
+    std::array<uint64_t, beldex::MAX_NUMBER_OF_CONTRIBUTORS> excess_portions;
+    std::array<uint64_t, beldex::MAX_NUMBER_OF_CONTRIBUTORS> min_contributions;
     {
       // NOTE: Calculate excess portions from each contributor
       uint64_t beldex_reserved = 0;
@@ -3670,7 +3647,7 @@ namespace master_nodes
       }
     }
 
-    uint64_t portions_left  = STAKING_PORTIONS;
+    uint64_t portions_left  = cryptonote::old::STAKING_PORTIONS;
     uint64_t total_reserved = 0;
     for (size_t i = 0; i < addr_to_portions.size(); ++i)
     {
@@ -3684,7 +3661,7 @@ namespace master_nodes
           // the minimum by a dust amount.
           uint64_t needed             = min_portions - addr_to_portion.portions;
           const uint64_t FUDGE_FACTOR = 10;
-          const uint64_t DUST_UNIT    = (STAKING_PORTIONS / staking_requirement);
+          const uint64_t DUST_UNIT    = (cryptonote::old::STAKING_PORTIONS / staking_requirement);
           const uint64_t DUST         = DUST_UNIT * FUDGE_FACTOR;
           if (needed > DUST)
             continue;
@@ -3708,7 +3685,7 @@ namespace master_nodes
 
           // NOTE: Operator is sending in the minimum amount and it falls below
           // the minimum by dust, just increase the portions so it passes
-          if (needed > 0 && addr_to_portions.size() < MAX_NUMBER_OF_CONTRIBUTORS)
+          if (needed > 0 && addr_to_portions.size() < beldex::MAX_NUMBER_OF_CONTRIBUTORS)
             addr_to_portion.portions += needed;
       }
 
@@ -3720,7 +3697,7 @@ namespace master_nodes
 
       if (min_portions == UINT64_MAX)
       {
-        result.err_msg = tr("Too many contributors specified, you can only split a node with up to: ") + std::to_string(MAX_NUMBER_OF_CONTRIBUTORS) + tr(" people.");
+        result.err_msg = tr("Too many contributors specified, you can only split a node with up to: ") + std::to_string(beldex::MAX_NUMBER_OF_CONTRIBUTORS) + tr(" people.");
         return result;
       }
 
@@ -3737,7 +3714,7 @@ namespace master_nodes
   }
 
   bool make_registration_cmd(cryptonote::network_type nettype,
-      uint8_t hf_version,
+      hf hf_version,
       uint64_t staking_requirement,
       const std::vector<std::string>& args,
       const master_node_keys &keys,
@@ -3752,7 +3729,7 @@ namespace master_nodes
       return false;
     }
 
-    uint64_t exp_timestamp = time(nullptr) + STAKING_AUTHORIZATION_EXPIRATION_WINDOW;
+    uint64_t exp_timestamp = time(nullptr) + tools::to_seconds(cryptonote::old::STAKING_AUTHORIZATION_EXPIRATION_WINDOW);
 
     crypto::hash hash;
     bool hashed = cryptonote::get_registration_hash(contributor_args.addresses, contributor_args.portions_for_operator, contributor_args.portions, exp_timestamp, hash);
@@ -3766,9 +3743,11 @@ namespace master_nodes
     crypto::generate_signature(hash, keys.pub, keys.key, signature);
 
     std::stringstream stream;
-    if (make_friendly)
+    if (make_friendly)  //TODO have to fix
     {
-      stream << tr("Run this command in the wallet that will fund this registration:\n\n");
+      stream << tr("Run this command in the operator wallet") << " (" <<
+      cryptonote::get_account_address_as_str(nettype, false, contributor_args.addresses[0])
+      << "):\n\n";
     }
 
     stream << "register_master_node";
@@ -3782,14 +3761,8 @@ namespace master_nodes
     if (make_friendly)
     {
       stream << "\n\n";
-      time_t tt = exp_timestamp;
-
-      struct tm tm;
-      epee::misc_utils::get_gmt_time(tt, tm);
-
-      char buffer[128];
-      strftime(buffer, sizeof(buffer), "%Y-%m-%d %I:%M:%S %p UTC", &tm);
-      stream << tr("This registration expires at ") << buffer << tr(".\n");
+      auto exp = std::chrono::system_clock::from_time_t(exp_timestamp);
+      stream << tr("This registration expires at ") << date::format("%Y-%m-%d %I:%M:%S %p UTC", exp) << tr(".\n");
       stream << tr("This should be in about 2 weeks, if it isn't, check this computer's clock.\n");
       stream << tr("Please submit your registration into the blockchain before this time or it will be invalid.");
     }
@@ -3822,9 +3795,9 @@ namespace master_nodes
     return true;
   }
 
-  bool master_node_info::can_transition_to_state(uint8_t hf_version, uint64_t height, new_state proposed_state) const
+  bool master_node_info::can_transition_to_state(hf hf_version, uint64_t height, new_state proposed_state) const
   {
-    if (hf_version >= cryptonote::network_version_14_enforce_checkpoints) {
+    if (hf_version >= hf::hf15_flash) {
       if (!can_be_voted_on(height)) {
         MDEBUG("MN state transition invalid: " << height << " is not a valid vote height");
         return false;
@@ -3874,7 +3847,7 @@ namespace master_nodes
 
     // Add contributors and their portions to winners.
     result.payouts.reserve(info.contributors.size());
-    const uint64_t remaining_portions = STAKING_PORTIONS - info.portions_for_operator;
+    const uint64_t remaining_portions = cryptonote::old::STAKING_PORTIONS - info.portions_for_operator;
     for (const auto& contributor : info.contributors)
     {
       uint64_t hi, lo, resulthi, resultlo;

@@ -122,17 +122,17 @@ namespace master_nodes
     void blockchain_detached(uint64_t height, bool by_pop_blocks);
 
     void                       set_votes_relayed  (std::vector<quorum_vote_t> const &relayed_votes);
-    std::vector<quorum_vote_t> get_relayable_votes(uint64_t current_height, uint8_t hf_version, bool quorum_relay);
-    bool                       handle_vote        (quorum_vote_t const &vote, cryptonote::vote_verification_context &vvc,uint8_t hf_version);
+    std::vector<quorum_vote_t> get_relayable_votes(uint64_t current_height, cryptonote::hf hf_version, bool quorum_relay);
+    bool                       handle_vote        (quorum_vote_t const &vote, cryptonote::vote_verification_context &vvc, cryptonote::hf hf_version);
 
-    static int64_t calculate_decommission_credit(const master_node_info &info, uint64_t current_height,uint8_t hf_version);
+    static int64_t calculate_decommission_credit(const master_node_info &info, uint64_t current_height, cryptonote::hf hf_version);
 
   private:
     void process_quorums(cryptonote::block const &block);
-    void quorum_checkpoint_handle(uint64_t const start_voting_from_height_,uint64_t const height,uint8_t const hf_version);
-    void handling_master_nodes_states(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, uint8_t const obligations_height_hf_version_,uint8_t const hf_version,std::shared_ptr<const master_nodes::quorum> quorum,int index_in_group,uint64_t const latest_height);
-    void handling_my_master_node_states(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, uint8_t const obligations_height_hf_version,uint8_t const hf_version,bool &tested_myself_once_per_block,std::chrono::seconds live_time);
-    master_node_test_results check_master_node(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, uint8_t hf_version, const crypto::public_key &pubkey, const master_node_info &info) const;
+    void quorum_checkpoint_handle(uint64_t const start_voting_from_height_,uint64_t const height, cryptonote::hf hf_version);
+    void handling_master_nodes_states(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, const cryptonote::hf obligations_height_hf_version_, const cryptonote::hf hf_version, std::shared_ptr<const master_nodes::quorum> quorum, int index_in_group, uint64_t const latest_height);
+    void handling_my_master_node_states(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, const cryptonote::hf obligations_height_hf_version,const cryptonote::hf hf_version, bool &tested_myself_once_per_block, std::chrono::seconds live_time);
+    master_node_test_results check_master_node(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, cryptonote::hf hf_version, const crypto::public_key &pubkey, const master_node_info &info) const;
 
     cryptonote::core& m_core;
     voting_pool       m_vote_pool;

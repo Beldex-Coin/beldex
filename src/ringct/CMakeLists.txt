@@ -32,7 +32,8 @@ add_library(ringct_basic
   rctTypes.cpp
   rctCryptoOps.c
   multiexp.cc
-  bulletproofs.cc)
+  bulletproofs.cc
+  bulletproofs_plus.cc)
 
 target_link_libraries(ringct_basic
   PUBLIC

@@ -37,13 +37,14 @@
 #include "common/beldex.h"
 #include "common/util.h"
 #include "epee/net/local_ip.h"
-#include <boost/endian/conversion.hpp>
+#include <oxenc/endian.h>
 
 #include "common/beldex_integration_test_hooks.h"
 
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "quorum_cop"
 
+using cryptonote::hf;
 namespace master_nodes
 {
   std::optional<std::vector<std::string_view>> master_node_test_results::why() const
@@ -77,7 +78,7 @@ namespace master_nodes
 
   // Perform master node tests -- this returns true if the server node is in a good state, that is,
   // has submitted uptime proofs, participated in required quorums, etc.
-  master_node_test_results quorum_cop::check_master_node(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, uint8_t hf_version, const crypto::public_key &pubkey, const master_node_info &info) const
+  master_node_test_results quorum_cop::check_master_node(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, hf hf_version, const crypto::public_key &pubkey, const master_node_info &info) const
   {
     const auto& netconf = m_core.get_net_config();
 
@@ -86,8 +87,8 @@ namespace master_nodes
     uint64_t timestamp = 0;
     decltype(std::declval<proof_info>().public_ips) ips{};
 
-    master_nodes::participation_history<master_nodes::participation_entry> checkpoint_participation{};
-    master_nodes::participation_history<master_nodes::participation_entry> POS_participation{};
+    master_nodes::participation_history<master_nodes::checkpoint_participation_entry> checkpoint_participation{};
+    master_nodes::participation_history<master_nodes::POS_participation_entry> POS_participation{};
     master_nodes::participation_history<master_nodes::timestamp_participation_entry> timestamp_participation{};
     master_nodes::participation_history<master_nodes::timesync_entry> timesync_status{};
 
@@ -97,18 +98,17 @@ namespace master_nodes
 
     m_core.get_master_node_list().access_proof(pubkey, [&](const proof_info &proof) {
       ss_reachable             = !proof.ss_reachable.unreachable_for(unreachable_threshold);
-      belnet_reachable        = !proof.belnet_reachable.unreachable_for(unreachable_threshold);
+      belnet_reachable         = !proof.belnet_reachable.unreachable_for(unreachable_threshold);
       timestamp                = std::max(proof.timestamp, proof.effective_timestamp);
       ips                      = proof.public_ips;
       checkpoint_participation = proof.checkpoint_participation;
-      POS_participation      = proof.POS_participation;
-
+      POS_participation        = proof.POS_participation;
       timestamp_participation  = proof.timestamp_participation;
       timesync_status          = proof.timesync_status;
 
     });
 
-    if (hf_version >= cryptonote::network_version_19) {
+    if (hf_version >= hf::hf19_enhance_bns) {
 
       std::vector<std::pair<crypto::public_key, uint64_t>> multi_mns = multi_mns_list[ips[0].first];
 
@@ -155,7 +155,7 @@ namespace master_nodes
 
 
 
-    if (hf_version > cryptonote::network_version_12_security_signature) {
+    if (hf_version > hf::hf12_security_signature) {
 
         if (!ss_reachable)
         {
@@ -163,7 +163,7 @@ namespace master_nodes
             result.storage_server_reachable = false;
         }
         // TODO: perhaps come back and make this activate on some "soft fork" height before HF19?
-        if (!belnet_reachable && hf_version >= cryptonote::network_version_18_bns) {
+        if (!belnet_reachable && hf_version >= hf::hf18_bns) {
             LOG_PRINT_L1("Master Node belnet is not reachable for node: " << pubkey);
             result.belnet_reachable = false;
         }
@@ -185,22 +185,21 @@ namespace master_nodes
 
 
         if (!info.is_decommissioned()) {
-            if (check_checkpoint_obligation &&
-                !checkpoint_participation.check_participation(CHECKPOINT_MAX_MISSABLE_VOTES)) {
+            if (check_checkpoint_obligation && checkpoint_participation.failures() > CHECKPOINT_MAX_MISSABLE_VOTES) {
                 LOG_PRINT_L1("Master Node: " << pubkey << ", failed checkpoint obligation check");
                 result.checkpoint_participation = false;
             }
 
-            if (!POS_participation.check_participation(POS_MAX_MISSABLE_VOTES)) {
+            if (POS_participation.failures() > POS_MAX_MISSABLE_VOTES) {
                 LOG_PRINT_L1("Master Node: " << pubkey << ", failed pulse obligation check");
                 result.POS_participation = false;
             }
 
-            if (!timestamp_participation.check_participation(TIMESTAMP_MAX_MISSABLE_VOTES)) {
+            if (timestamp_participation.failures() > TIMESTAMP_MAX_MISSABLE_VOTES) {
                 LOG_PRINT_L1("Master Node: " << pubkey << ", failed timestamp obligation check");
                 result.timestamp_participation = false;
             }
-            if (!timesync_status.check_participation(TIMESYNC_MAX_UNSYNCED_VOTES)) {
+            if (timesync_status.failures() > TIMESYNC_MAX_UNSYNCED_VOTES) {
                 LOG_PRINT_L1("Master Node: " << pubkey << ", failed timesync obligation check");
                 result.timesync_status = false;
             }
@@ -213,8 +212,8 @@ namespace master_nodes
 
   void quorum_cop::blockchain_detached(uint64_t height, bool by_pop_blocks)
   {
-    uint8_t hf_version = get_network_version(m_core.get_nettype(), height);
-    uint64_t const REORG_SAFETY_BUFFER_BLOCKS = (hf_version >= cryptonote::network_version_13_checkpointing)
+    auto hf_version = get_network_version(m_core.get_nettype(), height);
+    uint64_t const REORG_SAFETY_BUFFER_BLOCKS = (hf_version >= hf::hf13_checkpointing)
                                                     ? REORG_SAFETY_BUFFER_BLOCKS_POST_HF12
                                                     : REORG_SAFETY_BUFFER_BLOCKS_PRE_HF12;
     if (m_obligations_height >= height)
@@ -236,7 +235,7 @@ namespace master_nodes
       m_last_checkpointed_height = height - (height % CHECKPOINT_INTERVAL);
     }
 
-    m_vote_pool.remove_expired_votes(height,hf_version);
+    m_vote_pool.remove_expired_votes(height);
   }
 
   void quorum_cop::set_votes_relayed(std::vector<quorum_vote_t> const &relayed_votes)
@@ -244,7 +243,7 @@ namespace master_nodes
     m_vote_pool.set_relayed(relayed_votes);
   }
 
-  std::vector<quorum_vote_t> quorum_cop::get_relayable_votes(uint64_t current_height, uint8_t hf_version, bool quorum_relay)
+  std::vector<quorum_vote_t> quorum_cop::get_relayable_votes(uint64_t current_height, hf hf_version, bool quorum_relay)
   {
     return m_vote_pool.get_relayable_votes(current_height, hf_version, quorum_relay);
   }
@@ -258,7 +257,7 @@ namespace master_nodes
     return result;
   }
 
-  void quorum_cop::handling_master_nodes_states(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, uint8_t const obligations_height_hf_version_,uint8_t const hf_version,std::shared_ptr<const master_nodes::quorum> quorum,int index_in_group,uint64_t const latest_height)
+  void quorum_cop::handling_master_nodes_states(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, const cryptonote::hf obligations_height_hf_version_, const cryptonote::hf hf_version,std::shared_ptr<const master_nodes::quorum> quorum,int index_in_group,uint64_t const latest_height)
   {
       //
       // NOTE: I am in the quorum
@@ -364,7 +363,7 @@ namespace master_nodes
       LOG_PRINT_L3(good << " of " << total << " master nodes are active and passing checks; no state change votes required");
   }
 
-  void quorum_cop::handling_my_master_node_states(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, uint8_t const obligations_height_hf_version,uint8_t const hf_version,bool &tested_myself_once_per_block,std::chrono::seconds live_time)
+  void quorum_cop::handling_my_master_node_states(std::map<uint32_t, std::vector<std::pair<crypto::public_key, uint64_t>>> multi_mns_list, const cryptonote::hf obligations_height_hf_version, const cryptonote::hf hf_version, bool &tested_myself_once_per_block, std::chrono::seconds live_time)
   {
     const auto& my_keys = m_core.get_master_keys();
     const auto states_array = m_core.get_master_node_list_state({my_keys.pub});
@@ -399,9 +398,9 @@ namespace master_nodes
     }
   }
 
-  void quorum_cop::quorum_checkpoint_handle(uint64_t const start_voting_from_height_,uint64_t const height,uint8_t const hf_version)
+  void quorum_cop::quorum_checkpoint_handle(uint64_t const start_voting_from_height_,uint64_t const height, const cryptonote::hf hf_version)
   {
-    uint64_t const REORG_SAFETY_BUFFER_BLOCKS = (hf_version >= cryptonote::network_version_13_checkpointing)
+    uint64_t const REORG_SAFETY_BUFFER_BLOCKS = (hf_version >= hf::hf13_checkpointing)
                                                     ? REORG_SAFETY_BUFFER_BLOCKS_POST_HF12
                                                     : REORG_SAFETY_BUFFER_BLOCKS_PRE_HF12;
     const auto& my_keys = m_core.get_master_keys();
@@ -412,11 +411,11 @@ namespace master_nodes
     m_last_checkpointed_height = std::max(start_checkpointing_height, m_last_checkpointed_height);
 
     for (;
-         m_last_checkpointed_height <= height;
+         m_last_checkpointed_height < height;
          m_last_checkpointed_height += CHECKPOINT_INTERVAL)
     {
-      uint8_t checkpointed_height_hf_version = get_network_version(m_core.get_nettype(), m_last_checkpointed_height);
-      if (checkpointed_height_hf_version <= cryptonote::network_version_11_infinite_staking)
+      auto checkpointed_height_hf_version = get_network_version(m_core.get_nettype(), m_last_checkpointed_height);
+      if (checkpointed_height_hf_version <= hf::hf11_infinite_staking)
           continue;
     
       if (m_last_checkpointed_height < REORG_SAFETY_BUFFER_BLOCKS)
@@ -446,8 +445,8 @@ namespace master_nodes
 
   void quorum_cop::process_quorums(cryptonote::block const &block)
   {
-    uint8_t const hf_version = block.major_version;
-    if (hf_version < cryptonote::network_version_9_master_nodes)
+    const auto hf_version = block.major_version;
+    if (hf_version < hf::hf9_master_nodes)
       return;
 
     auto mn_infos = m_core.get_master_node_list_state();
@@ -462,7 +461,7 @@ namespace master_nodes
     }
     const auto& netconf = m_core.get_net_config();
 
-    uint64_t const REORG_SAFETY_BUFFER_BLOCKS = (hf_version >= cryptonote::network_version_13_checkpointing)
+    uint64_t const REORG_SAFETY_BUFFER_BLOCKS = (hf_version >= hf::hf13_checkpointing)
                                                     ? REORG_SAFETY_BUFFER_BLOCKS_POST_HF12
                                                     : REORG_SAFETY_BUFFER_BLOCKS_PRE_HF12;
     const auto& my_keys = m_core.get_master_keys();
@@ -477,12 +476,12 @@ namespace master_nodes
     if (height < start_voting_from_height)
       return;
 
-    master_nodes::quorum_type const max_quorum_type = master_nodes::max_quorum_type_for_hf(hf_version);
+    const auto max_quorum_type = master_nodes::max_quorum_type_for_hf(hf_version);
     bool tested_myself_once_per_block                = false;
 
     time_t start_time = m_core.get_start_time();
     std::chrono::seconds live_time{time(nullptr) - start_time};
-    for (int i = 0; i <= (int)max_quorum_type; i++)
+    for (int i = 0; i <= static_cast<int>(max_quorum_type); i++)
     {
       quorum_type const type = static_cast<quorum_type>(i);
 
@@ -505,14 +504,14 @@ namespace master_nodes
           m_obligations_height = std::max(m_obligations_height, start_voting_from_height);
           for (; m_obligations_height < (height - REORG_SAFETY_BUFFER_BLOCKS); m_obligations_height++)
           {
-            uint8_t const obligations_height_hf_version = get_network_version(m_core.get_nettype(), m_obligations_height);
-            if (obligations_height_hf_version < cryptonote::network_version_9_master_nodes) continue;
+            const auto obligations_height_hf_version = get_network_version(m_core.get_nettype(), m_obligations_height);
+            if (obligations_height_hf_version < hf::hf9_master_nodes) continue;
 
             // NOTE: Count checkpoints for other nodes, irrespective of being
             // a master node or not for statistics. Also count checkpoints
             // before the minimum lifetime for same purposes, note, we still
             // don't vote for the first 2 hours so this is purely cosmetic
-            if (obligations_height_hf_version >= cryptonote::network_version_13_checkpointing)
+            if (obligations_height_hf_version >= hf::hf13_checkpointing)
             {
               master_nodes::master_node_list &node_list = m_core.get_master_node_list();
 
@@ -593,7 +592,7 @@ namespace master_nodes
   {
     process_quorums(block);
     uint64_t const height = cryptonote::get_block_height(block) + 1; // chain height = new top block height + 1
-    m_vote_pool.remove_expired_votes(height,block.major_version);
+    m_vote_pool.remove_expired_votes(height);
     m_vote_pool.remove_used_votes(txs, block.major_version);
 
   }
@@ -639,7 +638,7 @@ namespace master_nodes
     }
     using version_t = cryptonote::tx_extra_master_node_state_change::version_t;
     LOG_PRINT_L3("State not reachable A!?");
-    auto ver = net >= HF_VERSION_PROOF_BTENC ? version_t::v4_reasons : version_t::v0;
+    auto ver = net >= cryptonote::feature::PROOF_BTENC ? version_t::v4_reasons : version_t::v0;
 
     cryptonote::tx_extra_master_node_state_change state_change{
         ver,
@@ -713,7 +712,7 @@ namespace master_nodes
 
     std::unique_lock<cryptonote::Blockchain> lock{blockchain};
 
-    bool update_checkpoint;
+    bool update_checkpoint = false;
     if (blockchain.get_checkpoint(vote.block_height, checkpoint) &&
         checkpoint.block_hash == vote.checkpoint.block_hash)
     {
@@ -745,7 +744,7 @@ namespace master_nodes
         }
       }
     }
-    else
+    else if (vote.block_height < core.get_current_blockchain_height())  // Don't accept checkpoints for blocks we don't have yet
     {
       update_checkpoint = true;
       checkpoint = make_empty_master_node_checkpoint(vote.checkpoint.block_hash, vote.block_height);
@@ -760,10 +759,10 @@ namespace master_nodes
     return true;
   }
 
-  bool quorum_cop::handle_vote(quorum_vote_t const &vote, cryptonote::vote_verification_context &vvc,uint8_t hf_version)
+  bool quorum_cop::handle_vote(quorum_vote_t const &vote, cryptonote::vote_verification_context &vvc, hf hf_version)
   {
     vvc = {};
-    if (!verify_vote_age(vote, m_core.get_current_blockchain_height(), vvc,hf_version)) {
+    if (!verify_vote_age(vote, m_core.get_current_blockchain_height(), vvc, hf_version)) {
         LOG_PRINT_L1("failed verify_vote_age");
         return false;
     }
@@ -809,7 +808,7 @@ namespace master_nodes
 
   // Calculate the decommission credit for a master node.  If the MN is current decommissioned this
   // accumulated blocks.
-  int64_t quorum_cop::calculate_decommission_credit(const master_node_info &info, uint64_t current_height,uint8_t hf_version)
+  int64_t quorum_cop::calculate_decommission_credit(const master_node_info &info, uint64_t current_height, hf hf_version)
   {
     // If currently decommissioned, we need to know how long it was up before being decommissioned;
     // otherwise we need to know how long since it last become active until now (or 0 if not staked
@@ -826,7 +825,7 @@ namespace master_nodes
     int64_t credit = info.recommission_credit;
 
     if (blocks_up > 0) {
-      credit += blocks_up * DECOMMISSION_CREDIT_PER_DAY / BLOCKS_PER_DAY;
+      credit += blocks_up * DECOMMISSION_CREDIT_PER_DAY / cryptonote::BLOCKS_PER_DAY;
     }
 
     if (credit > DECOMMISSION_MAX_CREDIT)
@@ -857,7 +856,7 @@ namespace master_nodes
         std::memcpy(local.data(), pkdata + offset, prewrap);
         std::memcpy(local.data() + prewrap, pkdata, sizeof(uint64_t) - prewrap);
       }
-      sum += boost::endian::little_to_native(*reinterpret_cast<uint64_t *>(local.data()));
+      sum += oxenc::little_to_host(*reinterpret_cast<uint64_t *>(local.data()));
       ++offset;
     }
     return sum;

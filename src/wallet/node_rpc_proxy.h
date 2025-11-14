@@ -33,6 +33,7 @@
 #include <type_traits>
 #include "rpc/http_client.h"
 #include "rpc/core_rpc_server_commands_defs.h"
+#include <nlohmann/json.hpp>
 
 namespace tools
 {
@@ -54,16 +55,17 @@ public:
   bool get_earliest_height(uint8_t version, uint64_t &earliest_height) const;
   bool get_dynamic_base_fee_estimate(uint64_t grace_blocks, cryptonote::byte_and_output_fees &fees) const;
   bool get_fee_quantization_mask(uint64_t &fee_quantization_mask) const;
-  std::optional<uint8_t> get_hardfork_version() const;
-
-  std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>>             get_master_nodes(std::vector<std::string> pubkeys) const;
-  std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>>             get_all_master_nodes() const;
-  std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>>             get_contributed_master_nodes(const std::string& contributor) const;
-  std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODE_BLACKLISTED_KEY_IMAGES::entry>> get_master_node_blacklisted_key_images() const;
-  std::pair<bool, std::vector<cryptonote::rpc::BNS_OWNERS_TO_NAMES::response_entry>>            bns_owners_to_names(cryptonote::rpc::BNS_OWNERS_TO_NAMES::request const &request) const;
-  std::pair<bool, std::vector<cryptonote::rpc::BNS_NAMES_TO_OWNERS::response_entry>>            bns_names_to_owners(cryptonote::rpc::BNS_NAMES_TO_OWNERS::request const &request) const;
-  std::pair<bool, cryptonote::rpc::BNS_RESOLVE::response>
-    bns_resolve(cryptonote::rpc::BNS_RESOLVE::request const &request) const;
+  std::optional<cryptonote::hf> get_hardfork_version() const;
+  
+  // Note that this master node responses only fills out fields that are used in wallet code, not
+  // the full master node records.  (see node_rpc_proxy.cpp for the precise list).
+  std::pair<bool, nlohmann::json> get_master_nodes(std::vector<std::string> pubkeys) const;
+  std::pair<bool, nlohmann::json> get_all_master_nodes() const;
+  std::pair<bool, nlohmann::json> get_contributed_master_nodes(const std::string& contributor) const;
+  std::pair<bool, nlohmann::json> get_master_node_blacklisted_key_images() const;
+  std::pair<bool, nlohmann::json> bns_owners_to_names(nlohmann::json const &request) const;
+  std::pair<bool, nlohmann::json> bns_names_to_owners(nlohmann::json const &request) const;
+  std::pair<bool, nlohmann::json> bns_resolve(nlohmann::json const &request) const;
 
 private:
   bool get_info() const;
@@ -117,17 +119,17 @@ private:
   bool m_offline;
 
   mutable uint64_t m_master_node_blacklisted_key_images_cached_height;
-  mutable std::vector<cryptonote::rpc::GET_MASTER_NODE_BLACKLISTED_KEY_IMAGES::entry> m_master_node_blacklisted_key_images;
+  mutable nlohmann::json m_master_node_blacklisted_key_images;
 
   bool update_all_master_nodes_cache(uint64_t height) const;
 
   mutable std::mutex m_mn_cache_mutex;
   mutable uint64_t m_all_master_nodes_cached_height;
-  mutable std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry> m_all_master_nodes;
+  mutable nlohmann::json m_all_master_nodes;
 
   mutable uint64_t m_contributed_master_nodes_cached_height;
   mutable std::string m_contributed_master_nodes_cached_address;
-  mutable std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry> m_contributed_master_nodes;
+  mutable nlohmann::json m_contributed_master_nodes;
 
   mutable uint64_t m_height;
   mutable uint64_t m_immutable_height;

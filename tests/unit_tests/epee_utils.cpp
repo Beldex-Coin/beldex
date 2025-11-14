@@ -28,7 +28,7 @@
 
 #include <array>
 #include <boost/predef/other/endian.h>
-#include <boost/endian/conversion.hpp>
+#include <oxenc/endian.h>
 #include <boost/range/algorithm/equal.hpp>
 #include <boost/range/algorithm_ext/iota.hpp>
 #include <cstdint>
@@ -460,9 +460,9 @@ TEST(NetUtils, IPv4NetworkAddress)
 {
   static_assert(epee::net_utils::ipv4_network_address::get_type_id() == epee::net_utils::address_type::ipv4, "bad ipv4 type id");
 
-  const auto ip1 = boost::endian::native_to_big(0x330012FFu);
-  const auto ip_loopback = boost::endian::native_to_big(0x7F000001u);
-  const auto ip_local = boost::endian::native_to_big(0x0A000000u);
+  const auto ip1 = oxenc::host_to_big(0x330012FFu);
+  const auto ip_loopback = oxenc::host_to_big(0x7F000001u);
+  const auto ip_local = oxenc::host_to_big(0x0A000000u);
 
   epee::net_utils::ipv4_network_address address1{ip1, 65535};
   CHECK_EQUAL(address1, address1);
@@ -527,9 +527,9 @@ TEST(NetUtils, IPv4NetworkAddress)
 
 TEST(NetUtils, NetworkAddress)
 {
-  const auto ip1 = boost::endian::native_to_big(0x330012FFu);
-  const auto ip_loopback = boost::endian::native_to_big(0x7F000001u);
-  const auto ip_local = boost::endian::native_to_big(0x0A000000u);
+  const auto ip1 = oxenc::host_to_big(0x330012FFu);
+  const auto ip_loopback = oxenc::host_to_big(0x7F000001u);
+  const auto ip_local = oxenc::host_to_big(0x0A000000u);
 
   struct custom_address {
     constexpr static bool equal(const custom_address&) noexcept { return false; }

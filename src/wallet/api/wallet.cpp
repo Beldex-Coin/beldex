@@ -74,9 +74,9 @@ namespace {
       auto dir = tools::get_default_data_dir();
       // remove .beldex, replace with .shared-ringdb
       dir.replace_filename(".shared-ringdb");
-      if (nettype == cryptonote::TESTNET)
+      if (nettype == cryptonote::network_type::TESTNET)
         dir /= "testnet";
-      else if (nettype == cryptonote::DEVNET)
+      else if (nettype == cryptonote::network_type::DEVNET)
         dir /= "devnet";
       return dir;
     }
@@ -324,7 +324,7 @@ EXPORT
 uint64_t Wallet::amountFromDouble(double amount)
 {
     std::stringstream ss;
-    ss << std::fixed << std::setprecision(CRYPTONOTE_DISPLAY_DECIMAL_POINT) << amount;
+    ss << std::fixed << std::setprecision(beldex::DISPLAY_DECIMAL_POINT) << amount;
     return amountFromString(ss.str());
 }
 
@@ -1066,28 +1066,24 @@ int WalletImpl::countBns()
 {  
     clearStatus();
     auto w = wallet();
-    std::vector<cryptonote::rpc::BNS_OWNERS_TO_NAMES::request> requests(1);
-    int count=0;
+
+    nlohmann::json req_params{
+        {"entries", nlohmann::json::array()}
+    };
         
     for (uint32_t index = 0; index < w->get_num_subaddresses(0); ++index)
     {
-        if (requests.back().entries.size() >= cryptonote::rpc::BNS_OWNERS_TO_NAMES::MAX_REQUEST_ENTRIES)
-            requests.emplace_back();
-         requests.back().entries.push_back(w->get_subaddress_as_str({0, index}));
+        req_params["entries"].push_back(w->get_subaddress_as_str({0, index}));
     }
 
-    for (auto const &request : requests)
+    auto [success, result] = w->bns_owners_to_names(req_params);
+    if (!success)
     {
-        auto [success, result] = w->bns_owners_to_names(request);
-        if (!success)
-        {
-            LOG_PRINT_L1(__FUNCTION__ << "Connection to daemon failed when requesting BNS names");
-            setStatusError(tr("Connection to daemon failed when requesting BNS names"));
-            break;
-        }
-        count += result.size();
-    }    
-    return count;
+        LOG_PRINT_L1(__FUNCTION__ << "Connection to daemon failed when requesting BNS names");
+        setStatusError(tr("Connection to daemon failed when requesting BNS names"));
+    }
+    
+    return result["entries"].size();
 }
 
 EXPORT
@@ -1095,21 +1091,21 @@ std::vector<stakeInfo>* WalletImpl::listCurrentStakes() const
 {
     std::vector<stakeInfo>* stakes = new std::vector<stakeInfo>;
 
-    auto response = wallet()->list_current_stakes();
+    auto response = wallet()->get_staked_master_nodes();
     auto address = mainAddress();
 
-    for (rpc::GET_MASTER_NODES::response::entry const &node_info : response)
+    for (const auto& node_info : response)
     {
-        for (const auto& contributor : node_info.contributors)
+       for (const auto& contributor : node_info["contributors"])
         {
-            if(contributor.address == address){
+            if(contributor["address"] == address){
                 auto &info = stakes->emplace_back();
-                info.mn_pubkey = node_info.master_node_pubkey;
-                info.stake = contributor.amount;
-                if(node_info.requested_unlock_height !=0)
-                    info.unlock_height = node_info.requested_unlock_height;
-                info.decommissioned = !node_info.active && node_info.funded;
-                info.awaiting = !node_info.funded;
+                info.mn_pubkey = node_info["master_node_pubkey"];
+                info.stake = contributor["amount"];
+                if(node_info["requested_unlock_height"] !=0)
+                    info.unlock_height = node_info["requested_unlock_height"];
+                info.decommissioned = !node_info["active"] && node_info["funded"];
+                info.awaiting = !node_info["funded"];
             }
 
         }
@@ -1645,7 +1641,7 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std:
             break;
         }
         try {
-            std::optional<uint8_t> hf_version = w->get_hard_fork_version();
+            auto hf_version = w->get_hard_fork_version();
             if (!hf_version)
             {
               setStatusError(tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED);
@@ -1653,11 +1649,11 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std:
             }
             if (amount) {
                 beldex_construct_tx_params tx_params = tools::wallet2::construct_params(*hf_version, txtype::standard, priority);
-                transaction->m_pending_tx = w->create_transactions_2(dsts, CRYPTONOTE_DEFAULT_TX_MIXIN, 0 /* unlock_time */,
+                transaction->m_pending_tx = w->create_transactions_2(dsts, cryptonote::TX_OUTPUT_DECOYS, 0 /* unlock_time */,
                                                                             priority,
                                                                             extra, subaddr_account, subaddr_indices, tx_params);
             } else {
-                transaction->m_pending_tx = w->create_transactions_all(0, info.address, info.is_subaddress, 1, CRYPTONOTE_DEFAULT_TX_MIXIN, 0 /* unlock_time */,
+                transaction->m_pending_tx = w->create_transactions_all(0, info.address, info.is_subaddress, 1, cryptonote::TX_OUTPUT_DECOYS, 0 /* unlock_time */,
                                                                               priority,
                                                                               extra, subaddr_account, subaddr_indices);
             }
@@ -1779,7 +1775,7 @@ PendingTransaction *WalletImpl::createSweepAllTransaction(uint32_t priority, uin
             break;
         }
         try {
-            transaction->m_pending_tx = w->create_transactions_all(0, info.address, info.is_subaddress, 1, CRYPTONOTE_DEFAULT_TX_MIXIN, 0 /* unlock_time */,
+            transaction->m_pending_tx = w->create_transactions_all(0, info.address, info.is_subaddress, 1, cryptonote::TX_OUTPUT_DECOYS, 0 /* unlock_time */,
                                                                             priority,
                                                                             extra, subaddr_account, subaddr_indices);
             pendingTxPostProcess(transaction);
@@ -2285,89 +2281,71 @@ std::vector<bnsInfo>* WalletImpl::MyBns() const
 
     auto w = wallet();
 
-    std::vector<std::vector<cryptonote::rpc::BNS_OWNERS_TO_NAMES::response_entry>> rpc_results;
-    std::vector<cryptonote::rpc::BNS_OWNERS_TO_NAMES::request> requests(1);
+    nlohmann::json req_params{
+        {"entries", nlohmann::json::array()}
+    };
 
     std::unordered_map<std::string, tools::wallet2::bns_detail> cache = w->get_bns_cache();
 
     for (uint32_t index = 0; index < w->get_num_subaddresses(0); ++index)
     {
-        if (requests.back().entries.size() >= cryptonote::rpc::BNS_OWNERS_TO_NAMES::MAX_REQUEST_ENTRIES)
-            requests.emplace_back();
-        requests.back().entries.push_back(w->get_subaddress_as_str({0, index}));
+        req_params["entries"].push_back(w->get_subaddress_as_str({0, index}));
     }
 
-    rpc_results.reserve(requests.size());
-    for (auto const &request : requests)
+    auto [success, result] = w->bns_owners_to_names(req_params);
+    if (!success)
     {
-        auto [success, result] = w->bns_owners_to_names(request);
-        if (!success)
-        {
-            setStatusError(tr("Connection to daemon failed when requesting BNS names"));
-        }
-        rpc_results.emplace_back(std::move(result));
+        setStatusError(tr("Connection to daemon failed when requesting BNS names"));
     }
 
     auto nettype = w->nettype();
-    for (size_t i = 0; i < rpc_results.size(); i++)
+
+    for (auto const &entry : result["entries"])
     {
-        auto const &rpc = rpc_results[i];
-        for (auto const &entry : rpc)
+        std::string_view name;
+        std::string value_bchat, value_wallet, value_belnet, value_eth;
+        if (auto got = cache.find(entry["name_hash"]); got != cache.end())
         {
-            std::string_view name;
-            std::string value_bchat, value_wallet, value_belnet, value_eth_addr;
-            if (auto got = cache.find(entry.name_hash); got != cache.end())
-            {
-                name = got->second.name;
-                //BCHAT
+            name = got->second.name;
+            auto decrypt_value = [&](std::string_view key, bns::mapping_type type, std::string& out) {
+                auto it = entry.find(key);
+                if (it != entry.end() && !it->empty())
                 {
-                  bns::mapping_value mv;
-                  const auto type = bns::mapping_type::bchat;
-                  if (bns::mapping_value::validate_encrypted(type, oxenc::from_hex(entry.encrypted_bchat_value), &mv)
-                      && mv.decrypt(name, type))
-                    value_bchat = mv.to_readable_value(nettype, type);
+                    bns::mapping_value mv;
+                    const auto& hex_str = it->get_ref<const std::string&>();
+                    if (!hex_str.empty() && bns::mapping_value::validate_encrypted(type, oxenc::from_hex(hex_str), &mv) &&
+                        mv.decrypt(name, type))
+                    {
+                        out = mv.to_readable_value(nettype, type);
+                    }
                 }
-                //ETH_ADDRESS
-                {
-                  bns::mapping_value mv;
-                  const auto type = bns::mapping_type::eth_addr;
-                  if (bns::mapping_value::validate_encrypted(type, oxenc::from_hex(entry.encrypted_eth_addr_value), &mv)
-                      && mv.decrypt(name, type))
-                    value_eth_addr = mv.to_readable_value(nettype, type);
-                }
-                //WALLET
-                {
-                  bns::mapping_value mv;
-                  const auto type = bns::mapping_type::wallet;
-                  if (bns::mapping_value::validate_encrypted(type, oxenc::from_hex(entry.encrypted_wallet_value), &mv)
-                      && mv.decrypt(name, type))
-                    value_wallet = mv.to_readable_value(nettype,type);
-                }
-                //BELNET
-                {
-                  bns::mapping_value mv;
-                  const auto type = bns::mapping_type::belnet;
-                  if (bns::mapping_value::validate_encrypted(type, oxenc::from_hex(entry.encrypted_belnet_value), &mv)
-                      && mv.decrypt(name, type))
-                    value_belnet = mv.to_readable_value(nettype, type);
-                }
-            }
-            auto &info = my_bns->emplace_back();
-            info.name_hash = entry.name_hash;
-            info.name = name.empty() ? "(none)" : std::string(name);
-            info.value_bchat = value_bchat.empty() ? "(none)" : value_bchat;
-            info.value_wallet = value_wallet.empty() ? "(none)" : value_wallet;
-            info.value_belnet = value_belnet.empty() ? "(none)" : value_belnet;
-            info.value_eth_addr = value_eth_addr.empty() ? "(none)" : value_eth_addr;
-            info.owner = entry.owner;
-            info.backup_owner = entry.backup_owner? *entry.backup_owner : "(none)";
-            info.update_height = entry.update_height;
-            info.expiration_height = entry.expiration_height ? *entry.expiration_height : 0;
-            info.encrypted_bchat_value = entry.encrypted_bchat_value.empty() ? "(none)" : entry.encrypted_bchat_value;
-            info.encrypted_wallet_value = entry.encrypted_wallet_value.empty() ? "(none)" : entry.encrypted_wallet_value;
-            info.encrypted_belnet_value = entry.encrypted_belnet_value.empty() ? "(none)" : entry.encrypted_belnet_value;
-            info.encrypted_eth_addr_value = entry.encrypted_eth_addr_value.empty() ? "(none)" : entry.encrypted_eth_addr_value;
+            };
+
+            decrypt_value("encrypted_bchat_value", bns::mapping_type::bchat, value_bchat);
+            decrypt_value("encrypted_wallet_value", bns::mapping_type::wallet, value_wallet);
+            decrypt_value("encrypted_belnet_value", bns::mapping_type::belnet, value_belnet);
+            decrypt_value("encrypted_eth_addr_value", bns::mapping_type::eth_addr, value_eth);
         }
+
+        auto &info = my_bns->emplace_back();
+        info.name_hash = entry["name_hash"];
+        info.name = name.empty() ? "(none)" : std::string(name);
+        info.value_bchat = value_bchat.empty() ? "(none)" : value_bchat;
+        info.value_wallet = value_wallet.empty() ? "(none)" : value_wallet;
+        info.value_belnet = value_belnet.empty() ? "(none)" : value_belnet;
+        info.value_eth_addr = value_eth.empty() ? "(none)" : value_eth;
+        info.owner = entry["owner"];
+        if (entry.contains("backup_owner") && !entry["backup_owner"].is_null())
+            info.backup_owner =  entry["backup_owner"];
+        else
+            info.backup_owner = "(none)";
+        info.update_height = entry["update_height"];
+        info.expiration_height = entry["expiration_height"];
+    
+        info.encrypted_bchat_value = entry["encrypted_bchat_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_bchat_value"];
+        info.encrypted_wallet_value = entry["encrypted_wallet_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_wallet_value"];
+        info.encrypted_belnet_value = entry["encrypted_belnet_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_belnet_value"];
+        info.encrypted_eth_addr_value = entry["encrypted_eth_addr_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_eth_addr_value"];
     }
     return my_bns;
 }
@@ -3102,13 +3080,16 @@ void WalletImpl::hardForkInfo(uint8_t &version, uint64_t &earliest_height) const
 EXPORT
 std::optional<uint8_t> WalletImpl::hardForkVersion() const
 {
-    return m_wallet_ptr->get_hard_fork_version();
+    auto v = m_wallet_ptr->get_hard_fork_version();
+    if (!v)
+      return std::nullopt;
+    return static_cast<uint8_t>(*v);
 }
 
 EXPORT
 bool WalletImpl::useForkRules(uint8_t version, int64_t early_blocks) const
 {
-    return wallet()->use_fork_rules(version = 17,early_blocks);
+    return wallet()->use_fork_rules(static_cast<hf>(version), early_blocks);  // have to update
 }
 
 EXPORT

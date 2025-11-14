@@ -28,8 +28,7 @@
 
 #pragma once
 
-#include <boost/asio/io_service.hpp>
-#include <boost/uuid/uuid.hpp>
+#include <boost/asio/io_context.hpp>
 #include <memory>
 #include <vector>
 
@@ -37,6 +36,11 @@
 #include "cryptonote_basic/blobdatatype.h"
 #include "epee/net/enums.h"
 #include "epee/span.h"
+#include "epee/net/net_utils_base.h"
+
+namespace boost::asio {
+using io_service = io_context;
+}
 
 namespace epee
 {
@@ -68,7 +72,7 @@ namespace levin
 
   using connections = epee::levin::async_protocol_handler_config<detail::p2p_context>;
 
-  //! Provides tx notification privacy
+  //! Provides tx notification confidentiality
   class notify
   {
     std::shared_ptr<detail::zone> zone_;
@@ -126,7 +130,7 @@ namespace levin
           construction.
 
       \return True iff the notification is queued for sending. */
-    bool send_txs(std::vector<blobdata> txs, const boost::uuids::uuid& source, bool pad_txs);
+    bool send_txs(std::vector<std::string> txs, const epee::connection_id_t& source, bool pad_txs);
   };
 } // levin
 } // net

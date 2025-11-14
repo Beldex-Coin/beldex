@@ -47,7 +47,7 @@ struct tx_construction_data
   uint32_t subaddr_account;   // subaddress account of your wallet to be used in this transfer
   std::set<uint32_t> subaddr_indices;  // set of address indices used as inputs in this transfer
 
-  uint8_t            hf_version;
+  cryptonote::hf     hf_version;
   cryptonote::txtype tx_type;
 };
 
@@ -106,7 +106,7 @@ void serialize(Archive &a, wallet::tx_construction_data &x, const unsigned int v
     if (ver < 6)
     {
       x.tx_type    = cryptonote::txtype::standard;
-      x.hf_version = cryptonote::network_version_14_enforce_checkpoints;
+      x.hf_version = cryptonote::hf::hf15_flash;
     }
   }
 

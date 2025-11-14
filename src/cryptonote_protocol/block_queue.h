@@ -36,8 +36,8 @@
 #include <set>
 #include <unordered_set>
 #include <mutex>
-#include <boost/uuid/uuid.hpp>
 #include "crypto/hash.h"
+#include "epee/net/net_utils_base.h"
 
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "cn.block_queue"
@@ -45,6 +45,8 @@
 namespace cryptonote
 {
   struct block_complete_entry;
+
+  using epee::connection_id_t;
 
   class block_queue
   {
@@ -54,16 +56,16 @@ namespace cryptonote
       uint64_t start_block_height;
       std::vector<crypto::hash> hashes;
       std::vector<cryptonote::block_complete_entry> blocks;
-      boost::uuids::uuid connection_id;
+      connection_id_t connection_id;
       uint64_t nblocks;
       float rate;
       size_t size;
       std::chrono::steady_clock::time_point time;
 
-      span(uint64_t start_block_height, std::vector<cryptonote::block_complete_entry> blocks, const boost::uuids::uuid &connection_id, float rate, size_t size):
+      span(uint64_t start_block_height, std::vector<cryptonote::block_complete_entry> blocks, const connection_id_t& connection_id, float rate, size_t size):
         start_block_height(start_block_height), blocks(std::move(blocks)), connection_id(connection_id), nblocks(this->blocks.size()), rate(rate), size(size),
         time{std::chrono::steady_clock::now()} {}
-      span(uint64_t start_block_height, uint64_t nblocks, const boost::uuids::uuid &connection_id, std::chrono::steady_clock::time_point time):
+      span(uint64_t start_block_height, uint64_t nblocks, const connection_id_t& connection_id, std::chrono::steady_clock::time_point time):
         start_block_height(start_block_height), connection_id(connection_id), nblocks(nblocks), rate(0.0f), size(0), time(time) {}
 
       bool operator<(const span &s) const { return start_block_height < s.start_block_height; }
@@ -71,29 +73,29 @@ namespace cryptonote
     typedef std::set<span> block_map;
 
   public:
-    void add_blocks(uint64_t height, std::vector<cryptonote::block_complete_entry> bcel, const boost::uuids::uuid &connection_id, float rate, size_t size);
-    void add_blocks(uint64_t height, uint64_t nblocks, const boost::uuids::uuid &connection_id, std::chrono::steady_clock::time_point time);
-    void flush_spans(const boost::uuids::uuid &connection_id, bool all = false);
-    void flush_stale_spans(const std::set<boost::uuids::uuid> &live_connections);
+    void add_blocks(uint64_t height, std::vector<cryptonote::block_complete_entry> bcel, const connection_id_t& connection_id, float rate, size_t size);
+    void add_blocks(uint64_t height, uint64_t nblocks, const connection_id_t& connection_id, std::chrono::steady_clock::time_point time);
+    void flush_spans(const connection_id_t& connection_id, bool all = false);
+    void flush_stale_spans(const std::set<connection_id_t>& live_connections);
     bool remove_span(uint64_t start_block_height, std::vector<crypto::hash> *hashes = nullptr);
-    void remove_spans(const boost::uuids::uuid &connection_id, uint64_t start_block_height);
+    void remove_spans(const connection_id_t& connection_id, uint64_t start_block_height);
     uint64_t get_max_block_height() const;
     void print() const;
     std::string get_overview(uint64_t blockchain_height) const;
     bool has_unpruned_height(uint64_t block_height, uint64_t blockchain_height, uint32_t pruning_seed) const;
-    std::pair<uint64_t, uint64_t> reserve_span(uint64_t first_block_height, uint64_t last_block_height, uint64_t max_blocks, const boost::uuids::uuid &connection_id, uint32_t pruning_seed, uint64_t blockchain_height, const std::vector<crypto::hash> &block_hashes);
+    std::pair<uint64_t, uint64_t> reserve_span(uint64_t first_block_height, uint64_t last_block_height, uint64_t max_blocks, const connection_id_t& connection_id, uint32_t pruning_seed, uint64_t blockchain_height, const std::vector<crypto::hash> &block_hashes);
     uint64_t get_next_needed_height(uint64_t blockchain_height) const;
-    std::pair<uint64_t, uint64_t> get_next_span_if_scheduled(std::vector<crypto::hash> &hashes, boost::uuids::uuid &connection_id) const;
+    std::pair<uint64_t, uint64_t> get_next_span_if_scheduled(std::vector<crypto::hash> &hashes, connection_id_t& connection_id) const;
     void reset_next_span_time();
-    void set_span_hashes(uint64_t start_height, const boost::uuids::uuid &connection_id, std::vector<crypto::hash> hashes);
-    bool get_next_span(uint64_t &height, std::vector<cryptonote::block_complete_entry> &bcel, boost::uuids::uuid &connection_id, bool filled = true) const;
-    bool has_next_span(uint64_t height, bool &filled, std::chrono::steady_clock::time_point& time, boost::uuids::uuid &connection_id) const;
+    void set_span_hashes(uint64_t start_height, const connection_id_t& connection_id, std::vector<crypto::hash> hashes);
+    bool get_next_span(uint64_t &height, std::vector<cryptonote::block_complete_entry> &bcel, connection_id_t& connection_id, bool filled = true) const;
+    bool has_next_span(uint64_t height, bool &filled, std::chrono::steady_clock::time_point& time, connection_id_t& connection_id) const;
     size_t get_data_size() const;
     size_t get_num_filled_spans() const;
-    crypto::hash get_last_known_hash(const boost::uuids::uuid &connection_id) const;
-    bool has_spans(const boost::uuids::uuid &connection_id) const;
-    float get_speed(const boost::uuids::uuid &connection_id) const;
-    float get_download_rate(const boost::uuids::uuid &connection_id) const;
+    crypto::hash get_last_known_hash(const connection_id_t &connection_id) const;
+    bool has_spans(const connection_id_t &connection_id) const;
+    float get_speed(const connection_id_t &connection_id) const;
+    float get_download_rate(const connection_id_t &connection_id) const;
     bool foreach(std::function<bool(const span&)> f) const;
     bool requested(const crypto::hash &hash) const;
     bool have(const crypto::hash &hash) const;

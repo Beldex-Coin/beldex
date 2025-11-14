@@ -83,7 +83,7 @@ bool get_output_distribution(uint64_t amount, uint64_t from, uint64_t to, uint64
 {
   blockchain_objects_t bc = {};
   struct get_test_options {
-    const std::vector<cryptonote::hard_fork> hard_forks{{1,0,0,0}};
+    const std::vector<cryptonote::hard_fork> hard_forks{{cryptonote::hf::hf1,0,0,0}};
     const cryptonote::test_options test_options = {
       hard_forks
     };

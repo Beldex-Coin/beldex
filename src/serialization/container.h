@@ -101,7 +101,6 @@ void serialize_container(Archive& ar, C& v)
   static_assert(detail::has_emplace_back<C> || detail::has_value_insert<C>, "Unsupported container type");
 
   for (size_t i = 0; i < cnt; i++) {
-    arr.element();
     if constexpr (detail::has_emplace_back<C>)
       detail::serialize_container_element(ar, v.emplace_back());
     else {
@@ -119,7 +118,7 @@ void serialize_container(Archive& ar, C& v)
   size_t cnt = v.size();
   auto arr = ar.begin_array(cnt);
   for (auto& e : v)
-    serialize_container_element(arr.element(), e);
+  serialize_container_element(ar, e);
 }
 
 } // namespace detail

@@ -123,13 +123,13 @@ static void test(test_t t, uint64_t blocks)
   blockchain_objects_t bc_objects = {};
 
   const std::vector<cryptonote::hard_fork> hard_forks{
-      {cryptonote::network_version_7, 0, 0, 0},
-      {cryptonote::network_version_11_infinite_staking, 0, 5000, 0}};
+      {cryptonote::hf::hf7, 0, 0, 0},
+      {cryptonote::hf::hf11_infinite_staking, 0, 5000, 0}};
 
   const cryptonote::test_options test_options{hard_forks, 5000};
 
   auto& bc = bc_objects.m_blockchain;
-  if (!bc.init(new TestDB(), nullptr, cryptonote ::FAKECHAIN, true, &test_options, 0)) {
+  if (!bc.init(new TestDB(), nullptr, cryptonote ::network_type::FAKECHAIN, true, &test_options, 0)) {
     fprintf(stderr, "Failed to init blockchain\n");
     exit(1);
   };
@@ -137,8 +137,8 @@ static void test(test_t t, uint64_t blocks)
   for (uint64_t h = 0; h < LONG_TERM_BLOCK_WEIGHT_WINDOW; ++h)
   {
     cryptonote::block b;
-    b.major_version = cryptonote::network_version_7;
-    b.minor_version = cryptonote::network_version_7;
+    b.major_version = cryptonote::hf::hf7;
+    b.minor_version = static_cast<int>(cryptonote::hf::hf7);
     bc.get_db().add_block(std::make_pair(b, ""), 300000, 300000, bc.get_db().height(), bc.get_db().height(), {});
     if (!bc.update_next_cumulative_weight_limit())
     {
@@ -171,8 +171,8 @@ static void test(test_t t, uint64_t blocks)
     }
     uint64_t ltw = bc.get_next_long_term_block_weight(w);
     cryptonote::block b;
-    b.major_version = HF_VERSION_LONG_TERM_BLOCK_WEIGHT;
-    b.minor_version = HF_VERSION_LONG_TERM_BLOCK_WEIGHT;
+    b.major_version = cryptonote::feature::LONG_TERM_BLOCK_WEIGHT;
+    b.minor_version = static_cast<int>(cryptonote::feature::LONG_TERM_BLOCK_WEIGHT);
     bc.get_db().add_block(std::make_pair(std::move(b), ""), w, ltw, bc.get_db().height(), bc.get_db().height(), {});
 
     if (!bc.update_next_cumulative_weight_limit())

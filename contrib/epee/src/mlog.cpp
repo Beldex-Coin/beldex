@@ -28,6 +28,8 @@
 #ifndef _MLOG_H_
 #define _MLOG_H_
 
+#include <date/date.h>
+#include <chrono>
 #ifdef _WIN32
 #include <windows.h>
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
@@ -39,7 +41,6 @@
 #include <atomic>
 #include <boost/algorithm/string.hpp>
 #include "epee/string_tools.h"
-#include "epee/misc_os_dependent.h"
 #include "epee/misc_log_ex.h"
 
 #ifndef USE_GHC_FILESYSTEM
@@ -66,23 +67,6 @@ namespace fs = ghc::filesystem;
 #define MLOG_LOG(x) CINFO(el::base::Writer,el::base::DispatchAction::FileOnlyLog,BELDEX_DEFAULT_LOG_CATEGORY) << x
 
 using namespace epee;
-
-static std::string generate_log_filename(const char *base)
-{
-  std::string filename(base);
-  static unsigned int fallback_counter = 0;
-  char tmp[200];
-  struct tm tm;
-  time_t now = time(NULL);
-  if (!epee::misc_utils::get_gmt_time(now, tm))
-    snprintf(tmp, sizeof(tmp), "part-%u", ++fallback_counter);
-  else
-    strftime(tmp, sizeof(tmp), "%Y-%m-%d-%H-%M-%S", &tm);
-  tmp[sizeof(tmp) - 1] = 0;
-  filename += "-";
-  filename += tmp;
-  return filename;
-}
 
 std::string mlog_get_default_log_path(const char *default_filename)
 {
@@ -179,7 +163,7 @@ void mlog_configure(const std::string &filename_base, bool console, const std::s
   el::Loggers::addFlag(el::LoggingFlag::ColoredTerminalOutput);
   el::Loggers::addFlag(el::LoggingFlag::StrictLogFileSizeCheck);
   el::Helpers::installPreRollOutCallback([filename_base, max_log_files](const char *name, size_t){
-    std::string rname = generate_log_filename(filename_base.c_str());
+    std::string rname = filename_base + "-" + date::format("%Y-%m-%d-%H-%M-%S", std::chrono::system_clock::now());
     int ret = rename(name, rname.c_str());
     if (ret < 0)
     {

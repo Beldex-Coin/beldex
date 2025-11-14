@@ -82,8 +82,8 @@ bool NodeRPCProxy::get_rpc_version(rpc::version_t &rpc_version) const
   if (m_rpc_version == rpc::version_t{0, 0})
   {
     try {
-      auto res = invoke_json_rpc<rpc::GET_VERSION>({});
-      m_rpc_version = rpc::make_version(res.version);
+      auto res = m_http_client.json_rpc("get_version", {});
+      m_rpc_version = rpc::make_version(res.at("version").get<uint32_t>());
     } catch (...) { return false; }
   }
   rpc_version = m_rpc_version;
@@ -105,14 +105,21 @@ bool NodeRPCProxy::get_info() const
   if (now >= m_get_info_time + 30s) // re-cache every 30 seconds
   {
     try {
-      auto resp_t = invoke_json_rpc<rpc::GET_INFO>({});
-      m_height = resp_t.height;
-      m_target_height = resp_t.target_height;
-      m_block_weight_limit = resp_t.block_weight_limit ? resp_t.block_weight_limit : resp_t.block_size_limit;
-      m_immutable_height = resp_t.immutable_height;
-      m_get_info_time = now;
-      m_height_time = now;
-    } catch (...) {
+      auto res = m_http_client.json_rpc("get_info", {});
+      m_height = res.at("height").get<uint64_t>();
+      m_target_height = res.at("target_height").get<uint64_t>();
+      auto it_block_weight_limit = res.find("block_weight_limit");
+      if (it_block_weight_limit != res.end())
+        m_block_weight_limit = res.at("block_weight_limit");
+      else
+        m_block_weight_limit = res.at("block_size_limit");
+      auto it_immutable_height = res.find("immutable_height");
+        if (it_immutable_height != res.end())
+            m_immutable_height = res.at("immutable_height").get<uint64_t>();
+        m_get_info_time = now;
+        m_height_time = now;
+    } catch (const std::exception& e) {
+        // log::error(logcat, "Failed to get info message: {}", e.what()); //TODO
         return false; }
   }
   return true;
@@ -122,8 +129,10 @@ bool NodeRPCProxy::get_height(uint64_t &height) const
 {
   auto now = std::chrono::steady_clock::now();
   if (now >= m_height_time + 30s) // re-cache every 30 seconds
+  {  
     if (!get_info())
       return false;
+  }
   height = m_height;
   return true;
 }
@@ -159,28 +168,29 @@ bool NodeRPCProxy::get_earliest_height(uint8_t version, uint64_t &earliest_heigh
 
   if (m_earliest_height[version] == 0)
   {
-    rpc::HARD_FORK_INFO::request req_t{};
-    req_t.version = version;
+    nlohmann::json req_params{
+      {"version", version}
+    };
     try {
-      auto resp_t = invoke_json_rpc<rpc::HARD_FORK_INFO>(req_t);
-
-      if (!resp_t.earliest_height)
-        return false;
-
-      m_earliest_height[version] = *resp_t.earliest_height;
-    } catch (...) { return false; }
+      auto res = m_http_client.json_rpc("hard_fork_info", req_params);
+      m_earliest_height[version] = res.at("earliest_height").get<uint64_t>();
+    } catch (const std::exception& e) {
+      // log::error(logcat, "Failed to get earliest height: {}", e.what()); //TODO
+      return false;
+    }
   }
   earliest_height = m_earliest_height[version];
   return true;
 }
 
-std::optional<uint8_t> NodeRPCProxy::get_hardfork_version() const
+std::optional<cryptonote::hf> NodeRPCProxy::get_hardfork_version() const
 {
   if (m_offline)
     return std::nullopt;
 
   try {
-    return invoke_json_rpc<rpc::HARD_FORK_INFO>({}).version;
+    auto res = m_http_client.json_rpc("hard_fork_info", {});
+    return res.at("version").get<cryptonote::hf>();
   }catch (...) {}
 
   return std::nullopt;
@@ -194,14 +204,15 @@ bool NodeRPCProxy::refresh_dynamic_base_fee_cache(uint64_t grace_blocks) const
 
   if (m_dynamic_base_fee_estimate_cached_height != height || m_dynamic_base_fee_estimate_grace_blocks != grace_blocks)
   {
-    rpc::GET_BASE_FEE_ESTIMATE::request req_t{};
-    req_t.grace_blocks = grace_blocks;
+    nlohmann::json req_params{
+      {"grace_blocks", grace_blocks}
+    };
     try {
-      auto resp_t = invoke_json_rpc<rpc::GET_BASE_FEE_ESTIMATE>(req_t);
-      m_dynamic_base_fee_estimate = {resp_t.fee_per_byte, resp_t.fee_per_output};
+      auto res = m_http_client.json_rpc("get_fee_estimate", req_params);
+      m_dynamic_base_fee_estimate = {res.at("fee_per_byte").get<uint64_t>(), res.at("fee_per_output").get<uint64_t>()};
       m_dynamic_base_fee_estimate_cached_height = height;
       m_dynamic_base_fee_estimate_grace_blocks = grace_blocks;
-      m_fee_quantization_mask = resp_t.quantization_mask;
+      m_fee_quantization_mask = res.at("quantization_mask").get<uint64_t>();
     } catch (...) { return false; }
   }
   return true;
@@ -229,11 +240,22 @@ bool NodeRPCProxy::get_fee_quantization_mask(uint64_t &fee_quantization_mask) co
   return true;
 }
 
-std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>> NodeRPCProxy::get_master_nodes(std::vector<std::string> pubkeys) const
+std::pair<bool, nlohmann::json> NodeRPCProxy::get_master_nodes(std::vector<std::string> pubkeys) const
 {
-  rpc::GET_MASTER_NODES::request req{};
-  req.master_node_pubkeys = std::move(pubkeys);
-  return get_result_pair<rpc::GET_MASTER_NODES>(req, [](auto&& res) { return std::move(res.master_node_states); });
+  std::pair<bool, nlohmann::json> result;
+  auto& [success, resolved] = result;
+  success = false;
+  nlohmann::json req_params{
+    {"master_node_pubkeys", pubkeys}
+  };
+  try {
+    auto res = m_http_client.json_rpc("get_master_nodes", req_params);
+    resolved = res.at("master_node_states");
+  } catch (...) {
+    return result;
+  }
+  success = true;
+  return result;
 }
 
 // Updates the cache of all master nodes; the mutex lock must be already held
@@ -241,19 +263,28 @@ bool NodeRPCProxy::update_all_master_nodes_cache(uint64_t height) const {
   if (m_offline)
     return false;
 
+  nlohmann::json req{};
+  req["fields"] = nlohmann::json{};
+  for (const auto& field : {
+    "active", "contributors", "funded", "locked_contributions", "registration_height",
+    "requested_unlock_height", "master_node_pubkey", "staking_requirement", "total_contributed",
+    "total_reserved",
+  })
+    req["fields"][field] = true;
+
   try {
-    auto res = invoke_json_rpc<rpc::GET_MASTER_NODES>({});
+    auto res = m_http_client.json_rpc("get_master_nodes", req);
     m_all_master_nodes_cached_height = height;
-    m_all_master_nodes = std::move(res.master_node_states);
+    m_all_master_nodes = std::move(res.at("master_node_states"));
   } catch (...) { return false; }
 
   return true;
 }
 
 
-std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>> NodeRPCProxy::get_all_master_nodes() const
+std::pair<bool, nlohmann::json> NodeRPCProxy::get_all_master_nodes() const
 {
-  std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>> result;
+  std::pair<bool, nlohmann::json> result;
   auto& [success, mns] = result;
   success = false;
 
@@ -275,9 +306,9 @@ std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>>
 
 // Filtered version of the above that caches the filtered result as long as used on the same
 // contributor at the same height (which is very common, for example, for wallet balance lookups).
-std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>> NodeRPCProxy::get_contributed_master_nodes(const std::string &contributor) const
+std::pair<bool, nlohmann::json> NodeRPCProxy::get_contributed_master_nodes(const std::string &contributor) const
 {
-  std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>> result;
+  std::pair<bool, nlohmann::json> result;
   auto& [success, mns] = result;
   success = false;
 
@@ -295,8 +326,8 @@ std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>>
       std::copy_if(m_all_master_nodes.begin(), m_all_master_nodes.end(), std::back_inserter(m_contributed_master_nodes),
           [&contributor](const auto& mn)
           {
-            return std::any_of(mn.contributors.begin(), mn.contributors.end(),
-                [&contributor](const auto& c) { return contributor == c.address; });
+            return std::any_of(mn["contributors"].begin(), mn["contributors"].end(),
+                [&contributor](const nlohmann::json& c) { return contributor == c["address"].get<std::string>(); });
           }
       );
       m_contributed_master_nodes_cached_height = height;
@@ -310,9 +341,9 @@ std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry>>
   return result;
 }
 
-std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODE_BLACKLISTED_KEY_IMAGES::entry>> NodeRPCProxy::get_master_node_blacklisted_key_images() const
+std::pair<bool, nlohmann::json> NodeRPCProxy::get_master_node_blacklisted_key_images() const
 {
-  std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODE_BLACKLISTED_KEY_IMAGES::entry>> result;
+  std::pair<bool, nlohmann::json> result;
   auto& [success, mns] = result;
   success = false;
 
@@ -325,9 +356,9 @@ std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODE_BLACKLISTED_KEY_IMA
     if (m_master_node_blacklisted_key_images_cached_height != height)
     {
       try {
-        auto res = invoke_json_rpc<rpc::GET_MASTER_NODE_BLACKLISTED_KEY_IMAGES>({});
+        auto res = m_http_client.json_rpc("get_master_node_blacklisted_key_images", {});
         m_master_node_blacklisted_key_images_cached_height = height;
-        m_master_node_blacklisted_key_images               = std::move(res.blacklist);
+        m_master_node_blacklisted_key_images               = std::move(res.at("blacklist"));
       } catch (...) {
         return result;
       }
@@ -340,28 +371,66 @@ std::pair<bool, std::vector<cryptonote::rpc::GET_MASTER_NODE_BLACKLISTED_KEY_IMA
   return result;
 }
 
-std::pair<bool, std::vector<cryptonote::rpc::BNS_OWNERS_TO_NAMES::response_entry>> NodeRPCProxy::bns_owners_to_names(cryptonote::rpc::BNS_OWNERS_TO_NAMES::request const &request) const
+std::pair<bool, nlohmann::json> NodeRPCProxy::bns_owners_to_names(nlohmann::json const &request) const
 {
-  return get_result_pair<rpc::BNS_OWNERS_TO_NAMES>(request, [](auto&& res) { return std::move(res.entries); });
-}
-
-std::pair<bool, std::vector<cryptonote::rpc::BNS_NAMES_TO_OWNERS::response_entry>> NodeRPCProxy::bns_names_to_owners(cryptonote::rpc::BNS_NAMES_TO_OWNERS::request const &request) const
-{
-  return get_result_pair<rpc::BNS_NAMES_TO_OWNERS>(request, [](auto&& res) { return std::move(res.entries); });
-}
-std::pair<bool,cryptonote::rpc::BNS_RESOLVE::response> NodeRPCProxy::bns_resolve(cryptonote::rpc::BNS_RESOLVE::request const &request) const
-{
-  std::pair<bool, cryptonote::rpc::BNS_RESOLVE::response> result;
+  std::pair<bool, nlohmann::json> result;
   auto& [success, resolved] = result;
   success = false;
 
-  uint64_t height;
-  if (m_offline || !get_height(height))
+  if (m_offline || !get_info())
+    return result;
+
+  try {
+    auto res = m_http_client.json_rpc("bns_owners_to_names", request);
+    resolved = res;
+  } catch (...) {
+    return result;
+  }
+  success = true;
+  return result;
+}
+
+std::pair<bool, nlohmann::json> NodeRPCProxy::bns_names_to_owners(nlohmann::json const& request) const
+{
+  std::pair<bool, nlohmann::json> result;
+  auto& [success, resolved] = result;
+  success = false;
+
+  if (m_offline || !get_info())
+    return result;
+
+  try {
+    auto res = m_http_client.json_rpc("bns_names_to_owners", request);
+    auto st_it = res.find("status");
+    if (st_it == res.end() || !st_it->is_string()) {
+      // log::error(logcat, "Did not find expected result or status in:\n{}", res.dump());
+      throw std::runtime_error{"Missing status"};
+    }
+    if (auto status = st_it->get<std::string_view>(); status != "OK")
+        throw std::runtime_error("Received error status");
+    
+    resolved = res["result"];
+  } catch (...) {
+    // log::error(logcat, "Failed to get ONS info: {}", e.what());
+    return result;
+  }
+
+  success = true;
+  return result;
+}
+
+std::pair<bool, nlohmann::json> NodeRPCProxy::bns_resolve(nlohmann::json const& request) const
+{
+  std::pair<bool, nlohmann::json> result;
+  auto& [success, resolved] = result;
+  success = false;
+
+  if (m_offline || !get_info())
     return result;
 
   {
     try {
-      auto res = m_http_client.json_rpc<rpc::BNS_RESOLVE>(rpc::BNS_RESOLVE::names().front(), request);
+      auto res = m_http_client.json_rpc("bns_resolve", request);
       resolved = res;
     } catch (...) {
       return result;

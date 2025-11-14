@@ -95,9 +95,12 @@ function(combine_archives output_archive)
 endfunction(combine_archives)
 
 if (STATIC AND BUILD_STATIC_DEPS)
-    set(merged_protobuf)
+    set(optional_deps)
     if(TARGET protobuf_lite)
-      set(merged_protobuf protobuf_lite)
+      list(APPEND optional_deps protobuf_lite)
+    endif()
+    if(TARGET device_trezor)
+      list(APPEND optional_deps device_trezor)
     endif()
 
     combine_archives(wallet_merged
@@ -116,17 +119,16 @@ if (STATIC AND BUILD_STATIC_DEPS)
             checkpoints
             version
             net
-            device_trezor
             epee
             blockchain_db
             rpc_http_client
             rpc_commands
+            ${optional_deps}
 
             # Static deps:
             Boost::program_options Boost::serialization Boost::system Boost::thread
             zlib
             sqlite3
-            ${merged_protobuf}
             sodium
             libzmq
             CURL::libcurl

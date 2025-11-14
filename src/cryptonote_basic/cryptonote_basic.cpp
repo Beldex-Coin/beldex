@@ -1,4 +1,5 @@
 #include "cryptonote_basic.h"
+#include <oxenc/endian.h>
 
 namespace cryptonote {
 

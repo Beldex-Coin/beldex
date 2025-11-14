@@ -6,6 +6,7 @@
 #include <charconv>
 #include <sstream>
 #include <chrono>
+#include <cassert>
 #include "epee/span.h" // epee
 
 namespace tools {
@@ -74,6 +75,41 @@ std::string join(std::string_view delimiter, It begin, It end) {
 template <typename Container>
 std::string join(std::string_view delimiter, const Container& c) { return join(delimiter, c.begin(), c.end()); }
 
+/// Similar to join(), but first applies a transformation to each element.
+template <typename It, typename UnaryOperation>
+std::string join_transform(std::string_view delimiter, It begin, It end, UnaryOperation transform) {
+  std::ostringstream o;
+  if (begin != end)
+    o << transform(*begin++);
+  while (begin != end)
+    o << delimiter << transform(*begin++);
+  return o.str();
+}
+
+/// Wrapper around the above that takes a container and passes c.begin(), c.end().
+template <typename Container, typename UnaryOperation>
+std::string join_transform(std::string_view delimiter, const Container& c, UnaryOperation&& transform) {
+  return join_transform(delimiter, c.begin(), c.end(), std::forward<UnaryOperation>(transform));
+}
+
+/// Concatenates a bunch of random values together with delim as a separator via << operator.
+/// Returns the result as a string.
+template <typename T, typename... Ts>
+std::string join_stuff(std::string_view delim, T&& first, Ts&&... stuff) {
+    std::ostringstream o;
+    o << std::forward<T>(first);
+    ((o << delim << std::forward<Ts>(stuff)), ...);
+    return o.str();
+}
+
+/// Concatenates arguments via << operator, returns as a string.
+template <typename... T>
+std::string concat(T&&... stuff) {
+    std::ostringstream o;
+    (o << ... << std::forward<T>(stuff));
+    return o.str();
+}
+
 /// Simple version of whitespace trimming: mutates the given string view to remove leading
 /// space, \t, \r, \n.  (More exotic and locale-dependent whitespace is not removed).
 void trim(std::string_view& s);
@@ -90,6 +126,15 @@ bool parse_int(const std::string_view str, T& value, int base = 10) {
     return false;
   value = tmp;
   return true;
+}
+
+/// Converts an integer value into a string via std::to_chars (i.e. without locale).
+template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
+std::string int_to_string(const T& value, int base = 10) {
+    char buf[8*sizeof(T) + std::is_signed_v<T>]; // maximum possible size with smallest possible base (2)
+    auto [p, ec] = std::to_chars(std::begin(buf), std::end(buf), value, base);
+    assert(ec == std::errc{}); // Our buffer should be big enough for anything
+    return {buf, p};
 }
 
 /// Returns a string_view that views the data of the given object; this is not something you want to
@@ -119,7 +164,7 @@ T make_from_guts(std::string_view s) {
     if (s.size() != sizeof(T))
         throw std::runtime_error("Cannot reconstitute type: wrong type content size");
     T x;
-    std::memcpy(&x, s.data(), sizeof(T));
+    std::memcpy(static_cast<void*>(&x), s.data(), sizeof(T));
     return x;
 }
 

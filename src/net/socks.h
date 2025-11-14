@@ -30,7 +30,7 @@
 
 #include <cstdint>
 #include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/io_service.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/type_traits/integral_constant.hpp>
@@ -40,6 +40,11 @@
 
 #include "net/fwd.h"
 #include "epee/span.h"
+
+namespace boost::asio {
+using io_service = io_context;
+}
+
 
 namespace epee
 {

@@ -254,7 +254,7 @@ namespace tools {
   }
 
 
-#ifdef WIN32
+#ifdef _WIN32
   fs::path get_special_folder_path(int nfolder, bool iscreate)
   {
     WCHAR psz_path[MAX_PATH] = L"";
@@ -267,30 +267,28 @@ namespace tools {
     LOG_ERROR("SHGetSpecialFolderPathW() failed, could not obtain requested path.");
     return "";
   }
-
-  // Windows < Vista: C:\Documents and Settings\Username\Application Data\CRYPTONOTE_NAME
-  // Windows >= Vista: C:\Users\Username\AppData\Roaming\CRYPTONOTE_NAME
-  fs::path get_default_data_dir()
-  {
-    return get_special_folder_path(CSIDL_COMMON_APPDATA, true) / fs::u8path(CRYPTONOTE_NAME);
-  }
-  fs::path get_depreciated_default_data_dir()
-  {
-    return get_special_folder_path(CSIDL_COMMON_APPDATA, true) / fs::u8path("beldex");
-  }
-#else
-  // Non-windows: ~/.CRYPTONOTE_NAME
-  fs::path get_default_data_dir()
-  {
-    char* home = std::getenv("HOME");
-    return (home && std::strlen(home) ? fs::u8path(home) : fs::current_path()) / fs::u8path("." CRYPTONOTE_NAME);
-  }
-  fs::path get_depreciated_default_data_dir()
-  {
-    char* home = std::getenv("HOME");
-    return (home && std::strlen(home) ? fs::u8path(home) : fs::current_path()) / fs::u8path(".beldex");
-  }
 #endif
+
+  // Windows < Vista: C:\Documents and Settings\Username\Application Data\...
+  // Windows >= Vista: C:\Users\Username\AppData\Roaming\...
+  // Sane OSes: ~/
+  static fs::path get_default_parent_dir() {
+#ifdef _WIN32
+    return get_special_folder_path(CSIDL_COMMON_APPDATA, true);
+#else
+    char* home = std::getenv("HOME");
+    return home && std::strlen(home) ? fs::u8path(home) : fs::current_path();
+#endif
+  }
+
+  fs::path get_default_data_dir()
+  {
+    return get_default_parent_dir() / fs::u8path(cryptonote::DATA_DIRNAME);
+  }
+  fs::path get_depreciated_default_data_dir()
+  {
+    return get_default_parent_dir() / fs::u8path(cryptonote::DATA_DIRNAME);
+  }
 
   void set_strict_default_file_permissions(bool strict)
   {

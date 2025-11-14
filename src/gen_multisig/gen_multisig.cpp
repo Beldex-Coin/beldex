@@ -242,7 +242,7 @@ int main(int argc, char* argv[])
   }
 
   bool create_address_file = command_line::get_arg(*vm, arg_create_address_file);
-  if (!generate_multisig(threshold, total, basename, testnet ? TESTNET : devnet ? DEVNET : MAINNET, create_address_file))
+  if (!generate_multisig(threshold, total, basename, testnet ? network_type::TESTNET : devnet ? network_type::DEVNET : network_type::MAINNET, create_address_file))
     return 1;
 
   return 0;

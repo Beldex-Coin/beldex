@@ -35,18 +35,19 @@ namespace cryptonote
   std::optional<uint64_t> bootstrap_daemon::get_height()
   {
     // query bootstrap daemon's height
-    rpc::GET_HEIGHT::response res{};
-    if (!invoke<rpc::GET_HEIGHT>({}, res))
+    rpc::GET_HEIGHT get_height;
+    if (!invoke_json<rpc::GET_HEIGHT>({}, get_height.response))
     {
       return std::nullopt;
     }
 
-    if (res.status != cryptonote::rpc::STATUS_OK)
+    if (get_height.response["status"] != cryptonote::rpc::STATUS_OK)
     {
       return std::nullopt;
     }
 
-    return res.height;
+    return get_height.response["height"].get<uint64_t>();
+  
   }
 
   bool bootstrap_daemon::set_server(std::string url, const std::optional<std::pair<std::string_view, std::string_view>> &credentials /* = std::nullopt */)

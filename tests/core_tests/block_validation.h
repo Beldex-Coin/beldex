@@ -89,12 +89,12 @@ struct gen_block_big_minor_version : public gen_block_accepted_base<2>
   bool generate(std::vector<test_event_entry>& events) const;
 };
 
-struct gen_block_ts_not_checked : public gen_block_accepted_base<BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW>
+struct gen_block_ts_not_checked : public gen_block_accepted_base<cryptonote::BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW>
 {
   bool generate(std::vector<test_event_entry>& events) const;
 };
 
-struct gen_block_ts_in_past : public gen_block_verification_base<BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW>
+struct gen_block_ts_in_past : public gen_block_verification_base<cryptonote::BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW>
 {
   bool generate(std::vector<test_event_entry>& events) const;
 };
@@ -155,12 +155,12 @@ struct gen_block_miner_tx_has_2_tx_gen_in : public gen_block_verification_base<1
   bool generate(std::vector<test_event_entry>& events) const;
 };
 
-struct gen_block_miner_tx_has_2_in : public gen_block_verification_base<CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW + 11>
+struct gen_block_miner_tx_has_2_in : public gen_block_verification_base<cryptonote::MINED_MONEY_UNLOCK_WINDOW + 11>
 {
   bool generate(std::vector<test_event_entry>& events) const;
 };
 
-struct gen_block_miner_tx_with_txin_to_key : public gen_block_verification_base<CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW + 2>
+struct gen_block_miner_tx_with_txin_to_key : public gen_block_verification_base<cryptonote::MINED_MONEY_UNLOCK_WINDOW + 2>
 {
   bool generate(std::vector<test_event_entry>& events) const;
 };

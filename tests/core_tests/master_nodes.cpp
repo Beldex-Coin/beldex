@@ -129,7 +129,7 @@ bool gen_master_nodes::generate(std::vector<test_event_entry> &events) const
   const auto miner = gen.first_miner();
   const auto alice = gen.create_account();
 
-  gen.rewind_until_version(network_version_9_master_nodes);
+  gen.rewind_until_version(hf::hf9_master_nodes);
   gen.rewind_blocks_n(10);
 
   gen.rewind_blocks();
@@ -145,7 +145,7 @@ bool gen_master_nodes::generate(std::vector<test_event_entry> &events) const
 
   DO_CALLBACK(events, "check_registered");
 
-  for (auto i = 0u; i < master_nodes::staking_num_lock_blocks(cryptonote::FAKECHAIN,network_version_9_master_nodes); ++i) {
+  for (auto i = 0u; i < master_nodes::staking_num_lock_blocks(cryptonote::network_type::FAKECHAIN, hf::hf9_master_nodes); ++i) {
     gen.create_block();
   }
 
@@ -161,7 +161,7 @@ bool gen_master_nodes::check_registered(cryptonote::core& c, size_t ev_index, co
   cryptonote::account_base alice = boost::get<cryptonote::account_base>(events[1]);
 
   std::vector<block> blocks;
-  size_t count = 15 + (2 * CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW);
+  size_t count = 15 + (2 * cryptonote::MINED_MONEY_UNLOCK_WINDOW);
   bool r = c.get_blocks((uint64_t)0, count, blocks);
   CHECK_TEST_CONDITION(r);
   std::vector<cryptonote::block> chain;
@@ -189,10 +189,10 @@ bool gen_master_nodes::check_expired(cryptonote::core& c, size_t ev_index, const
 
   cryptonote::account_base alice = boost::get<cryptonote::account_base>(events[1]);
 
-  const auto stake_lock_time = master_nodes::staking_num_lock_blocks(cryptonote::FAKECHAIN,0);
+  const auto stake_lock_time = master_nodes::staking_num_lock_blocks(cryptonote::network_type::FAKECHAIN,0);
 
   std::vector<block> blocks;
-  size_t count = 15 + (2 * CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW) + stake_lock_time;
+  size_t count = 15 + (2 * cryptonote::MINED_MONEY_UNLOCK_WINDOW) + stake_lock_time;
   bool r = c.get_blocks((uint64_t)0, count, blocks);
   CHECK_TEST_CONDITION(r);
   std::vector<cryptonote::block> chain;
@@ -227,7 +227,7 @@ bool test_prefer_deregisters::generate(std::vector<test_event_entry> &events)
   const auto miner = gen.first_miner();
   const auto alice = gen.create_account();
 
-  gen.rewind_until_version(network_version_9_master_nodes);
+  gen.rewind_until_version(hf::hf9_master_nodes);
 
   /// give miner some outputs to spend and unlock them
   gen.rewind_blocks_n(60);
@@ -311,7 +311,7 @@ bool test_zero_fee_deregister::generate(std::vector<test_event_entry> &events)
 
   gen.create_genesis_block();
 
-  gen.rewind_until_version(network_version_9_master_nodes);
+  gen.rewind_until_version(hf::hf9_master_nodes);
 
   /// give miner some outputs to spend and unlock them
   gen.rewind_blocks_n(20);
@@ -354,7 +354,7 @@ bool test_deregister_safety_buffer::generate(std::vector<test_event_entry> &even
 
   const auto miner = gen.first_miner();
 
-  gen.rewind_until_version(network_version_9_master_nodes);
+  gen.rewind_until_version(hf::hf9_master_nodes);
 
   /// give miner some outputs to spend and unlock them
   gen.rewind_blocks_n(40);
@@ -462,7 +462,7 @@ bool test_deregisters_on_split::generate(std::vector<test_event_entry> &events)
   linear_chain_generator gen(events, test_options.hard_forks);
   gen.create_genesis_block();
 
-  gen.rewind_until_version(network_version_9_master_nodes);
+  gen.rewind_until_version(hf::hf9_master_nodes);
 
   /// generate some outputs and unlock them
   gen.rewind_blocks_n(20);
@@ -565,7 +565,7 @@ bool deregister_too_old::generate(std::vector<test_event_entry>& events)
   linear_chain_generator gen(events, test_options.hard_forks);
   gen.create_genesis_block();
 
-  gen.rewind_until_version(network_version_9_master_nodes);
+  gen.rewind_until_version(hf::hf9_master_nodes);
 
   /// generate some outputs and unlock them
   gen.rewind_blocks_n(20);
@@ -610,7 +610,7 @@ bool mn_test_rollback::generate(std::vector<test_event_entry>& events)
   linear_chain_generator gen(events, test_options.hard_forks);
   gen.create_genesis_block();
 
-  gen.rewind_until_version(network_version_9_master_nodes);
+  gen.rewind_until_version(hf::hf9_master_nodes);
 
   /// generate some outputs and unlock them
   gen.rewind_blocks_n(20);
@@ -755,12 +755,12 @@ bool test_swarms_basic::generate(std::vector<test_event_entry>& events)
   /// create a few blocks with active master nodes
   gen.rewind_blocks_n(5);
 
-  if (gen.get_hf_version() != network_version_9_master_nodes) {
+  if (gen.get_hf_version() != hf::hf9_master_nodes) {
     std::cerr << "wrong hf version\n";
     return false;
   }
 
-  gen.rewind_until_version(network_version_10_bulletproofs);
+  gen.rewind_until_version(hf::hf10_bulletproofs);
 
   /// test that we now have swarms
   DO_CALLBACK(events, "test_initial_swarms");

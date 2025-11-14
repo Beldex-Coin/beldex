@@ -268,12 +268,12 @@ bool transactions_flow_test(std::string& working_folder,
 
 
   LOG_PRINT_L0( "waiting some new blocks...");
-  std::this_thread::sleep_for(TARGET_BLOCK_TIME_OLD*20*1s);//wait two blocks before sync on another wallet on another daemon
+  std::this_thread::sleep_for(TARGET_BLOCK_TIME_12*20*1s);//wait two blocks before sync on another wallet on another daemon
   LOG_PRINT_L0( "refreshing...");
   bool recvd_money = false;
   while(w2.refresh(true, blocks_fetched, recvd_money, ok) && ( (blocks_fetched && recvd_money) || !blocks_fetched  ) )
   {
-    std::this_thread::sleep_for(TARGET_BLOCK_TIME_OLD*1s);//wait two blocks before sync on another wallet on another daemon
+    std::this_thread::sleep_for(TARGET_BLOCK_TIME_12*1s);//wait two blocks before sync on another wallet on another daemon
   }
 
   uint64_t money_2 = w2.balance(0, true);

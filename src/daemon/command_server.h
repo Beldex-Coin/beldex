@@ -38,21 +38,23 @@ namespace daemonize {
 
 class command_server {
 private:
-  bool m_is_rpc{true};
   command_parser_executor m_parser;
   epee::console_handlers_binder m_command_lookup;
+  std::optional<oxenmq::OxenMQ> m_omq;
 
 public:
-  /// Remote HTTP RPC constructor
-  command_server(std::string daemon_url, const std::optional<tools::login>& login);
-
-  /// Non-remote constructor
-  command_server(cryptonote::rpc::core_rpc_server& rpc_server);
+  /// command_server constructor; forwards to command_parser_executor
+  template <typename... T>
+  command_server(T&&... args)
+      : m_parser{std::forward<T>(args)...}
+  {
+    init_commands();
+  }
 
   template <typename... T>
   bool process_command_and_log(T&&... args) { return m_command_lookup.process_command_and_log(std::forward<T>(args)...); }
 
-  bool start_handling(std::function<void(void)> exit_handler = {});
+  bool start_handling(std::function<void()> exit_handler = {});
 
   void stop_handling();
 

@@ -116,3 +116,6 @@ __pycache__/
 
 # brew build lock file
 contrib/brew/Brewfile.lock.json
+
+*.pyc
+*.log

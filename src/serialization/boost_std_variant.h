@@ -1,5 +1,8 @@
 #pragma once
 
+#include <boost/version.hpp>
+
+#if BOOST_VERSION < 108400
 // Adapts boost::serialization to support std::variant, serializing just as a boost::variant would
 // be serialized (so that the serialized boost::variant<T...> and std::variant<T...> values are
 // interchangeable).
@@ -50,3 +53,5 @@ inline void serialize(Archive& ar, std::variant<T...>& v, const unsigned int fil
 }
 
 } // namespace boost::serialization
+
+#endif

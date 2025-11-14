@@ -167,7 +167,8 @@ uint64_t PendingTransactionImpl::amount() const
         std::optional<uint8_t> hf_version = m_wallet.hardForkVersion();
         if (hf_version)
         {
-          if (master_nodes::tx_get_staking_components_and_amounts(static_cast<cryptonote::network_type>(w->nettype()), *hf_version, ptx.tx, height, &sc)
+          auto hf = static_cast<cryptonote::hf>(*hf_version);
+          if (master_nodes::tx_get_staking_components_and_amounts(static_cast<cryptonote::network_type>(w->nettype()), hf, ptx.tx, height, &sc)
           && sc.transferred > 0)
             result = sc.transferred;
         }

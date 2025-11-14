@@ -84,7 +84,7 @@ namespace epee
     }
 
     template<class t_arg, class t_result, class t_transport>
-    bool invoke_remote_command2(boost::uuids::uuid conn_id, int command, const t_arg& out_struct, t_result& result_struct, t_transport& transport)
+    bool invoke_remote_command2(connection_id_t conn_id, int command, const t_arg& out_struct, t_result& result_struct, t_transport& transport)
     {
 
       typename serialization::portable_storage stg;
@@ -108,7 +108,7 @@ namespace epee
     }
 
     template<class t_result, class t_arg, class callback_t, class t_transport>
-    bool async_invoke_remote_command2(boost::uuids::uuid conn_id, int command, const t_arg& out_struct, t_transport& transport, const callback_t &cb, size_t inv_timeout = LEVIN_DEFAULT_TIMEOUT_PRECONFIGURED)
+    bool async_invoke_remote_command2(connection_id_t conn_id, int command, const t_arg& out_struct, t_transport& transport, const callback_t &cb, std::chrono::nanoseconds inv_timeout = 0ns)
     {
       typename serialization::portable_storage stg;
       const_cast<t_arg&>(out_struct).store(stg);//TODO: add true const support to searilzation
@@ -148,7 +148,7 @@ namespace epee
     }
 
     template<class t_arg, class t_transport>
-    bool notify_remote_command2(boost::uuids::uuid conn_id, int command, const t_arg& out_struct, t_transport& transport)
+    bool notify_remote_command2(connection_id_t conn_id, int command, const t_arg& out_struct, t_transport& transport)
     {
 
       serialization::portable_storage stg;

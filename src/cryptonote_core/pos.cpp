@@ -723,9 +723,9 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg)
 }
 
 // TODO(doyle): Update POS::prepare_for_round with this function after the hard fork and sanity check it on testnet.
-bool POS::convert_time_to_round(POS::time_point const &time, POS::time_point const &r0_timestamp, uint8_t *round)
+bool POS::convert_time_to_round(POS::time_point const& time, POS::time_point const& r0_timestamp, uint8_t* round)
 {
-  auto const time_since_round_started = time <= r0_timestamp ? std::chrono::seconds(0) : (time - r0_timestamp);
+  const auto time_since_round_started = time <= r0_timestamp ? 0s : (time - r0_timestamp);
   size_t result_usize                 = time_since_round_started / master_nodes::POS_ROUND_TIME;
   if (round) *round = static_cast<uint8_t>(result_usize);
   return result_usize <= master_nodes::POS_MAX_ROUNDS_BEFORE_NETWORK_STALLED;
@@ -734,7 +734,7 @@ bool POS::convert_time_to_round(POS::time_point const &time, POS::time_point con
 bool POS::get_round_timings(cryptonote::Blockchain const &blockchain, uint64_t block_height, uint64_t prev_timestamp, POS::timings &times)
 {
   times = {};
-  auto hf17 = hard_fork_begins(blockchain.nettype(), cryptonote::network_version_17_POS);
+  auto hf17 = hard_fork_begins(blockchain.nettype(), cryptonote::hf::hf17_POS);
   if (!hf17 || blockchain.get_current_blockchain_height() < *hf17)
     return false;
 
@@ -745,7 +745,7 @@ bool POS::get_round_timings(cryptonote::Blockchain const &blockchain, uint64_t b
   uint64_t const delta_height = block_height - cryptonote::get_block_height(POS_genesis_block);
   times.genesis_timestamp     = POS::time_point(std::chrono::seconds(POS_genesis_block.timestamp));
   times.prev_timestamp  = POS::time_point(std::chrono::seconds(prev_timestamp));
-  times.ideal_timestamp  = POS::time_point(times.genesis_timestamp + (TARGET_BLOCK_TIME * delta_height)); //only for POS
+  times.ideal_timestamp  = POS::time_point(times.genesis_timestamp + (cryptonote::TARGET_BLOCK_TIME * delta_height)); //only for POS
 
 
 #if 1
@@ -762,13 +762,13 @@ bool POS::get_round_timings(cryptonote::Blockchain const &blockchain, uint64_t b
 
 /*
   POS progresses via a state-machine that is iterated through job submissions
-  to 1 dedicated POS thread, started by LMQ.
+  to 1 dedicated POS thread, started by OMQ.
 
   Iterating the state-machine is done by a periodic invocation of
   POS::main(...) and messages received via Quorumnet for POS, which are
   queued in the thread's job queue.
 
-  Using 1 dedicated thread via LMQ avoids any synchronization required in the
+  Using 1 dedicated thread via OMQ avoids any synchronization required in the
   user code when implementing POS.
 
   Skip control flow graph for textual description of stages.
@@ -1144,7 +1144,7 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
       return goto_wait_for_next_block_and_clear_round_data(context);
     }
 
-    uint8_t curr_round = static_cast<uint8_t>(round_usize);
+    auto curr_round = static_cast<uint8_t>(round_usize);
     if (curr_round > context.prepare_for_round.round)
       context.prepare_for_round.round = curr_round;
   }
@@ -1162,7 +1162,7 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
 
   std::vector<crypto::hash> const entropy = master_nodes::get_POS_entropy_for_next_block(blockchain.get_db(), context.wait_for_next_block.top_hash, context.prepare_for_round.round);
   auto const active_node_list             = blockchain.get_master_node_list().active_master_nodes_infos();
-  uint8_t const hf_version                = blockchain.get_network_version();
+  auto hf_version                         = blockchain.get_network_version();
   crypto::public_key const &block_leader  = blockchain.get_master_node_list().get_block_leader().key;
 
   context.prepare_for_round.quorum =
@@ -1682,7 +1682,7 @@ void POS::main(void *quorumnet_state, cryptonote::core &core)
   //
   // NOTE: Early exit if too early
   //
-  auto hf17 = hard_fork_begins(core.get_nettype(), cryptonote::network_version_17_POS);
+  auto hf17 = hard_fork_begins(core.get_nettype(), cryptonote::hf::hf17_POS);
   if (!hf17)
   {
     for (static bool once = true; once; once = !once)

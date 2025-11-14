@@ -4,6 +4,7 @@
 #include <vector>
 #include <algorithm>
 #include "common/hex.h"
+#include "cryptonote_config.h"
 #include "beldex_name_system.h"
 
 #include "common/beldex.h"
@@ -35,6 +36,8 @@ extern "C"
 
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "bns"
+
+using cryptonote::hf;
 
 namespace bns
 {
@@ -653,14 +656,14 @@ sqlite3 *init_beldex_name_system(const fs::path& file_path, bool read_only)
   return result;
 }
 
-std::vector<mapping_type> all_mapping_types(uint8_t hf_version) {
+std::vector<mapping_type> all_mapping_types(hf hf_version) {
   std::vector<mapping_type> result;
   result.reserve(2);
-  if (hf_version >= cryptonote::network_version_16)
+  if (hf_version >= hf::hf16)
     result.push_back(mapping_type::bchat);
-  if (hf_version >= cryptonote::network_version_17_POS)
+  if (hf_version >= hf::hf17_POS)
     result.push_back(mapping_type::belnet);
-  if (hf_version >= cryptonote::network_version_17_POS)
+  if (hf_version >= hf::hf17_POS)
     result.push_back(mapping_type::wallet);
   return result;
 }
@@ -669,7 +672,7 @@ std::optional<uint64_t> expiry_blocks(cryptonote::network_type nettype, mapping_
 {
   std::optional<uint64_t> result;
 
-  result = BLOCKS_PER_DAY * REGISTRATION_YEAR_DAYS * (
+  result = cryptonote::BLOCKS_PER_DAY * REGISTRATION_YEAR_DAYS * (
         map_years == mapping_years::bns_1year   ? 1 :
         map_years == mapping_years::bns_2years  ? 2 :
         map_years == mapping_years::bns_5years  ? 5 :
@@ -677,10 +680,10 @@ std::optional<uint64_t> expiry_blocks(cryptonote::network_type nettype, mapping_
 
   assert(result && *result);
 
-  if (nettype == cryptonote::TESTNET)  // For testnet we shorten 1/2/5/10 years renewals to 1/2/5 days.
+  if (nettype == cryptonote::network_type::TESTNET)  // For testnet we shorten 1/2/5/10 years renewals to 1/2/5 days.
     *result /= REGISTRATION_YEAR_DAYS;
-  else if (nettype == cryptonote::FAKECHAIN) // For fakenet testing we shorten 1/2/5/10 years to 2/4/10/20 blocks
-    *result /= (BLOCKS_PER_DAY * REGISTRATION_YEAR_DAYS / 2);
+  else if (nettype == cryptonote::network_type::FAKECHAIN) // For fakenet testing we shorten 1/2/5/10 years to 2/4/10/20 blocks
+    *result /= (cryptonote::BLOCKS_PER_DAY * REGISTRATION_YEAR_DAYS / 2);
 
   return result;
 }
@@ -1229,7 +1232,7 @@ static bool validate_against_previous_mapping(bns::name_system_db &bns_db, uint6
 // Sanity check value to disallow the empty name hash
 static const crypto::hash null_name_hash = name_to_hash("");
 
-bool name_system_db::validate_bns_tx(uint8_t hf_version, uint64_t blockchain_height, cryptonote::transaction const &tx, cryptonote::tx_extra_beldex_name_system &bns_extra, std::string *reason)
+bool name_system_db::validate_bns_tx(hf hf_version, uint64_t blockchain_height, cryptonote::transaction const &tx, cryptonote::tx_extra_beldex_name_system &bns_extra, std::string *reason)
 {
   // -----------------------------------------------------------------------------------------------
   // Pull out BNS Extra from TX
@@ -1320,7 +1323,7 @@ bool name_system_db::validate_bns_tx(uint8_t hf_version, uint64_t blockchain_hei
     if (bns_extra.field_is_set(bns::extra_field::encrypted_eth_addr_value))
     {
       // BNS Allowed type Validation
-      if (check_condition(hf_version < cryptonote::network_version_19, reason, tx, ", ", bns_extra_string(nettype, bns_extra)," specifying eth_addr is disallowed in HF", +static_cast<uint8_t>(hf_version)))
+      if (check_condition(hf_version < cryptonote::hf::hf19_enhance_bns, reason, tx, ", ", bns_extra_string(nettype, bns_extra)," specifying eth_addr is disallowed in HF", +static_cast<uint8_t>(hf_version)))
         return false;
 
       if (!mapping_value::validate_encrypted(mapping_type::eth_addr, bns_extra.encrypted_eth_addr_value, nullptr, reason))
@@ -1356,7 +1359,7 @@ bool name_system_db::validate_bns_tx(uint8_t hf_version, uint64_t blockchain_hei
   return true;
 }
 
-bool validate_mapping_type(std::string_view mapping_type_str, uint8_t hf_version, bns::mapping_type *mapping_type, std::string *reason)
+bool validate_mapping_type(std::string_view mapping_type_str, hf hf_version, bns::mapping_type *mapping_type, std::string *reason)
 {
   std::string mapping = tools::lowercase_ascii_string(mapping_type_str);
   std::optional<bns::mapping_type> mapping_type_;
@@ -2195,7 +2198,7 @@ bool name_system_db::add_block(const cryptonote::block &block, const std::vector
    return false;
 
   bool bns_parsed_from_block = false;
-  if (block.major_version >= cryptonote::network_version_18_bns)
+  if (block.major_version >= hf::hf18_bns)
   {
     for (cryptonote::transaction const &tx : txs)
     {
@@ -2330,11 +2333,19 @@ bool name_system_db::save_settings(uint64_t top_height, crypto::hash const &top_
 
 bool name_system_db::prune_db(uint64_t height)
 {
-  if (!bind_and_run(bns_sql_type::pruning, prune_mappings_sql, nullptr, height)) return false;
-  if (!sql_run_statement(bns_sql_type::pruning, prune_owners_sql, nullptr)) return false;
+  bool result = false;
+  if (db) {
+    if (bind_and_run(bns_sql_type::pruning, prune_mappings_sql, nullptr, height))
+      if (sql_run_statement(bns_sql_type::pruning, prune_owners_sql, nullptr))
+        result = true;
 
-  this->last_processed_height = (height - 1);
-  return true;
+    MDEBUG("Detach request for BNS (last processed is" <<  this->last_processed_height << "), " << (result ? "detached" : "failed to detach") << " to " << height);
+
+    if (result)
+      this->last_processed_height = (height - 1);
+  }
+
+  return result;
 }
 
 owner_record name_system_db::get_owner_by_key(bns::generic_owner const &owner)

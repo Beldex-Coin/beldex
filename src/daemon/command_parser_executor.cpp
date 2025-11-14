@@ -31,6 +31,8 @@
 
 #include "common/command_line.h"
 #include "common/hex.h"
+#include "common/scoped_message_writer.h"
+#include "common/string_util.h"
 #include "version.h"
 #include "daemon/command_parser_executor.h"
 #include "rpc/core_rpc_server_commands_defs.h"
@@ -40,21 +42,23 @@
 
 namespace daemonize {
 
-command_parser_executor::command_parser_executor(std::string daemon_url, const std::optional<tools::login>& login)
-  : m_executor{std::move(daemon_url), login}
-{}
-
-command_parser_executor::command_parser_executor(cryptonote::rpc::core_rpc_server& rpc_server)
-  : m_executor{rpc_server}
-{}
+template <typename T>
+constexpr bool is_std_optional = false;
+template <typename T>
+inline constexpr bool is_std_optional<std::optional<T>> = true;
 
 // Consumes an argument from the given list, if present, parsing it into `var`.
 // Returns false upon parse failure, true otherwise.
 template <typename T>
-static bool parse_if_present(std::forward_list<std::string> &list, T &var, const char *name)
+static bool parse_if_present(std::forward_list<std::string>& list, T& var, const char* name)
 {
   if (list.empty()) return true;
-  if (epee::string_tools::get_xtype_from_string(var, list.front()))
+  bool good = false;
+  if constexpr (is_std_optional<T>)
+    good = epee::string_tools::get_xtype_from_string(var.emplace(), list.front());
+  else
+    good = epee::string_tools::get_xtype_from_string(var, list.front());
+  if (good)
   {
     list.pop_front();
     return true;
@@ -64,10 +68,9 @@ static bool parse_if_present(std::forward_list<std::string> &list, T &var, const
   return false;
 }
 
-bool command_parser_executor::print_checkpoints(const std::vector<std::string> &args)
+bool command_parser_executor::print_checkpoints(const std::vector<std::string>& args)
 {
-  uint64_t start_height = cryptonote::rpc::GET_CHECKPOINTS::HEIGHT_SENTINEL_VALUE;
-  uint64_t end_height   = cryptonote::rpc::GET_CHECKPOINTS::HEIGHT_SENTINEL_VALUE;
+  std::optional<uint64_t> start_height, end_height;
 
   std::forward_list<std::string> args_list(args.begin(), args.end());
   bool print_json = !args_list.empty() && args_list.front() == "+json";
@@ -95,7 +98,7 @@ bool command_parser_executor::print_checkpoints(const std::vector<std::string> &
 bool command_parser_executor::print_mn_state_changes(const std::vector<std::string> &args)
 {
   uint64_t start_height;
-  uint64_t end_height = cryptonote::rpc::GET_MN_STATE_CHANGES::HEIGHT_SENTINEL_VALUE;
+  std::optional<uint64_t> end_height;
 
   if (args.empty()) {
     std::cout << "Missing first argument start_height" << std::endl;
@@ -108,7 +111,6 @@ bool command_parser_executor::print_mn_state_changes(const std::vector<std::stri
     std::cout << "start_height should be a number" << std::endl;
     return false;
   }
-
   args_list.pop_front();
 
   if (!parse_if_present(args_list, end_height, "end height"))
@@ -127,44 +129,29 @@ bool command_parser_executor::print_mn_state_changes(const std::vector<std::stri
 
 bool command_parser_executor::print_peer_list(const std::vector<std::string>& args)
 {
-  if (args.size() > 3)
-  {
-    std::cout << "use: print_pl [white] [gray] [<limit>] [pruned] [publicrpc]" << std::endl;
-    return true;
-  }
-
   bool white = false;
   bool gray = false;
   bool pruned = false;
-  bool publicrpc = false;
   size_t limit = 0;
-  for (size_t i = 0; i < args.size(); ++i)
+  for (const auto& arg : args)
   {
-    if (args[i] == "white")
-    {
+    if (arg == "white")
       white = true;
-    }
-    else if (args[i] == "gray")
-    {
+    else if (arg == "gray")
       gray = true;
-    }
-    else if (args[i] == "pruned")
-    {
+    else if (arg == "pruned")
       pruned = true;
-    }
-    else if (args[i] == "publicrpc")
-    {
-      publicrpc = true;
-    }
-    else if (!epee::string_tools::get_xtype_from_string(limit, args[i]))
-    {
-      std::cout << "unexpected argument: " << args[i] << std::endl;
+    else if (tools::parse_int(arg, limit))
+      /*limit already set*/;
+    else {
+      std::cout << "Unexpected argument: " << arg << "\n";
       return true;
     }
   }
 
-  const bool print_both = !white && !gray;
-  return m_executor.print_peer_list(white | print_both, gray | print_both, limit, pruned, publicrpc);
+  if (!white && !gray)
+    white = gray = true;
+  return m_executor.print_peer_list(white, gray, limit, pruned);
 }
 
 bool command_parser_executor::print_peer_list_stats(const std::vector<std::string>& args)
@@ -179,20 +166,6 @@ bool command_parser_executor::save_blockchain(const std::vector<std::string>& ar
   if (!args.empty()) return false;
 
   return m_executor.save_blockchain();
-}
-
-bool command_parser_executor::show_hash_rate(const std::vector<std::string>& args)
-{
-  if (!args.empty()) return false;
-
-  return m_executor.show_hash_rate();
-}
-
-bool command_parser_executor::hide_hash_rate(const std::vector<std::string>& args)
-{
-  if (!args.empty()) return false;
-
-  return m_executor.hide_hash_rate();
 }
 
 bool command_parser_executor::show_difficulty(const std::vector<std::string>& args)
@@ -258,8 +231,8 @@ bool command_parser_executor::print_blockchain_info(const std::vector<std::strin
 
 bool command_parser_executor::print_quorum_state(const std::vector<std::string>& args)
 {
-  uint64_t start_height = cryptonote::rpc::GET_QUORUM_STATE::HEIGHT_SENTINEL_VALUE;
-  uint64_t end_height   = cryptonote::rpc::GET_QUORUM_STATE::HEIGHT_SENTINEL_VALUE;
+  std::optional<uint64_t> start_height;
+  std::optional<uint64_t> end_height;
 
   std::forward_list<std::string> args_list(args.begin(), args.end());
   if (!parse_if_present(args_list, start_height, "start height"))
@@ -353,7 +326,23 @@ bool command_parser_executor::set_log_level(const std::vector<std::string>& args
   }
   else
   {
-    return m_executor.set_log_categories(args.front());
+    static std::unordered_map<std::string, std::string> level_map = {
+      {"WARNING", "*:WARNING"}, {"INFO", "*:INFO"}, {"DEBUG", "*:DEBUG"}, {"TRACE", "*:TRACE"},
+      {"*WARNING", "*:WARNING"}, {"*INFO", "*:INFO"}, {"*DEBUG", "*:DEBUG"}, {"*TRACE", "*:TRACE"},
+      {":WARNING", "*:WARNING"}, {":INFO", "*:INFO"}, {":DEBUG", "*:DEBUG"}, {":TRACE", "*:TRACE"} 
+    };
+
+    std::string input = args[0];
+    std::transform(input.begin(), input.end(), input.begin(), ::toupper);
+
+    auto it = level_map.find(input);
+    if (it != level_map.end()) 
+      return m_executor.set_log_categories(it->second);
+
+    if (args[0].find(':') != std::string::npos) return m_executor.set_log_categories(args.front());
+    
+    std::cout << "Invalid log level. Use: 0-4, WARNING/INFO/DEBUG/TRACE, or category:level format" << std::endl;
+    return true;
   }
 }
 
@@ -441,20 +430,18 @@ bool command_parser_executor::is_key_image_spent(const std::vector<std::string>&
 {
   if (args.empty())
   {
-    std::cout << "expected: is_key_image_spent <key_image>" << std::endl;
+    tools::fail_msg_writer() << "Invalid arguments. Expected: is_key_image_spent <key_image> [<key_image> ...]\n";
     return true;
   }
 
-  const std::string& str = args.front();
-  crypto::key_image ki;
-  crypto::hash hash;
-  if (tools::hex_to_type(str, hash))
-  {
-    memcpy(&ki, &hash, sizeof(ki));
-    m_executor.is_key_image_spent(ki);
+  std::vector<crypto::key_image> kis;
+  for (const auto& hex : args) {
+    if (!tools::hex_to_type(hex, kis.emplace_back())) {
+      tools::fail_msg_writer() << "Invalid key image: '" << hex << "'";
+      return true;
+    }
   }
-  else
-    MERROR("invalid key image hash: " << str);
+  m_executor.is_key_image_spent(kis);
 
   return true;
 }
@@ -463,14 +450,14 @@ bool command_parser_executor::print_transaction_pool_long(const std::vector<std:
 {
   if (!args.empty()) return false;
 
-  return m_executor.print_transaction_pool_long();
+  return m_executor.print_transaction_pool(true);
 }
 
 bool command_parser_executor::print_transaction_pool_short(const std::vector<std::string>& args)
 {
   if (!args.empty()) return false;
 
-  return m_executor.print_transaction_pool_short();
+  return m_executor.print_transaction_pool(false);
 }
 
 bool command_parser_executor::print_transaction_pool_stats(const std::vector<std::string>& args)
@@ -490,12 +477,12 @@ bool command_parser_executor::start_mining(const std::vector<std::string>& args)
 
   cryptonote::address_parse_info info;
   cryptonote::network_type nettype;
-  if (cryptonote::get_account_address_from_str(info, cryptonote::MAINNET, args.front()))
-    nettype = cryptonote::MAINNET;
-  else if (cryptonote::get_account_address_from_str(info, cryptonote::TESTNET, args.front()))
-    nettype = cryptonote::TESTNET;
-  else if (cryptonote::get_account_address_from_str(info, cryptonote::DEVNET, args.front()))
-    nettype = cryptonote::DEVNET;
+  if (cryptonote::get_account_address_from_str(info, cryptonote::network_type::MAINNET, args.front()))
+    nettype = cryptonote::network_type::MAINNET;
+  else if (cryptonote::get_account_address_from_str(info, cryptonote::network_type::TESTNET, args.front()))
+    nettype = cryptonote::network_type::TESTNET;
+  else if (cryptonote::get_account_address_from_str(info, cryptonote::network_type::DEVNET, args.front()))
+    nettype = cryptonote::network_type::DEVNET;
   else
   {
     std::cout << "target account address has wrong format" << std::endl;
@@ -506,30 +493,15 @@ bool command_parser_executor::start_mining(const std::vector<std::string>& args)
     tools::fail_msg_writer() << "subaddress for mining reward is not yet supported!";
     return true;
   }
-  if(nettype != cryptonote::MAINNET)
-    std::cout << "Mining to a " << (nettype == cryptonote::TESTNET ? "testnet" : "devnet") << " address, make sure this is intentional!";
 
   std::string_view threads_val    = tools::find_prefixed_value(args.begin() + 1, args.end(), "threads="sv);
   std::string_view num_blocks_val = tools::find_prefixed_value(args.begin() + 1, args.end(), "num_blocks="sv);
 
-  int threads_count   = 1;
-  uint32_t num_blocks = 0;
-  if (threads_val.size())
+  unsigned int threads_count = 1, num_blocks = 0;
+  if (threads_val.size() && !tools::parse_int(threads_val, threads_count))
   {
-    if (threads_val == "auto"sv || threads_val == "autodetect"sv)
-    {
-      threads_count = 0;
-    }
-    else
-    {
-      if (!tools::parse_int(threads_val, threads_count))
-      {
-        tools::fail_msg_writer() << "Failed to parse threads value" << threads_val;
-        return false;
-      }
-
-      threads_count = 0 < threads_count ? threads_count : 1;
-    }
+    tools::fail_msg_writer() << "Failed to parse threads value" << threads_val;
+    return false;
   }
 
   if (num_blocks_val.size()) tools::parse_int(num_blocks_val, num_blocks);
@@ -556,65 +528,34 @@ bool command_parser_executor::stop_daemon(const std::vector<std::string>& args)
   return m_executor.stop_daemon();
 }
 
-bool command_parser_executor::print_status(const std::vector<std::string>& args)
-{
-  if (!args.empty()) return false;
-
-  return m_executor.print_status();
-}
-
 bool command_parser_executor::set_limit(const std::vector<std::string>& args)
 {
-  if(args.size()>1) return false;
-  if(args.size()==0) {
+  if (args.size() == 0)
     return m_executor.get_limit();
+
+  if (args.size() > 2) {
+    tools::fail_msg_writer() << "Too many arguments: expected 0-2 values";
+    return false;
   }
-  int64_t limit;
-  try {
-      limit = std::stoll(args[0]);
-  }
-  catch(const std::exception& ex) {
-      std::cout << "failed to parse argument" << std::endl;
-      return false;
+  int64_t limit_down;
+  if (args[0] == "default") // Accept "default" as a string because getting -1 through the cli arg parsing is a nuissance
+    limit_down = -1;
+  else if (!tools::parse_int(args[0], limit_down)) {
+    tools::fail_msg_writer() << "Failed to parse '" << args[0] << "' as a limit";
+    return false;
   }
 
-  return m_executor.set_limit(limit, limit);
-}
-
-bool command_parser_executor::set_limit_up(const std::vector<std::string>& args)
-{
-  if(args.size()>1) return false;
-  if(args.size()==0) {
-    return m_executor.get_limit(true, false);
-  }
-  int64_t limit;
-  try {
-      limit = std::stoll(args[0]);
-  }
-  catch(const std::exception& ex) {
-      std::cout << "failed to parse argument" << std::endl;
-      return false;
+  int64_t limit_up;
+  if (args.size() == 1)
+    limit_up = limit_down;
+  else if (args[1] == "default")
+    limit_up = -1;
+  else if (!tools::parse_int(args[1], limit_up)) {
+    tools::fail_msg_writer() << "Failed to parse '" << args[1] << "' as a limit";
+    return false;
   }
 
-  return m_executor.set_limit(0, limit);
-}
-
-bool command_parser_executor::set_limit_down(const std::vector<std::string>& args)
-{
-  if(args.size()>1) return false;
-  if(args.size()==0) {
-    return m_executor.get_limit(false, true);
-  }
-  int64_t limit;
-  try {
-      limit = std::stoll(args[0]);
-  }
-  catch(const std::exception& ex) {
-      std::cout << "failed to parse argument" << std::endl;
-      return false;
-  }
-
-  return m_executor.set_limit(limit, 0);
+  return m_executor.set_limit(limit_down, limit_up);
 }
 
 bool command_parser_executor::out_peers(const std::vector<std::string>& args)
@@ -667,7 +608,7 @@ bool command_parser_executor::ban(const std::vector<std::string>& args)
 {
   if (args.size() != 1 && args.size() != 2) return false;
   std::string ip = args[0];
-  time_t seconds = P2P_IP_BLOCKTIME;
+  time_t seconds = tools::to_seconds(cryptonote::p2p::IP_BLOCK_TIME);
   if (args.size() > 1)
   {
     try

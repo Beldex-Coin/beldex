@@ -1,5 +1,5 @@
 // Copyright (c) 2018-2020, The Beldex Project
-// Copyright (c) 2014-2019, The Monero Project
+// Copyright (c) 2014-2022, The Monero Project
 // 
 // All rights reserved.
 // 
@@ -38,19 +38,17 @@
 
 #include "serialization.h"
 #include "base.h"
+#include "common/json_binary_proxy.h"
 #include <cassert>
-#include <iostream>
-#include <iomanip>
 #include <exception>
-#include <oxenc/hex.h>
+#include <vector>
+#include <nlohmann/json.hpp>
 
 namespace serialization {
 
-using json_variant_tag_type = std::string_view;
-
 /*! \struct json_archiver
  * 
- * \brief a archive using the JSON standard
+ * \brief serialize data to JSON via nlohmann::json
  *
  * \detailed there is no deserializing counterpart; we only support JSON serializing here.
  */
@@ -58,151 +56,112 @@ struct json_archiver : public serializer
 {
   using variant_tag_type = std::string_view;
 
-  json_archiver(std::ostream& s, bool indent = false)
-    : stream_{s}, indent_{indent}
-  {
-    exc_restore_ = stream_.exceptions();
-    stream_.exceptions(std::istream::badbit | std::istream::failbit | std::istream::eofbit);
+  explicit json_archiver(tools::json_binary_proxy::fmt bin_format = tools::json_binary_proxy::fmt::hex)
+    : bin_format_{bin_format} {}
+
+  /// Returns the current nlohmann::json.
+  const nlohmann::json& json() const& { return top_; }
+  nlohmann::json&& json() && { return std::move(top_); }
+
+  /// Dumps the current nlohmann::json; arguments are forwarded to nlohmann::json::dump()
+  template <typename... T>
+  auto dump(T&&... args) const {
+    return top_.dump(std::forward<T>(args)...);
   }
 
-  ~json_archiver() { stream_.exceptions(exc_restore_); }
-
+  // Sets the tag for the next object value we will write.
   void tag(std::string_view tag) {
-    if (!object_begin)
-      stream_ << (indent_ ? ", "sv : ","sv);
-    make_indent();
-    stream_ << '"' << tag << (indent_ ? "\": "sv : "\":");
-
-    object_begin = false;
+    tag_ = tag;
   }
 
-  struct nested_object {
+  struct nested_value {
     json_archiver& ar;
-    ~nested_object() {
-      --ar.depth_;
-      ar.make_indent();
-      ar.stream_ << '}';
+    ~nested_value() {
+      assert(ar.stack_.size() >= 2);
+      ar.stack_.pop_back();
     }
 
-    nested_object(const nested_object&) = delete;
-    nested_object& operator=(const nested_object&) = delete;
-    nested_object(nested_object&&) = delete;
-    nested_object& operator=(nested_object&&) = delete;
+    nested_value(const nested_value&) = delete;
+    nested_value& operator=(const nested_value&) = delete;
+    nested_value(nested_value&&) = delete;
+    nested_value& operator=(nested_value&&) = delete;
   };
 
-  [[nodiscard]] nested_object begin_object()
+  [[nodiscard]] nested_value begin_object()
   {
-    stream_ << '{';
-    ++depth_;
-    object_begin = true;
-    return nested_object{*this};
+    stack_.emplace_back(set(nlohmann::json::object()));
+    return {*this};
   }
 
-  template<typename T>
-  static auto promote_to_printable_integer_type(T v)
+  [[nodiscard]] nested_value begin_array(size_t s=0)
   {
-    // Unary operator '+' performs integral promotion on type T [expr.unary.op].
-    // If T is signed or unsigned char, it's promoted to int and printed as number.
-    return +v;
+    stack_.emplace_back(set(nlohmann::json::array()));
+    return {*this};
   }
 
   template <class T>
   void serialize_int(T v)
   {
-    stream_ << std::dec << promote_to_printable_integer_type(v);
-  }
-
-  void serialize_blob(void *buf, size_t len, std::string_view delimiter="\""sv) {
-    stream_ << delimiter;
-    auto* begin = static_cast<unsigned char*>(buf);
-    oxenc::to_hex(begin, begin + len, std::ostreambuf_iterator{stream_});
-    stream_ << delimiter;
-  }
-
-  template <typename T>
-  void serialize_blobs(const std::vector<T>& blobs, std::string_view delimiter="\""sv) {
-    serialize_blob(blobs.data(), blobs.size()*sizeof(T), delimiter);
+    set(v);
   }
 
   template <class T>
   void serialize_varint(T &v)
   {
-    stream_ << std::dec << promote_to_printable_integer_type(v);
+    serialize_int(v);
   }
 
-  struct nested_array {
-    json_archiver& ar;
-    int exc_count = std::uncaught_exceptions();
-    bool first = true;
-
-    // Call before writing an element to add a delimiter.  The first element() call adds no
-    // delimiter.  Returns the archive itself, allowing you to write:
-    // 
-    //     auto arr = ar.begin_array();
-    //     for (auto& val : whatever)
-    //       value(arr.element(), val);
-    //
-    json_archiver& element() {
-      if (first) first = false;
-      else ar.delimit_array();
-      return ar;
-    }
-
-    ~nested_array() noexcept(false) {
-      if (std::uncaught_exceptions() == exc_count) { // Normal destruction
-        --ar.depth_;
-        if (ar.inner_array_contents_)
-          ar.make_indent();
-        ar.stream_ << ']';
-      }
-      // else we're destructing during a stack unwind so some other serialization failed, thus don't
-      // try terminating the array (since it might *also* throw if an IO error occurs).
-    }
-
-    // Non-copyable, non-moveable
-    nested_array(const nested_array&) = delete;
-    nested_array& operator=(const nested_array&) = delete;
-    nested_array(nested_array&&) = delete;
-    nested_array& operator=(nested_array&&) = delete;
-  };
-
-  // Begins an array and returns an RAII object that is used to delimit array elements and
-  // terminates the array on destruction.
-  [[nodiscard]] nested_array begin_array(size_t s=0)
-  {
-    inner_array_contents_ = s > 0;
-    ++depth_;
-    stream_ << '[';
-    return {*this};
+  void serialize_blob(const void *buf, size_t len) {
+    nlohmann::json val;
+    tools::json_binary_proxy{val, bin_format_} = std::string_view{static_cast<const char*>(buf), len};
+    set(std::move(val));
   }
 
-  void delimit_array() { stream_ << (indent_ ? ", "sv : ","sv); }
+  template <typename T>
+  void serialize_blobs(const std::vector<T>& blobs) {
+    serialize_blob(blobs.data(), blobs.size()*sizeof(T));
+  }
 
   void write_variant_tag(std::string_view t) { tag(t); }
 
-  // Returns the current position (i.e. stream.tellp()) of the output stream.
-  unsigned int streampos() { return static_cast<unsigned int>(stream_.tellp()); }
-
 private:
-  static constexpr std::string_view indents{"                                "};
-  void make_indent()
-  {
-    if (indent_)
-    {
-      stream_ << '\n';
-      auto in = 2 * depth_;
-      for (; in > indents.size(); in -= indents.size())
-        stream_ << indents;
-      stream_ << indents.substr(0, in);
-    }
+  nlohmann::json& curr() {
+    if (stack_.empty())
+      return top_;
+    else
+      return stack_.back();
   }
 
-  std::ostream& stream_;
-  std::ios_base::iostate exc_restore_;
-  bool indent_ = false;
-  bool object_begin = false;
-  bool inner_array_contents_ = false;
-  size_t depth_ = 0;
+  template <typename T>
+  nlohmann::json& set(T&& val) {
+    auto& c = curr();
+    if (stack_.empty()) {
+      c = std::forward<T>(val);
+      return c;
+    }
+    if (c.is_array()) {
+      c.push_back(std::forward<T>(val));
+      return c.back();
+    }
+    return (c[tag_] = std::forward<T>(val));
+  }
+
+  nlohmann::json top_;
+  std::vector<std::reference_wrapper<nlohmann::json>> stack_{};
+  tools::json_binary_proxy::fmt bin_format_;
+  std::string tag_;
 };
+
+
+/*! serializes the data in v to a string.  Throws on error.
+*/
+template<class T>
+std::string dump_json(T& v, int indent = -1)
+{
+  json_archiver oar;
+  serialize(oar, v);
+  return oar.dump(indent);
+}
+
 
 } // namespace serialization

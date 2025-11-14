@@ -17,6 +17,8 @@
 #include <cpr/error.h>
 #include <cpr/auth.h>
 
+#include <nlohmann/json.hpp>
+
 namespace cryptonote::rpc {
 
 using namespace std::literals;
@@ -143,6 +145,24 @@ public:
   /// Copies parameters (base url, timeout, authentication) from another http_client.
   void copy_params_from(const http_client& other);
 
+  /// Makes a JSON-RPC request; that is, a POST request to /json_rpc with a proper JSON-RPC wrapper
+  /// around some json data as the body.  On a successful response the returned json body is
+  /// returned.
+  ///
+  /// \param method - the end-point to be passed as the "method" parameter of the JSON-RPC request.
+  /// \param params - the JSON to be sent as the JSON-RPC "params" value.  Omit (or pass nullopt) to
+  /// omit the params value entirely.
+  ///
+  /// \returns nlohmann::json of the inner "result" field of the response, on success.
+  ///
+  /// \throws rpc::http_client_error on connection-related failure
+  /// \throws rpc::http_client_serialization_error on a serialization failure
+  /// \throws rpc::http_client_response_error on a successful HTTP request that returns a json_rpc
+  /// error, or on an HTTP request that returns an HTTP error code.
+  nlohmann::json json_rpc(std::string_view method, std::optional<nlohmann::json> params = std::nullopt);
+
+  /// FIXME: drop this.
+  ///
   /// Makes a JSON-RPC request; that is, a POST request to /json_rpc with a proper JSON-RPC wrapper
   /// around the serialized json data as the body.  On a successful response the response is
   /// deserialized into a RPC::response which is returned.

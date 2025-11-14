@@ -30,7 +30,7 @@
 
 #include "../pragma_comp_defs.h"
 #include "portable_storage_base.h"
-#include <boost/endian/conversion.hpp>
+#include <oxenc/endian.h>
 #include <oxenc/variant.h>
 
 namespace epee
@@ -71,16 +71,15 @@ namespace epee
     void pack_entry_to_buff(std::ostream& strm, T v)
     {
       if constexpr (sizeof(T) > 1)
-        boost::endian::native_to_little_inplace(v);
+        oxenc::host_to_little_inplace(v);
       strm.write(reinterpret_cast<const char*>(&v), sizeof(v));
     }
 
     inline void pack_entry_to_buff(std::ostream& strm, double v)
     {
-      static_assert(std::numeric_limits<double>::is_iec559 && sizeof(double) == 8 &&
-          (boost::endian::order::native == boost::endian::order::big || boost::endian::order::native == boost::endian::order::little));
+      static_assert(std::numeric_limits<double>::is_iec559 && sizeof(double) == 8 && (oxenc::little_endian || oxenc::big_endian));
       char* buff = reinterpret_cast<char*>(&v);
-      if constexpr (boost::endian::order::native == boost::endian::order::big) {
+      if constexpr (oxenc::big_endian) {
         size_t i = 8;
         while (i) strm.put(buff[--i]);
       } else {
