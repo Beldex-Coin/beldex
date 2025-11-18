@@ -100,7 +100,7 @@ int main(int argc, char* argv[])
 
   bool opt_testnet = command_line::get_arg(vm, cryptonote::arg_testnet_on);
   bool opt_devnet = command_line::get_arg(vm, cryptonote::arg_devnet_on);
-  network_type net_type = opt_testnet ? TESTNET : opt_devnet ? DEVNET : MAINNET;
+  network_type net_type = opt_testnet ? network_type::TESTNET : opt_devnet ? network_type::DEVNET : network_type::MAINNET;
   std::string opt_txid_string = command_line::get_arg(vm, arg_txid);
   uint64_t opt_height = command_line::get_arg(vm, arg_height);
   bool opt_include_coinbase = command_line::get_arg(vm, arg_include_coinbase);

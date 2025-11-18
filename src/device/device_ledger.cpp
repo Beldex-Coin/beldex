@@ -39,7 +39,7 @@
 #include "common/lock.h"
 #include "common/varint.h"
 #include <chrono>
-#include <boost/endian/conversion.hpp>
+#include <oxenc/endian.h>
 
 #ifdef DEBUG_HWDEVICE
 #include <sodium/crypto_generichash.h>
@@ -433,19 +433,19 @@
     }
 
     void device_ledger::send_u32(uint32_t x, int& offset) {
-      boost::endian::native_to_big_inplace(x);
+      oxenc::host_to_big_inplace(x);
       send_bytes(&x, 4, offset);
     }
 
     void device_ledger::send_u16(uint16_t x, int& offset) {
-      boost::endian::native_to_big_inplace(x);
+      oxenc::host_to_big_inplace(x);
       send_bytes(&x, 2, offset);
     }
 
     uint32_t device_ledger::receive_u32(int& offset) {
       uint32_t x;
       receive_bytes(&x, 4, offset);
-      boost::endian::big_to_native_inplace(x);
+      oxenc::big_to_host_inplace(x);
       return x;
     }
     uint32_t device_ledger::receive_u32() {

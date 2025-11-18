@@ -33,7 +33,6 @@
 #include <unordered_map>
 #include <set>
 #include <utility>
-#include <boost/endian/conversion.hpp>
 #include <common/apply_permutation.h>
 #include <common/json_util.h>
 #include <crypto/hmac-keccak.h>
@@ -434,7 +433,7 @@ namespace tx {
   static rct::RangeProofType get_rsig_type(const rct::RCTConfig &rct_config, size_t num_outputs){
     if (rct_config.range_proof_type == rct::RangeProofType::Borromean){
       return rct::RangeProofType::Borromean;
-    } else if (num_outputs > BULLETPROOF_MAX_OUTPUTS){
+    } else if (num_outputs > TX_BULLETPROOF_MAX_OUTPUTS){
       return rct::RangeProofType::MultiOutputBulletproof;
     } else {
       return rct::RangeProofType::PaddedBulletproof;
@@ -450,15 +449,15 @@ namespace tx {
         amount_batched += 1;
 
       } else if (rsig_type == rct::RangeProofType::PaddedBulletproof){
-        if (num_outputs > BULLETPROOF_MAX_OUTPUTS){
-          throw std::invalid_argument("BP padded can support only BULLETPROOF_MAX_OUTPUTS statements");
+        if (num_outputs > TX_BULLETPROOF_MAX_OUTPUTS){
+          throw std::invalid_argument("BP padded can support only TX_BULLETPROOF_MAX_OUTPUTS statements");
         }
         batches.push_back(num_outputs);
         amount_batched += num_outputs;
 
       } else if (rsig_type == rct::RangeProofType::MultiOutputBulletproof){
         size_t batch_size = 1;
-        while (batch_size * 2 + amount_batched <= num_outputs && batch_size * 2 <= BULLETPROOF_MAX_OUTPUTS){
+        while (batch_size * 2 + amount_batched <= num_outputs && batch_size * 2 <= TX_BULLETPROOF_MAX_OUTPUTS){
           batch_size *= 2;
         }
         batch_size = std::min(batch_size, num_outputs - amount_batched);

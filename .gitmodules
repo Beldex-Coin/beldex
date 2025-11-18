@@ -31,3 +31,12 @@
 [submodule "external/oxen-encoding"]
 	path = external/oxen-encoding
 	url = https://github.com/oxen-io/oxen-encoding.git
+[submodule "external/nlohmann-json"]
+	path = external/nlohmann-json
+	url = https://github.com/nlohmann/json.git
+[submodule "external/date"]
+	path = external/date
+	url = https://github.com/HowardHinnant/date.git
+[submodule "external/Catch2"]
+	path = external/Catch2
+	url = https://github.com/catchorg/Catch2

@@ -32,6 +32,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string_view>
+#include "cryptonote_basic/hardfork.h"
 #include "serialization/serialization.h"
 #include "cryptonote_basic/cryptonote_basic_impl.h"
 #include "cryptonote_core/master_node_rules.h"
@@ -55,89 +56,60 @@ namespace master_nodes
 {
   constexpr uint64_t INVALID_HEIGHT = static_cast<uint64_t>(-1);
 
-  BELDEX_RPC_DOC_INTROSPECT
-  struct participation_entry
+  struct checkpoint_participation_entry
   {
-    bool is_POS   = false;
     uint64_t height = INVALID_HEIGHT;
     bool voted      = true;
 
-    struct
-    {
-      uint8_t round = 0;
-    } POS;
-
-    bool pass() const {
-      return voted;
-    };
-
-    BEGIN_KV_SERIALIZE_MAP()
-      KV_SERIALIZE(height);
-      KV_SERIALIZE(voted);
-      KV_SERIALIZE(is_POS);
-      if (this_ref.is_POS)
-      {
-        KV_SERIALIZE_N(POS.round, "POS_round");
-      }
-    END_KV_SERIALIZE_MAP()
+    bool pass() const { return voted; };
   };
 
+  struct POS_participation_entry
+  {
+    uint64_t height = INVALID_HEIGHT;
+    uint8_t round = 0;
+    bool voted = true;
+
+    bool pass() const { return voted; }
+  };
   struct timestamp_participation_entry
   {
-    bool participated      = true;
-    bool pass() const {
-      return participated;
-    };
+    bool participated = true;
 
-    BEGIN_KV_SERIALIZE_MAP()
-      KV_SERIALIZE(participated);
-    END_KV_SERIALIZE_MAP()
+    bool pass() const { return participated; }; 
   };
 
   struct timesync_entry
   {
-    bool in_sync       = true;
-    bool pass() const {
-      return in_sync;
-    };
+    bool in_sync = true;
 
-    BEGIN_KV_SERIALIZE_MAP()
-      KV_SERIALIZE(in_sync);
-    END_KV_SERIALIZE_MAP()
+    bool pass() const { return in_sync; }
   };
 
   template <typename ValueType, size_t Count = QUORUM_VOTE_CHECK_COUNT>
   struct participation_history {
-    std::array<ValueType, Count> array;
-    size_t write_index;
+    std::array<ValueType, Count> history;
+    size_t write_index = 0;
 
     void reset() { write_index = 0; }
 
-    void add(ValueType &entry)
-    {
-      size_t real_write_index = write_index % array.size();
-      array[real_write_index] = entry;
-      write_index++;
+    void add(const ValueType& entry) { history[write_index++ % history.size()] = entry; }
+    void add(ValueType&& entry) { history[write_index++ % history.size()] = std::move(entry); }
+
+    // Returns the number of failures we have stored (of the last Count records).
+    size_t failures() const {
+      return std::count_if(begin(), end(), [](auto& e) { return !e.pass(); });
     }
+    size_t passes() const { return size() - failures(); }
 
-    bool check_participation(uint16_t threshold)
-    {
-      if (this->write_index >= Count)
-      {
-        int failed_counter = 0;
-        for (ValueType &entry : array)
-          if (!entry.pass()) failed_counter++;
+    bool empty() const { return write_index == 0; }
+    size_t size() const { return std::min(history.size(), write_index); }
+    constexpr size_t max_size() const noexcept { return Count; }
 
-        if (failed_counter > threshold)
-          return false;
-      }
-      return true;
-    }
-
-    ValueType *begin()       { return array.data(); }
-    ValueType *end()         { return array.data() + std::min(array.size(), write_index); }
-    ValueType const *begin() const { return array.data(); }
-    ValueType const *end()   const { return array.data() + std::min(array.size(), write_index); }
+    ValueType* begin() { return history.data(); }
+    ValueType* end() { return history.data() + size(); }
+    const ValueType* begin() const { return history.data(); }
+    const ValueType* end() const { return history.data() + size(); }
   };
 
   inline constexpr auto NEVER = std::chrono::steady_clock::time_point::min();
@@ -146,10 +118,10 @@ namespace master_nodes
   {
     proof_info();
 
-    participation_history<participation_entry> POS_participation{};
-    participation_history<participation_entry> checkpoint_participation{};
-    participation_history<timestamp_participation_entry> timestamp_participation{};
-    participation_history<timesync_entry> timesync_status{};
+    participation_history<POS_participation_entry> POS_participation;
+    participation_history<checkpoint_participation_entry> checkpoint_participation;
+    participation_history<timestamp_participation_entry> timestamp_participation;
+    participation_history<timesync_entry> timesync_status;
 
     uint64_t timestamp           = 0; // The actual time we last received an uptime proof (serialized)
     uint64_t effective_timestamp = 0; // Typically the same, but on recommissions it is set to the recommission block time to fend off instant obligation checks
@@ -308,7 +280,7 @@ namespace master_nodes
     cryptonote::account_public_address operator_address{};
     uint64_t                           last_ip_change_height = 0; // The height of the last quorum penalty for changing IPs
     version_t                          version = tools::enum_top<version_t>;
-    uint8_t                            registration_hf_version = 0;
+    cryptonote::hf                     registration_hf_version = cryptonote::hf::none;
     POS_sort_key                     POS_sorter;
 
     master_node_info() = default;
@@ -316,7 +288,7 @@ namespace master_nodes
     bool is_decommissioned() const { return active_since_height < 0; }
     bool is_active() const { return is_fully_funded() && !is_decommissioned(); }
 
-    bool can_transition_to_state(uint8_t hf_version, uint64_t block_height, new_state proposed_state) const;
+    bool can_transition_to_state(cryptonote::hf hf_version, uint64_t block_height, new_state proposed_state) const;
     bool can_be_voted_on        (uint64_t block_height) const;
     size_t total_num_locked_contributions() const;
 
@@ -627,7 +599,7 @@ namespace master_nodes
     struct state_serialized
     {
       enum struct version_t : uint8_t { version_0, version_1_serialize_hash, count, };
-      static version_t get_version(uint8_t /*hf_version*/) { return version_t::version_1_serialize_hash; }
+      static version_t get_version(cryptonote::hf /*hf_version*/) { return version_t::version_1_serialize_hash; }
 
       version_t                              version;
       uint64_t                               height;
@@ -653,7 +625,7 @@ namespace master_nodes
     struct data_for_serialization
     {
       enum struct version_t : uint8_t { version_0, count, };
-      static version_t get_version(uint8_t /*hf_version*/) { return version_t::version_0; }
+      static version_t get_version(cryptonote::hf /*hf_version*/) { return version_t::version_0; }
 
       version_t version;
       std::vector<quorum_for_serialization> quorum_states;
@@ -689,7 +661,7 @@ namespace master_nodes
 
       std::vector<pubkey_and_mninfo>  active_master_nodes_infos() const;
       std::vector<pubkey_and_mninfo>  decommissioned_master_nodes_infos() const; // return: All nodes that are fully funded *and* decommissioned.
-      std::vector<crypto::public_key> get_expired_nodes(cryptonote::BlockchainDB const &db, cryptonote::network_type nettype, uint8_t hf_version, uint64_t block_height) const;
+      std::vector<crypto::public_key> get_expired_nodes(cryptonote::BlockchainDB const &db, cryptonote::network_type nettype, cryptonote::hf hf_version, uint64_t block_height) const;
       void update_from_block(
           cryptonote::BlockchainDB const &db,
           cryptonote::network_type nettype,
@@ -713,7 +685,7 @@ namespace master_nodes
           const cryptonote::block &block,
           const cryptonote::transaction& tx,
           const master_node_keys *my_keys);
-      bool process_key_image_unlock_tx(cryptonote::network_type nettype, uint64_t block_height, const cryptonote::transaction &tx,uint8_t version);
+      bool process_key_image_unlock_tx(cryptonote::network_type nettype, uint64_t block_height, const cryptonote::transaction &tx,cryptonote::hf version);
       payout get_block_leader() const;
       payout get_block_producer(uint8_t POS_round) const;
       master_node_info get_master_node_details(crypto::public_key mnode_key);
@@ -780,7 +752,7 @@ namespace master_nodes
   };
   bool tx_get_staking_components            (cryptonote::transaction_prefix const &tx_prefix, staking_components *contribution, crypto::hash const &txid);
   bool tx_get_staking_components            (cryptonote::transaction const &tx, staking_components *contribution);
-  bool tx_get_staking_components_and_amounts(cryptonote::network_type nettype, uint8_t hf_version, cryptonote::transaction const &tx, uint64_t block_height, staking_components *contribution);
+  bool tx_get_staking_components_and_amounts(cryptonote::network_type nettype, cryptonote::hf hf_version, cryptonote::transaction const &tx, uint64_t block_height, staking_components *contribution);
 
   struct contributor_args_t
   {
@@ -791,22 +763,22 @@ namespace master_nodes
     std::string                                     err_msg; // if (success == false), this is set to the err msg otherwise empty
   };
 
-  bool     is_registration_tx   (cryptonote::network_type nettype, uint8_t hf_version, const cryptonote::transaction& tx, uint64_t block_timestamp, uint64_t block_height, uint32_t index, crypto::public_key& key, master_node_info& info);
+  bool     is_registration_tx   (cryptonote::network_type nettype, cryptonote::hf hf_version, const cryptonote::transaction& tx, uint64_t block_timestamp, uint64_t block_height, uint32_t index, crypto::public_key& key, master_node_info& info);
   bool     reg_tx_extract_fields(const cryptonote::transaction& tx, contributor_args_t &contributor_args, uint64_t& expiration_timestamp, crypto::public_key& master_node_key, crypto::signature& signature, crypto::public_key& tx_pub_key);
   uint64_t offset_testing_quorum_height(quorum_type type, uint64_t height);
 
   contributor_args_t convert_registration_args(cryptonote::network_type nettype,
                                                const std::vector<std::string> &args,
                                                uint64_t staking_requirement,
-                                               uint8_t hf_version);
+                                               cryptonote::hf hf_version);
 
   // validate_contributors_* functions throws invalid_contributions exception
   struct invalid_contributions : std::invalid_argument { using std::invalid_argument::invalid_argument; };
-  void validate_contributor_args(uint8_t hf_version, contributor_args_t const &contributor_args);
+  void validate_contributor_args(cryptonote::hf hf_version, contributor_args_t const &contributor_args);
   void validate_contributor_args_signature(contributor_args_t const &contributor_args, uint64_t const expiration_timestamp, crypto::public_key const &master_node_key, crypto::signature const &signature);
 
   bool make_registration_cmd(cryptonote::network_type nettype,
-      uint8_t hf_version,
+      cryptonote::hf hf_version,
       uint64_t staking_requirement,
       const std::vector<std::string>& args,
       const master_node_keys &keys,
@@ -815,7 +787,7 @@ namespace master_nodes
 
   master_nodes::quorum generate_POS_quorum(cryptonote::network_type nettype,
                                               crypto::public_key const &leader,
-                                              uint8_t hf_version,
+                                              cryptonote::hf hf_version,
                                               std::vector<pubkey_and_mninfo> const &active_mnode_list,
                                               std::vector<crypto::hash> const &POS_entropy,
                                               uint8_t POS_round);
@@ -829,6 +801,6 @@ namespace master_nodes
 
   payout master_node_info_to_payout(crypto::public_key const &key, master_node_info const &info);
 
-  const static payout_entry null_payout_entry = {cryptonote::null_address, STAKING_PORTIONS};
+  const static payout_entry null_payout_entry = {cryptonote::null_address, cryptonote::old::STAKING_PORTIONS};
   const static payout null_payout             = {crypto::null_pkey, {null_payout_entry}};
 }

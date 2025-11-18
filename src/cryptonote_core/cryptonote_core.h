@@ -481,10 +481,9 @@ namespace cryptonote
      /**
       * @brief get the hash and height of the most recent block
       *
-      * @param height return-by-reference height of the block
-      * @param top_id return-by-reference hash of the block
+      * @return height and hash of the top block on the chain
       */
-     void get_blockchain_top(uint64_t& height, crypto::hash& top_id) const;
+     std::pair<uint64_t, crypto::hash> get_blockchain_top() const;
 
      /**
       * @copydoc Blockchain::get_blocks(uint64_t, size_t, std::vector<std::pair<cryptonote::blobdata,block>>&, std::vector<transaction>&) const
@@ -512,11 +511,7 @@ namespace cryptonote
       *
       * @note see Blockchain::get_blocks(const t_ids_container&, t_blocks_container&, t_missed_container&) const
       */
-     template<class t_ids_container, class t_blocks_container, class t_missed_container>
-     bool get_blocks(const t_ids_container& block_ids, t_blocks_container& blocks, t_missed_container& missed_bs) const
-     {
-       return m_blockchain_storage.get_blocks(block_ids, blocks, missed_bs);
-     }
+     bool get_blocks(const std::vector<crypto::hash>& block_ids, std::vector<std::pair<cryptonote::blobdata, block>> blocks, std::unordered_set<crypto::hash>* missed_bs = nullptr) const;
 
      /**
       * @copydoc Blockchain::get_block_id_by_height
@@ -530,21 +525,21 @@ namespace cryptonote
       *
       * @note see Blockchain::get_transactions
       */
-     bool get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<cryptonote::blobdata>& txs, std::vector<crypto::hash>& missed_txs) const;
+     bool get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<cryptonote::blobdata>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
 
      /**
       * @copydoc Blockchain::get_transactions
       *
       * @note see Blockchain::get_transactions
       */
-     bool get_split_transactions_blobs(const std::vector<crypto::hash>& txs_ids, std::vector<std::tuple<crypto::hash, cryptonote::blobdata, crypto::hash, cryptonote::blobdata>>& txs, std::vector<crypto::hash>& missed_txs) const;
+     bool get_split_transactions_blobs(const std::vector<crypto::hash>& txs_ids, std::vector<std::tuple<crypto::hash, cryptonote::blobdata, crypto::hash, cryptonote::blobdata>>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
 
      /**
       * @copydoc Blockchain::get_transactions
       *
       * @note see Blockchain::get_transactions
       */
-     bool get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<transaction>& txs, std::vector<crypto::hash>& missed_txs) const;
+     bool get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<transaction>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
 
      /**
       * @copydoc Blockchain::get_block_by_hash
@@ -992,7 +987,7 @@ namespace cryptonote
 
      /// Time point at which the storage server and belnet last pinged us
      std::atomic<time_t> m_last_storage_server_ping, m_last_belnet_ping;
-     std::atomic<uint16_t> m_storage_https_port, m_storage_omq_port;
+     std::atomic<uint16_t> m_storage_https_port{0}, m_storage_omq_port{0};
 
      uint32_t mn_public_ip() const { return m_mn_public_ip; }
      uint16_t storage_https_port() const { return m_storage_https_port; }
@@ -1210,8 +1205,8 @@ namespace cryptonote
      // avoid linking issues (protocol does not link against core).
      void* m_quorumnet_state = nullptr;
 
-     /// Stores x25519 -> access level for LMQ authentication.
-     /// Not to be modified after the LMQ listener starts.
+     /// Stores x25519 -> access level for OMQ authentication.
+     /// Not to be modified after the OMQ listener starts.
      std::unordered_map<crypto::x25519_public_key, oxenmq::AuthLevel> m_omq_auth;
 
      size_t block_sync_size;

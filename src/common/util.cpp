@@ -29,15 +29,17 @@
 // 
 // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 
+#include <chrono>
 #include <string>
 #include <iomanip>
 #include <thread>
+
+#include <date/date.h>
 
 #include "epee/string_tools.h"
 #include "epee/wipeable_string.h"
 #include "crypto/crypto.h"
 #include "util.h"
-#include "epee/misc_os_dependent.h"
 #include "epee/readline_buffer.h"
 #include "epee/misc_log_ex.h"
 #include "string_util.h"
@@ -192,16 +194,11 @@ namespace tools
   }
 #endif
 
-  std::string get_human_readable_timestamp(uint64_t ts)
+  std::string get_human_readable_timestamp(std::time_t t)
   {
-    char buffer[64];
-    if (ts < 1234567890)
+    if (t < 1234567890)
       return "<unknown>";
-    time_t tt = ts;
-    struct tm tm;
-    epee::misc_utils::get_gmt_time(tt, tm);
-    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S UTC", &tm);
-    return std::string(buffer);
+    return date::format("%Y-%m-%d %H:%M:%S UTC", std::chrono::system_clock::from_time_t(t));
   }
 
   std::string get_human_readable_timespan(std::chrono::seconds seconds)

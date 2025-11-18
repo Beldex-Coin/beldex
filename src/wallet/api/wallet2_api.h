@@ -635,7 +635,7 @@ struct Wallet
     virtual int countBns() = 0;
 
    /**
-    * @brief listCurrentStakes - returns a list of the wallets locked stakes, provides both service node address and the staked amount
+    * @brief listCurrentStakes - returns a list of the wallets locked stakes, provides both master node address and the staked amount
     * @return
     */
     virtual std::vector<stakeInfo>* listCurrentStakes() const = 0;

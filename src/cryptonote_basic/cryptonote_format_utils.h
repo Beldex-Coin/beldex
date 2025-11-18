@@ -39,6 +39,7 @@
 #include "common/meta.h"
 #include "common/string_util.h"
 #include "serialization/binary_utils.h"
+#include "serialization/json_archive.h"
 #include <unordered_map>
 
 namespace epee
@@ -129,8 +130,8 @@ namespace cryptonote
   crypto::public_key get_tx_pub_key_from_extra(const std::vector<uint8_t>& tx_extra, size_t pk_index = 0);
   crypto::public_key get_tx_pub_key_from_extra(const transaction_prefix& tx, size_t pk_index = 0);
 
-  bool add_master_node_state_change_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_master_node_state_change& state_change, uint8_t hf_version);
-  bool get_master_node_state_change_from_tx_extra(const std::vector<uint8_t>& tx_extra, tx_extra_master_node_state_change& state_change, uint8_t hf_version);
+  bool add_master_node_state_change_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_master_node_state_change& state_change, hf hf_version);
+  bool get_master_node_state_change_from_tx_extra(const std::vector<uint8_t>& tx_extra, tx_extra_master_node_state_change& state_change, hf hf_version);
 
   bool get_master_node_pubkey_from_tx_extra(const std::vector<uint8_t>& tx_extra, crypto::public_key& pubkey);
   bool get_master_node_contributor_from_tx_extra(const std::vector<uint8_t>& tx_extra, cryptonote::account_public_address& address);
@@ -219,11 +220,37 @@ namespace cryptonote
   uint64_t get_block_height(const block& b);
   std::vector<uint64_t> relative_output_offsets_to_absolute(const std::vector<uint64_t>& off);
   std::vector<uint64_t> absolute_output_offsets_to_relative(const std::vector<uint64_t>& off);
-  std::string get_unit(unsigned int decimal_point = -1);
-  std::string print_money(uint64_t amount, unsigned int decimal_point = -1);
+  constexpr std::string_view get_unit() { return "BDX"sv; }
+  // Returns a monetary value with a decimal point; optionally strips insignificant trailing 0s.
+  std::string print_money(uint64_t amount, bool strip_zeros = false);
+  // Returns a formatted monetary value including the unit, e.g. "1.234567 BDX"; strips
+  // insignificant trailing 0s by default (unlike the above) but can be overridden to not do that.
+  std::string format_money(uint64_t amount, bool strip_zeros = true);
 
   std::string print_tx_verification_context  (tx_verification_context const &tvc, transaction const *tx = nullptr);
   std::string print_vote_verification_context(vote_verification_context const &vvc, master_nodes::quorum_vote_t const *vote = nullptr);
+ 
+  // Returns code strings for various tx verification failures:
+  // - "failed" -- general "bad transaction" code
+  // - "altchain" -- the transaction is spending outputs that exist on an altchain.
+  // - "mixin" -- the transaction has the wrong number of decoys
+  // - "double_spend" -- the transaction is spending outputs that are already spent
+  // - "invalid_input" -- one or more inputs in the transaction are invalid
+  // - "invalid_output" -- out or more outputs in the transaction are invalid
+  // - "too_few_outputs" -- the transaction does not create enough outputs (at least two are
+  //   required, currently).
+  // - "too_big" -- the transaction is too large
+  // - "overspend" -- the transaction spends (via outputs + fees) more than the inputs
+  // - "fee_too_low" -- the transaction fee is insufficient
+  // - "invalid_version" -- the transaction version is invalid (the wallet likely needs an update).
+  // - "invalid_type" -- the transaction type is invalid
+  // - "mnode_locked" -- one or more outputs are currently staked to a registred master node and
+  //   thus are not currently spendable on the blockchain.
+  // - "blacklisted" -- the outputs are currently blacklisted (from being in the 30-day penalty
+  //   period following a master node deregistration).
+  // - "not_relayed" -- the transaction cannot be relayed to the network for some reason but may
+  //   still have been accepted by this node.
+  std::unordered_set<std::string> tx_verification_failure_codes(const tx_verification_context& tvc);
 
   bool is_valid_address(const std::string address, cryptonote::network_type nettype, bool allow_subaddress = true, bool allow_integrated = true);
 
@@ -253,7 +280,8 @@ namespace cryptonote
       return true;
     } catch (const std::exception& e) {
       LOG_ERROR("Serialization of " << tools::type_name(typeid(T)) << " failed: " << e.what());
-      return false;
+      // return false;
+      throw;
     }
   }
   //---------------------------------------------------------------
@@ -292,15 +320,12 @@ namespace cryptonote
   template <typename T>
   std::string obj_to_json_str(T&& obj, bool indent = false)
   {
-    std::ostringstream ss;
-    serialization::json_archiver ar{ss, indent};
     try {
-      serialize(ar, obj);
+      return serialization::dump_json(obj, indent ? 2 : -1);
     } catch (const std::exception& e) {
       LOG_ERROR("obj_to_json_str failed: serialization failed: " << e.what());
-      return ""s;
     }
-    return ss.str();
+    return ""s;
   }
   //---------------------------------------------------------------
   blobdata block_to_blob(const block& b);

@@ -304,7 +304,7 @@ static void prune(MDB_env *env0, MDB_env *env1)
   if (dbr) throw std::runtime_error("Failed to open LMDB dbi: " + std::string(mdb_strerror(dbr)));
 
   MDB_val k, v;
-  uint32_t pruning_seed = tools::make_pruning_seed(tools::get_random_stripe(), CRYPTONOTE_PRUNING_LOG_STRIPES);
+  uint32_t pruning_seed = tools::make_pruning_seed(tools::get_random_stripe(), PRUNING_LOG_STRIPES);
   static char pruning_seed_key[] = "pruning_seed";
   k.mv_data = pruning_seed_key;
   k.mv_size = strlen("pruning_seed") + 1;
@@ -334,7 +334,7 @@ static void prune(MDB_env *env0, MDB_env *env1)
     const txindex *ti = (const txindex*)v.mv_data;
     const uint64_t block_height = ti->data.block_id;
     MDB_val_set(kk, ti->data.tx_id);
-    if (block_height + CRYPTONOTE_PRUNING_TIP_BLOCKS >= blockchain_height)
+    if (block_height + PRUNING_TIP_BLOCKS >= blockchain_height)
     {
       MDEBUG(block_height << "/" << blockchain_height << " is in tip");
       MDB_val_set(vv, block_height);
@@ -494,7 +494,7 @@ int main(int argc, char* argv[])
 
   bool opt_testnet = command_line::get_arg(vm, cryptonote::arg_testnet_on);
   bool opt_devnet = command_line::get_arg(vm, cryptonote::arg_devnet_on);
-  network_type net_type = opt_testnet ? TESTNET : opt_devnet ? DEVNET : MAINNET;
+  network_type net_type = opt_testnet ? network_type::TESTNET : opt_devnet ? network_type::DEVNET : network_type::MAINNET;
   bool opt_copy_pruned_database = command_line::get_arg(vm, arg_copy_pruned_database);
   std::string data_dir = command_line::get_arg(vm, cryptonote::arg_data_dir);
   while (tools::ends_with(data_dir, "/") || tools::ends_with(data_dir, "\\"))

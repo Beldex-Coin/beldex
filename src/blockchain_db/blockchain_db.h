@@ -524,9 +524,9 @@ private:
   void remove_transaction(const crypto::hash& tx_hash);
 
   uint64_t num_calls = 0;  //!< a performance metric
-  uint64_t time_blk_hash = 0;  //!< a performance metric
-  uint64_t time_add_block1 = 0;  //!< a performance metric
-  uint64_t time_add_transaction = 0;  //!< a performance metric
+  std::chrono::nanoseconds time_blk_hash = 0ns;  //!< a performance metric
+  std::chrono::nanoseconds time_add_block1 = 0ns;  //!< a performance metric
+  std::chrono::nanoseconds time_add_transaction = 0ns;  //!< a performance metric
 
 
 protected:
@@ -544,8 +544,8 @@ protected:
    */
   void add_transaction(const crypto::hash& blk_hash, const std::pair<transaction, blobdata>& tx, const crypto::hash* tx_hash_ptr = NULL, const crypto::hash* tx_prunable_hash_ptr = NULL);
 
-  mutable uint64_t time_tx_exists = 0;  //!< a performance metric
-  uint64_t time_commit1 = 0;  //!< a performance metric
+  mutable std::chrono::nanoseconds time_tx_exists = 0ns;  //!< a performance metric
+  std::chrono::nanoseconds time_commit1 = 0ns;  //!< a performance metric
   bool m_auto_remove_logs = true;  //!< whether or not to automatically remove old logs
 
 public:

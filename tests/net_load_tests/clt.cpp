@@ -192,7 +192,7 @@ namespace
       m_thread_count = (std::max)(min_thread_count, boost::thread::hardware_concurrency() / 2);
 
       m_tcp_server.get_config_object().set_handler(&m_commands_handler);
-      m_tcp_server.get_config_object().m_invoke_timeout = CONNECTION_TIMEOUT;
+      m_tcp_server.get_config_object().m_invoke_timeout = 1ms * CONNECTION_TIMEOUT;
 
       ASSERT_TRUE(m_tcp_server.init_server(clt_port, "127.0.0.1"));
       ASSERT_TRUE(m_tcp_server.run_server(m_thread_count, false));

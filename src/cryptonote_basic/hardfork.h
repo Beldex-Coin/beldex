@@ -36,7 +36,7 @@ namespace cryptonote
 
   // Defines where hard fork (i.e. new minimum network versions) begin
   struct hard_fork {
-    uint8_t version; // Blockchain major version
+    hf version; // Blockchain major version
     uint8_t mnode_revision; // Mnode revision for enforcing non-blockchain-breaking mandatory mester node updates
     uint64_t height;
     time_t time;
@@ -54,7 +54,7 @@ namespace cryptonote
   // outdated), and returns nullopt for B if the version indicates that top network version we know
   // about (i.e. there is no subsequent hardfork scheduled).
   std::pair<std::optional<uint64_t>, std::optional<uint64_t>>
-  get_hard_fork_heights(network_type type, uint8_t version);
+  get_hard_fork_heights(network_type type, hf version);
 
   // Returns the lowest network version >= the given version, that is, it rounds up missing hf table
   // entries to the next largest entry.  Typically this returns the network version itself, but if
@@ -69,18 +69,18 @@ namespace cryptonote
   //    ...
   //    hard_fork_ceil(14) == 14
   //    hard_fork_ceil(15) == 15
-  uint8_t hard_fork_ceil(network_type type, uint8_t version);
+  hf hard_fork_ceil(network_type type, hf version);
 
   // Returns true if the given height is sufficiently high to be at or after the given hard fork
   // version.
-  bool is_hard_fork_at_least(network_type type, uint8_t version, uint64_t height);
+  bool is_hard_fork_at_least(network_type type, hf version, uint64_t height);
 
   // Returns the active network version and mnode revision for the given height.
-  std::pair<uint8_t, uint8_t>
+  std::pair<hf, uint8_t>
   get_network_version_revision(network_type nettype, uint64_t height);
 
   // Returns the network (i.e. block) version for the given height.
-  inline uint8_t get_network_version(network_type nettype, uint64_t height) {
+  inline hf get_network_version(network_type nettype, uint64_t height) {
       return get_network_version_revision(nettype, height).first;
   }
 
@@ -88,14 +88,14 @@ namespace cryptonote
   // a shortcut for `get_hard_fork_heights(type, hard_fork_ceil(type, version)).first`, i.e. it
   // returns the first height at which `version` rules become active (even if they became active at
   // a hard fork > the given value).
-  inline std::optional<uint64_t> hard_fork_begins(network_type type, uint8_t version) {
+  inline std::optional<uint64_t> hard_fork_begins(network_type type, hf version) {
       return get_hard_fork_heights(type, hard_fork_ceil(type, version)).first;
   }
 
   // Returns the "ideal" network version that we want to use on blocks we create, which is to use
   // the required major version for major version and the maximum major version we know about as
   // minor version.  If this seems a bit silly, it is, and will be changed in the future.
-  std::pair<uint8_t, uint8_t> get_ideal_block_version(network_type nettype, uint64_t height);
+  std::pair<hf, uint8_t> get_ideal_block_version(network_type nettype, uint64_t height);
 
 }  // namespace cryptonote
 

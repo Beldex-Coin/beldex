@@ -38,11 +38,10 @@
 #include "cryptonote_basic/cryptonote_basic_impl.h"
 #include "common/fs.h"
 
-#define ADD_CHECKPOINT(h, hash)  CHECK_AND_ASSERT(add_checkpoint(h,  hash), false);
-#define JSON_HASH_FILE_NAME "checkpoints.json"
-
 namespace cryptonote
 {
+  constexpr std::string_view JSON_HASH_FILE_NAME = "checkpoints.json"sv;
+  
   enum struct checkpoint_type
   {
     hardcoded,
@@ -195,7 +194,7 @@ namespace cryptonote
     bool init(network_type nettype, class BlockchainDB *db);
 
   private:
-    network_type m_nettype = UNDEFINED;
+    network_type m_nettype = network_type::UNDEFINED;
     uint64_t m_last_cull_height = 0;
     uint64_t m_immutable_height = 0;
     BlockchainDB *m_db;

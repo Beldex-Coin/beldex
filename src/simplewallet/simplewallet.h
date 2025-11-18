@@ -373,7 +373,7 @@ namespace cryptonote
       {
         auto current_time = std::chrono::system_clock::now();
         auto hf_version = cryptonote::get_network_version(nettype, height);
-        const auto node_update_threshold = (hf_version>=cryptonote::network_version_17_POS?TARGET_BLOCK_TIME:TARGET_BLOCK_TIME_OLD) / 2;
+        const auto node_update_threshold = (hf_version >= cryptonote::hf::hf17_POS ? TARGET_BLOCK_TIME : cryptonote::old::TARGET_BLOCK_TIME_12) / 2;
         if (node_update_threshold < current_time - m_blockchain_height_update_time || m_blockchain_height <= height)
         {
           update_blockchain_height();

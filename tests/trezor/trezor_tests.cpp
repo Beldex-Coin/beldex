@@ -741,7 +741,7 @@ bool gen_trezor_base::generate(std::vector<test_event_entry>& events)
     const crypto::hash prev_id = get_block_hash(blk_gen);
     const uint64_t already_generated_coins = generator.get_already_generated_coins(prev_id);
     block_weights.clear();
-    generator.get_last_n_block_weights(block_weights, prev_id, CRYPTONOTE_REWARD_BLOCKS_WINDOW);
+    generator.get_last_n_block_weights(block_weights, prev_id, cryptonote::REWARD_BLOCKS_WINDOW);
     generator.construct_block(blk_0, 1, prev_id, m_miner_account, m_ts_start, already_generated_coins, block_weights, tx_list);
   }
 

@@ -62,9 +62,8 @@ namespace cryptonote
   class t_cryptonote_protocol_handler:  public i_cryptonote_protocol
   {
   public:
-    typedef cryptonote_connection_context connection_context;
-    typedef t_cryptonote_protocol_handler<t_core> cryptonote_protocol_handler;
-    typedef CORE_SYNC_DATA payload_type;
+    using connection_context = cryptonote_connection_context;
+    using cryptonote_protocol_handler = t_cryptonote_protocol_handler<t_core>;
 
     t_cryptonote_protocol_handler(t_core& rcore, bool offline = false);
 
@@ -129,8 +128,8 @@ namespace cryptonote
     bool relay_to_synchronized_peers(typename T::request& arg, cryptonote_connection_context& exclude_context)
     {
       LOG_PRINT_L3("[" << epee::net_utils::print_connection_context_short(exclude_context) << "] post relay " << tools::type_name<T>() << " -->");
-      std::vector<std::pair<epee::net_utils::zone, boost::uuids::uuid>> connections;
-      m_p2p->for_each_connection([&exclude_context, &connections](connection_context& context, nodetool::peerid_type peer_id, uint32_t support_flags)
+      std::vector<std::pair<epee::net_utils::zone, connection_id_t>> connections;
+      m_p2p->for_each_connection([&exclude_context, &connections](connection_context& context, nodetool::peerid_type peer_id)
       {
         if (context.m_state > cryptonote_connection_context::state_synchronizing)
         {
@@ -186,7 +185,7 @@ namespace cryptonote
     tools::periodic_task m_sync_search_checker{101s};
     std::atomic<unsigned int> m_max_out_peers;
     tools::PerformanceTimer m_sync_timer, m_add_timer;
-    uint64_t m_last_add_end_time;
+    std::optional<std::chrono::steady_clock::time_point> m_last_add_end_time;
     uint64_t m_sync_spans_downloaded, m_sync_old_spans_downloaded, m_sync_bad_spans_downloaded;
     uint64_t m_sync_download_chain_size, m_sync_download_objects_size;
     size_t m_block_download_max_size;

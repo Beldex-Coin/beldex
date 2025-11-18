@@ -43,7 +43,7 @@ using namespace cryptonote;
 // Tests
 
 bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& events,
-    size_t n_txes, const uint64_t *amounts_paid, bool valid, const rct::RCTConfig *rct_config, uint8_t target_hf,
+    size_t n_txes, const uint64_t *amounts_paid, bool valid, const rct::RCTConfig *rct_config, cryptonote::hf target_hf,
     const std::function<bool(std::vector<tx_source_entry> &sources, std::vector<tx_destination_entry> &destinations, size_t tx_idx)> &pre_tx,
     const std::function<bool(transaction &tx, size_t tx_idx)> &post_tx, size_t extra_blocks) const
 {
@@ -52,8 +52,8 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
   GENERATE_ACCOUNT(miner_account);
   MAKE_GENESIS_BLOCK(events, blk_0, miner_account, ts_start);
 
-  if (target_hf == 0)
-    target_hf = cryptonote::network_version_count - 1;
+  if (target_hf == cryptonote::hf::none)
+    target_hf = cryptonote::hf::hf20_bulletproof_plus;
   // NOTE: Monero tests use multiple null terminated entries in their arrays
   {
     int amounts_paid_len = 0;
@@ -62,7 +62,7 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
   }
 
   std::vector<cryptonote::hard_fork> hard_forks = {
-    {7,0,0}, {8,0,1}, {target_hf, 0, NUM_UNLOCKED_BLOCKS + CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW + 1},
+    {cryptonote::hf::hf7,0,0}, {cryptonote::hf::hf8,0,1}, {target_hf, 0, NUM_UNLOCKED_BLOCKS + cryptonote::MINED_MONEY_UNLOCK_WINDOW + 1},
   };
   event_replay_settings settings = {};
   settings.hard_forks = hard_forks;
@@ -73,13 +73,13 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
 
   cryptonote::account_base miner_accounts[NUM_MINERS];
   const cryptonote::block *prev_block = &blk_0;
-  cryptonote::block blocks[NUM_UNLOCKED_BLOCKS + CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW];
+  cryptonote::block blocks[NUM_UNLOCKED_BLOCKS + cryptonote::MINED_MONEY_UNLOCK_WINDOW];
 
   for (size_t i = 0; i < NUM_MINERS; ++i)
     miner_accounts[i].generate();
 
-  uint8_t const first_hf = hard_forks[1].version;
-  uint8_t const last_hf  = hard_forks.back().version;
+  const cryptonote::hf first_hf = hard_forks[1].version;
+  const cryptonote::hf last_hf  = hard_forks.back().version;
   generator.m_hf_version = first_hf;
   for (size_t n = 0; n < NUM_UNLOCKED_BLOCKS; ++n) {
     CHECK_AND_ASSERT_MES(
@@ -88,8 +88,8 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
                                            miner_accounts[n % NUM_MINERS],
                                            test_generator::bf_major_ver | test_generator::bf_minor_ver | test_generator::bf_timestamp | test_generator::bf_hf_version,
                                            first_hf,
-                                           first_hf,
-                                           prev_block->timestamp + tools::to_seconds((first_hf>=cryptonote::network_version_17_POS?TARGET_BLOCK_TIME:TARGET_BLOCK_TIME_OLD)) * 2, // v2 has blocks twice as long
+                                           static_cast<int>(first_hf),
+                                           prev_block->timestamp + tools::to_seconds((first_hf >= cryptonote::hf::hf17_POS ? TARGET_BLOCK_TIME : cryptonote::old::TARGET_BLOCK_TIME_12)) * 2, // v2 has blocks twice as long
                                            crypto::hash(),
                                            0,
                                            transaction(),
@@ -105,7 +105,7 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
   cryptonote::block blk_r, blk_last;
   {
     blk_last = blocks[NUM_UNLOCKED_BLOCKS - 1];
-    for (size_t i = 0; i < CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW; ++i)
+    for (size_t i = 0; i < cryptonote::MINED_MONEY_UNLOCK_WINDOW; ++i)
     {
       CHECK_AND_ASSERT_MES(
           generator.construct_block_manually(blocks[NUM_UNLOCKED_BLOCKS + i],
@@ -113,8 +113,8 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
                                              miner_account,
                                              test_generator::bf_major_ver | test_generator::bf_minor_ver | test_generator::bf_timestamp | test_generator::bf_hf_version,
                                              first_hf,
-                                             first_hf,
-                                             blk_last.timestamp + tools::to_seconds((generator.m_hf_version>=cryptonote::network_version_17_POS?TARGET_BLOCK_TIME:TARGET_BLOCK_TIME_OLD)) * 2, // v2 has blocks twice as long
+                                             static_cast<int>(first_hf),
+                                             blk_last.timestamp + tools::to_seconds((generator.m_hf_version >= cryptonote::hf::hf17_POS ? TARGET_BLOCK_TIME : cryptonote::old::TARGET_BLOCK_TIME_12)) * 2, // v2 has blocks twice as long
                                              crypto::hash(),
                                              0,
                                              transaction(),
@@ -142,8 +142,8 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
                                            miner_account,
                                            test_generator::bf_major_ver | test_generator::bf_minor_ver | test_generator::bf_timestamp | test_generator::bf_hf_version,
                                            generator.m_hf_version,
-                                           generator.m_hf_version,
-                                           blk_last.timestamp + tools::to_seconds((generator.m_hf_version>=cryptonote::network_version_17_POS?TARGET_BLOCK_TIME:TARGET_BLOCK_TIME_OLD)) * 2, // v2 has blocks twice as long
+                                           static_cast<int>(generator.m_hf_version),
+                                           blk_last.timestamp + tools::to_seconds((generator.m_hf_version >= cryptonote::hf::hf17_POS ? TARGET_BLOCK_TIME : cryptonote::old::TARGET_BLOCK_TIME_12)) * 2, // v2 has blocks twice as long
                                            crypto::hash(),
                                            0,
                                            transaction(),
@@ -182,7 +182,7 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
                                            amounts_paid,
                                            amounts_paid_len,
                                            TESTS_DEFAULT_FEE,
-                                           CRYPTONOTE_DEFAULT_TX_MIXIN,
+                                           cryptonote::TX_OUTPUT_DECOYS,
                                            sources,
                                            destinations,
                                            true,
@@ -253,7 +253,7 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
       for (size_t i = 0; i < 8; i++)
         tx_hash.data[i] = 0x01 + (0x22 * i);
       static std::mt19937_64 rng{std::random_device{}()};
-      std::uniform_int_distribution<char> unif{std::numeric_limits<char>::min()};
+      std::uniform_int_distribution<uint8_t> unif{std::numeric_limits<uint8_t>::min()};
       for (size_t i = 8; i < sizeof(tx_hash.data); i++)
         tx_hash.data[i] = unif(rng);
     }
@@ -296,7 +296,7 @@ bool gen_bp_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
 
   CHECK_AND_ASSERT_MES(generator.construct_block_manually(blk_txes, blk_last, miner_account,
       test_generator::bf_major_ver | test_generator::bf_minor_ver | test_generator::bf_timestamp | test_generator::bf_tx_hashes | test_generator::bf_hf_version,
-      generator.m_hf_version, generator.m_hf_version, blk_last.timestamp + tools::to_seconds((generator.m_hf_version>=cryptonote::network_version_17_POS?TARGET_BLOCK_TIME:TARGET_BLOCK_TIME_OLD)) * 2, // v2 has blocks twice as long
+      generator.m_hf_version, static_cast<int>(generator.m_hf_version), blk_last.timestamp + tools::to_seconds((generator.m_hf_version >= cryptonote::hf::hf17_POS ? TARGET_BLOCK_TIME : cryptonote::old::TARGET_BLOCK_TIME_12)) * 2, // v2 has blocks twice as long
       crypto::hash(), 0, transaction(), starting_rct_tx_hashes, 0, txn_fee),
       false, "Failed to generate block");
   if (!valid)
@@ -346,7 +346,7 @@ bool gen_bp_tx_valid_1_old::generate(std::vector<test_event_entry>& events) cons
   const uint64_t amounts_paid[] = {MK_COINS(120), (uint64_t)-1};
   const size_t bp_sizes[] = {1, (size_t)-1};
   const rct::RCTConfig rct_config[] = { { rct::RangeProofType::PaddedBulletproof, 0 } };
-  return generate_with(events, 1, amounts_paid, true, rct_config, HF_VERSION_MIN_2_OUTPUTS-1, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_valid_1_before_clsag"); });
+  return generate_with(events, 1, amounts_paid, true, rct_config, hf_prev(feature::MIN_2_OUTPUTS), NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_valid_1_before_clsag"); });
 }
 
 bool gen_bp_tx_invalid_1_new::generate(std::vector<test_event_entry>& events) const
@@ -356,7 +356,7 @@ bool gen_bp_tx_invalid_1_new::generate(std::vector<test_event_entry>& events) co
   const uint64_t amounts_paid[] = {10000, (uint64_t)-1};
   const size_t bp_sizes[] = {1, (size_t)-1};
   const rct::RCTConfig rct_config[] = { { rct::RangeProofType::PaddedBulletproof, 0 } };
-  return generate_with(events, 1, amounts_paid, false, rct_config, HF_VERSION_MIN_2_OUTPUTS, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_invalid_1_from_clsag"); });
+  return generate_with(events, 1, amounts_paid, false, rct_config, feature::MIN_2_OUTPUTS, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_invalid_1_from_clsag"); });
 }
 
 bool gen_bp_tx_valid_2::generate(std::vector<test_event_entry>& events) const
@@ -364,7 +364,7 @@ bool gen_bp_tx_valid_2::generate(std::vector<test_event_entry>& events) const
   const uint64_t amounts_paid[] = {MK_COINS(60), MK_COINS(60), (uint64_t)-1};
   const size_t bp_sizes[] = {2, (size_t)-1};
   const rct::RCTConfig rct_config[] = { { rct::RangeProofType::PaddedBulletproof, 0 } };
-  return generate_with(events, 1, amounts_paid, true, rct_config, 0, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_valid_2"); });
+  return generate_with(events, 1, amounts_paid, true, rct_config, hf::none, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_valid_2"); });
 }
 
 bool gen_bp_tx_valid_3::generate(std::vector<test_event_entry>& events) const
@@ -373,7 +373,7 @@ bool gen_bp_tx_valid_3::generate(std::vector<test_event_entry>& events) const
   const uint64_t amounts_paid[] = {MK_COINS(40), MK_COINS(40), MK_COINS(40), (uint64_t)-1};
   const size_t bp_sizes[] = {4, (size_t)-1};
   const rct::RCTConfig rct_config[] = { { rct::RangeProofType::PaddedBulletproof , 0 } };
-  return generate_with(events, 1, amounts_paid, true, rct_config, 0, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_valid_3"); });
+  return generate_with(events, 1, amounts_paid, true, rct_config, hf::none, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_valid_3"); });
 }
 
 bool gen_bp_tx_valid_16::generate(std::vector<test_event_entry>& events) const
@@ -382,7 +382,7 @@ bool gen_bp_tx_valid_16::generate(std::vector<test_event_entry>& events) const
   const uint64_t amounts_paid[] = {MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), MK_COINS(15), (uint64_t)-1};
   const size_t bp_sizes[] = {16, (size_t)-1};
   const rct::RCTConfig rct_config[] = { { rct::RangeProofType::PaddedBulletproof , 0 } };
-  return generate_with(events, 1, amounts_paid, true, rct_config, 0, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_valid_16"); });
+  return generate_with(events, 1, amounts_paid, true, rct_config, hf::none, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_tx_valid_16"); });
 }
 
 bool gen_bp_txs_valid_2_and_2::generate(std::vector<test_event_entry>& events) const
@@ -392,7 +392,7 @@ bool gen_bp_txs_valid_2_and_2::generate(std::vector<test_event_entry>& events) c
 
   const size_t bp_sizes[] = {2, (size_t)-1, 2, (size_t)-1};
   const rct::RCTConfig rct_config[] = { { rct::RangeProofType::PaddedBulletproof, 0 }, {rct::RangeProofType::PaddedBulletproof, 0 } };
-  return generate_with(events, 2, amounts_paid, true, rct_config, 0, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_txs_valid_2_and_2"); });
+  return generate_with(events, 2, amounts_paid, true, rct_config, hf::none, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx){ return check_bp(tx, tx_idx, bp_sizes, "gen_bp_txs_valid_2_and_2"); });
 }
 
 bool gen_bp_txs_valid_2_and_3_and_2_and_4::generate(std::vector<test_event_entry>& events) const
@@ -402,7 +402,7 @@ bool gen_bp_txs_valid_2_and_3_and_2_and_4::generate(std::vector<test_event_entry
 
   const rct::RCTConfig rct_config[] = {{rct::RangeProofType::PaddedBulletproof, 0}, {rct::RangeProofType::PaddedBulletproof, 0}, {rct::RangeProofType::PaddedBulletproof, 0}, {rct::RangeProofType::PaddedBulletproof, 0}};
   const size_t bp_sizes[] = {2, (size_t)-1, 4, (size_t)-1, 2, (size_t)-1, 4, (size_t)-1};
-  return generate_with(events, 4, amounts_paid, true, rct_config, 0, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx) { return check_bp(tx, tx_idx, bp_sizes, "gen_bp_txs_valid_2_and_3_and_2_and_4"); });
+  return generate_with(events, 4, amounts_paid, true, rct_config, hf::none, NULL, [&](const cryptonote::transaction &tx, size_t tx_idx) { return check_bp(tx, tx_idx, bp_sizes, "gen_bp_txs_valid_2_and_3_and_2_and_4"); });
 }
 
 bool gen_bp_tx_invalid_wrong_amount::generate(std::vector<test_event_entry>& events) const
@@ -410,7 +410,7 @@ bool gen_bp_tx_invalid_wrong_amount::generate(std::vector<test_event_entry>& eve
   DEFINE_TESTS_ERROR_CONTEXT("gen_bp_tx_invalid_wrong_amount");
   const uint64_t amounts_paid[] = {10, (uint64_t)-1};
   const rct::RCTConfig rct_config[] = { { rct::RangeProofType::PaddedBulletproof, 0 } };
-  return generate_with(events, 1, amounts_paid, false, rct_config, 0, NULL, [&](cryptonote::transaction &tx, size_t idx){
+  return generate_with(events, 1, amounts_paid, false, rct_config, hf::none, NULL, [&](cryptonote::transaction &tx, size_t idx){
     CHECK_TEST_CONDITION(rct::is_rct_bulletproof(tx.rct_signatures.type));
     CHECK_TEST_CONDITION(!tx.rct_signatures.p.bulletproofs.empty());
     tx.rct_signatures.p.bulletproofs.back() = rct::bulletproof_PROVE(1000, rct::skGen());
@@ -423,7 +423,7 @@ bool gen_rct2_tx_clsag_malleability::generate(std::vector<test_event_entry>& eve
   DEFINE_TESTS_ERROR_CONTEXT("gen_rct_tx_clsag_malleability");
   const uint64_t amounts_paid[] = {5000, 5000, (uint64_t)-1};
   const rct::RCTConfig rct_config[] = { { rct::RangeProofType::PaddedBulletproof, 3 } };
-  return generate_with(events, 1, amounts_paid, false, rct_config, 0, NULL, [&](cryptonote::transaction &tx, size_t tx_idx) {
+  return generate_with(events, 1, amounts_paid, false, rct_config, hf::none, NULL, [&](cryptonote::transaction &tx, size_t tx_idx) {
     CHECK_TEST_CONDITION(tx.version == cryptonote::txversion::v4_tx_types);
     CHECK_TEST_CONDITION(tx.rct_signatures.type == rct::RCTType::CLSAG);
     CHECK_TEST_CONDITION(!tx.rct_signatures.p.CLSAGs.empty());

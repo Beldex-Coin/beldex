@@ -188,18 +188,21 @@ namespace rct {
         return vali;
     }
 
-    size_t n_bulletproof_amounts(const Bulletproof &proof)
+    static size_t n_bulletproof_amounts_base(const size_t L_size, const size_t R_size, const size_t V_size, const size_t max_outputs)
     {
-        CHECK_AND_ASSERT_MES(proof.L.size() >= 6, 0, "Invalid bulletproof L size");
-        CHECK_AND_ASSERT_MES(proof.L.size() == proof.R.size(), 0, "Mismatched bulletproof L/R size");
+        CHECK_AND_ASSERT_MES(L_size >= 6, 0, "Invalid bulletproof L size");
+        CHECK_AND_ASSERT_MES(L_size == R_size, 0, "Mismatched bulletproof L/R size");
         static const size_t extra_bits = 4;
-        static_assert((1 << extra_bits) == BULLETPROOF_MAX_OUTPUTS, "log2(BULLETPROOF_MAX_OUTPUTS) is out of date");
-        CHECK_AND_ASSERT_MES(proof.L.size() <= 6 + extra_bits, 0, "Invalid bulletproof L size");
-        CHECK_AND_ASSERT_MES(proof.V.size() <= (1u<<(proof.L.size()-6)), 0, "Invalid bulletproof V/L");
-        CHECK_AND_ASSERT_MES(proof.V.size() * 2 > (1u<<(proof.L.size()-6)), 0, "Invalid bulletproof V/L");
-        CHECK_AND_ASSERT_MES(proof.V.size() > 0, 0, "Empty bulletproof");
-        return proof.V.size();
+        CHECK_AND_ASSERT_MES((1 << extra_bits) == max_outputs, 0, "log2(max_outputs) is out of date");
+        CHECK_AND_ASSERT_MES(L_size <= 6 + extra_bits, 0, "Invalid bulletproof L size");
+        CHECK_AND_ASSERT_MES(V_size <= (1u<<(L_size-6)), 0, "Invalid bulletproof V/L");
+        CHECK_AND_ASSERT_MES(V_size * 2 > (1u<<(L_size-6)), 0, "Invalid bulletproof V/L");
+        CHECK_AND_ASSERT_MES(V_size > 0, 0, "Empty bulletproof");
+        return V_size;
     }
+
+    size_t n_bulletproof_amounts(const Bulletproof &proof) { return n_bulletproof_amounts_base(proof.L.size(), proof.R.size(), proof.V.size(), cryptonote::TX_BULLETPROOF_MAX_OUTPUTS); }
+    size_t n_bulletproof_plus_amounts(const BulletproofPlus &proof) { return n_bulletproof_amounts_base(proof.L.size(), proof.R.size(), proof.V.size(), cryptonote::TX_BULLETPROOF_PLUS_MAX_OUTPUTS); }
 
     size_t n_bulletproof_amounts(const std::vector<Bulletproof> &proofs)
     {
@@ -215,15 +218,32 @@ namespace rct {
         return n;
     }
 
-    size_t n_bulletproof_max_amounts(const Bulletproof &proof)
+    size_t n_bulletproof_plus_amounts(const std::vector<BulletproofPlus> &proofs)
     {
-        CHECK_AND_ASSERT_MES(proof.L.size() >= 6, 0, "Invalid bulletproof L size");
-        CHECK_AND_ASSERT_MES(proof.L.size() == proof.R.size(), 0, "Mismatched bulletproof L/R size");
-        static const size_t extra_bits = 4;
-        static_assert((1 << extra_bits) == BULLETPROOF_MAX_OUTPUTS, "log2(BULLETPROOF_MAX_OUTPUTS) is out of date");
-        CHECK_AND_ASSERT_MES(proof.L.size() <= 6 + extra_bits, 0, "Invalid bulletproof L size");
-        return 1 << (proof.L.size() - 6);
+        size_t n = 0;
+        for (const BulletproofPlus &proof: proofs)
+        {
+            size_t n2 = n_bulletproof_plus_amounts(proof);
+            CHECK_AND_ASSERT_MES(n2 < std::numeric_limits<uint32_t>::max() - n, 0, "Invalid number of bulletproofs");
+            if (n2 == 0)
+                return 0;
+            n += n2;
+        }
+        return n;
     }
+
+    static size_t n_bulletproof_max_amounts_base(size_t L_size, size_t R_size, size_t max_outputs)
+    {
+        CHECK_AND_ASSERT_MES(L_size >= 6, 0, "Invalid bulletproof L size");
+        CHECK_AND_ASSERT_MES(L_size == R_size, 0, "Mismatched bulletproof L/R size");
+        static const size_t extra_bits = 4;
+        CHECK_AND_ASSERT_MES((1 << extra_bits) == max_outputs, 0, "log2(max_outputs) is out of date");
+        CHECK_AND_ASSERT_MES(L_size <= 6 + extra_bits, 0, "Invalid bulletproof L size");
+        return 1 << (L_size - 6);
+    }
+
+    size_t n_bulletproof_max_amounts(const Bulletproof &proof) { return n_bulletproof_max_amounts_base(proof.L.size(), proof.R.size(), cryptonote::TX_BULLETPROOF_MAX_OUTPUTS); }
+    size_t n_bulletproof_plus_max_amounts(const BulletproofPlus &proof) { return n_bulletproof_max_amounts_base(proof.L.size(), proof.R.size(), cryptonote::TX_BULLETPROOF_PLUS_MAX_OUTPUTS); }
 
     size_t n_bulletproof_max_amounts(const std::vector<Bulletproof> &proofs)
     {
@@ -231,6 +251,20 @@ namespace rct {
         for (const Bulletproof &proof: proofs)
         {
             size_t n2 = n_bulletproof_max_amounts(proof);
+            CHECK_AND_ASSERT_MES(n2 < std::numeric_limits<uint32_t>::max() - n, 0, "Invalid number of bulletproofs");
+            if (n2 == 0)
+                return 0;
+            n += n2;
+        }
+        return n;
+    }
+
+    size_t n_bulletproof_plus_max_amounts(const std::vector<BulletproofPlus> &proofs)
+    {
+        size_t n = 0;
+        for (const BulletproofPlus &proof: proofs)
+        {
+            size_t n2 = n_bulletproof_plus_max_amounts(proof);
             CHECK_AND_ASSERT_MES(n2 < std::numeric_limits<uint32_t>::max() - n, 0, "Invalid number of bulletproofs");
             if (n2 == 0)
                 return 0;

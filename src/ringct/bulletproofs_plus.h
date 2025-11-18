@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2019, The Monero Project
+// Copyright (c) 2017-2020, The Monero Project
 // 
 // All rights reserved.
 // 
@@ -25,36 +25,25 @@
 // INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
 // STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// 
-// Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 
 #pragma once
 
-#include <sstream>
-#include "json_archive.h"
+#ifndef BULLETPROOFS_PLUS_H
+#define BULLETPROOFS_PLUS_H
 
-namespace serialization {
+#include "rctTypes.h"
 
-/// Subclass of json_archiver that writes to a std::ostringstream and returns the string on
-/// demand.
-class json_string_archiver : public json_archiver {
-  std::ostringstream oss;
-public:
-  /// Constructor; takes no arguments.
-  json_string_archiver() : json_archiver{oss} {}
-
-  /// Returns the string from the std::ostringstream
-  std::string str() { return oss.str(); }
-};
-
-/*! serializes the data in v to a string.  Throws on error.
-*/
-template<class T>
-std::string dump_json(T& v)
+namespace rct
 {
-  json_string_archiver oar;
-  serialize(oar, v);
-  return oar.str();
+
+BulletproofPlus bulletproof_plus_PROVE(const rct::key &v, const rct::key &gamma);
+BulletproofPlus bulletproof_plus_PROVE(uint64_t v, const rct::key &gamma);
+BulletproofPlus bulletproof_plus_PROVE(const rct::keyV &v, const rct::keyV &gamma);
+BulletproofPlus bulletproof_plus_PROVE(const std::vector<uint64_t> &v, const rct::keyV &gamma);
+bool bulletproof_plus_VERIFY(const BulletproofPlus &proof);
+bool bulletproof_plus_VERIFY(const std::vector<const BulletproofPlus*> &proofs);
+bool bulletproof_plus_VERIFY(const std::vector<BulletproofPlus> &proofs);
+
 }
 
-} // namespace serialization
+#endif

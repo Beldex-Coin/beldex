@@ -859,7 +859,7 @@ void handle_flash(Message& m, QnetState& qnet) {
     auto local_height = qnet.core.get_current_blockchain_height();
 
     auto hf_version = get_network_version(qnet.core.get_nettype(), local_height);
-    if (hf_version < HF_VERSION_FLASH) {
+    if (hf_version < cryptonote::feature::FLASH) {
         MWARNING("Rejecting flash message: flash is not available for hardfork " << (int) hf_version);
         if (tag)
             m.send_back("bl.nostart", bt_serialize(bt_dict{{"!", tag}, {"e", "Invalid flash authorization height"sv}}));

@@ -40,11 +40,13 @@
 #include <boost/serialization/deque.hpp>
 #include <atomic>
 #include <random>
+#include <nlohmann/json.hpp>
 
 #include "cryptonote_basic/account.h"
 #include "cryptonote_basic/account_boost_serialization.h"
 #include "cryptonote_basic/cryptonote_basic_impl.h"
 #include "rpc/core_rpc_server_commands_defs.h"
+#include "rpc/core_rpc_server_binary_commands.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_core/cryptonote_tx_utils.h"
 #include "cryptonote_core/beldex_name_system.h"
@@ -106,6 +108,7 @@ namespace tools
     uint64_t pick();
     gamma_picker(const std::vector<uint64_t> &rct_offsets);
     gamma_picker(const std::vector<uint64_t> &rct_offsets, double shape, double scale);
+    uint64_t get_num_rct_outs() const { return num_rct_outputs; }
 
   private:
     struct gamma_engine
@@ -295,7 +298,7 @@ private:
     static bool verify_password(const fs::path& keys_file_name, const epee::wipeable_string& password, bool no_spend_key, hw::device &hwdev, uint64_t kdf_rounds);
     static bool query_device(hw::device::type& device_type, const fs::path& keys_file_name, const epee::wipeable_string& password, uint64_t kdf_rounds = 1);
 
-    wallet2(cryptonote::network_type nettype = cryptonote::MAINNET, uint64_t kdf_rounds = 1, bool unattended = false);
+    wallet2(cryptonote::network_type nettype = cryptonote::network_type::MAINNET, uint64_t kdf_rounds = 1, bool unattended = false);
     ~wallet2();
 
     struct tx_scan_info_t
@@ -394,6 +397,7 @@ private:
 
     using transfer_details = wallet::transfer_details;
     using transfer_container = std::vector<transfer_details>;
+    using unique_index_container = std::set<uint32_t>;
     using pending_tx = wallet::pending_tx;
     using unsigned_tx_set = wallet::unsigned_tx_set;
     using signed_tx_set = wallet::signed_tx_set;
@@ -449,7 +453,7 @@ private:
       crypto::hash hash;
       cryptonote::block block;
       std::vector<cryptonote::transaction> txes;
-      cryptonote::rpc::GET_BLOCKS_FAST::block_output_indices o_indices;
+      nlohmann::json o_indices;
       bool error;
     };
 
@@ -753,14 +757,14 @@ private:
     bool parse_unsigned_tx_from_str(std::string_view unsigned_tx_st, unsigned_tx_set &exported_txs) const;
     bool load_tx(const fs::path& signed_filename, std::vector<pending_tx>& ptx, std::function<bool(const signed_tx_set&)> accept_func = NULL);
     bool parse_tx_from_str(std::string_view signed_tx_st, std::vector<pending_tx> &ptx, std::function<bool(const signed_tx_set &)> accept_func);
-    std::vector<pending_tx> create_transactions_2(std::vector<cryptonote::tx_destination_entry> dsts, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra_base, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, cryptonote::beldex_construct_tx_params &tx_params);
+    std::vector<pending_tx> create_transactions_2(std::vector<cryptonote::tx_destination_entry> dsts, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra_base, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, cryptonote::beldex_construct_tx_params &tx_params, const unique_index_container& subtract_fee_from_outputs = {});     // pass subaddr_indices by value on purpose
 
     std::vector<pending_tx> create_transactions_all(uint64_t below, const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, cryptonote::txtype tx_type = cryptonote::txtype::standard);
     std::vector<pending_tx> create_transactions_single(const crypto::key_image &ki, const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, cryptonote::txtype tx_type = cryptonote::txtype::standard);
     std::vector<pending_tx> create_transactions_from(const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, std::vector<size_t> unused_transfers_indices, std::vector<size_t> unused_dust_indices, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, cryptonote::txtype tx_type = cryptonote::txtype::standard);
     std::vector<pending_tx> create_transactions_burn(const std::vector<crypto::key_image> &ki, const size_t outputs, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, cryptonote::txtype tx_type = cryptonote::txtype::coin_burn);
 
-    bool sanity_check(const std::vector<pending_tx> &ptx_vector, std::vector<cryptonote::tx_destination_entry> dsts) const;
+    bool sanity_check(const std::vector<pending_tx> &ptx_vector, std::vector<cryptonote::tx_destination_entry> dsts, const unique_index_container& subtract_fee_from_outputs = {}) const;
     void cold_tx_aux_import(const std::vector<pending_tx>& ptx, const std::vector<std::string>& tx_device_aux);
     void cold_sign_tx(const std::vector<pending_tx>& ptx_vector, signed_tx_set &exported_txs, std::vector<cryptonote::address_parse_info> const &dsts_info, std::vector<std::string> & tx_device_aux);
     uint64_t cold_key_image_sync(uint64_t &spent, uint64_t &unspent);
@@ -793,7 +797,7 @@ private:
       bool coinbase = false;
       bool filter_by_height = false;
       uint64_t min_height = 0;
-      uint64_t max_height = CRYPTONOTE_MAX_BLOCK_NUMBER;
+      uint64_t max_height = cryptonote::MAX_BLOCK_NUMBER;
       std::set<uint32_t> subaddr_indices;
       uint32_t account_index;
       bool all_accounts;
@@ -815,11 +819,11 @@ private:
     auto get_all_master_nodes()                                    const { return m_node_rpc_proxy.get_all_master_nodes(); }
     auto get_master_nodes(std::vector<std::string> const &pubkeys) const { return m_node_rpc_proxy.get_master_nodes(pubkeys); }
     auto get_master_node_blacklisted_key_images()                  const { return m_node_rpc_proxy.get_master_node_blacklisted_key_images(); }
-    std::vector<cryptonote::rpc::GET_MASTER_NODES::response::entry> list_current_stakes();
-    auto bns_owners_to_names(cryptonote::rpc::BNS_OWNERS_TO_NAMES::request const &request) const { return m_node_rpc_proxy.bns_owners_to_names(request); }
-    auto bns_names_to_owners(cryptonote::rpc::BNS_NAMES_TO_OWNERS::request const &request) const { return m_node_rpc_proxy.bns_names_to_owners(request); }
-    auto resolve(cryptonote::rpc::BNS_RESOLVE::request const &request) const { return m_node_rpc_proxy.bns_resolve(request); }
-
+    // List of service nodes this wallet has a stake in:
+    nlohmann::json get_staked_master_nodes();
+    auto bns_owners_to_names(nlohmann::json const &request) const { return m_node_rpc_proxy.bns_owners_to_names(request); }
+    auto bns_names_to_owners(nlohmann::json const &request) const { return m_node_rpc_proxy.bns_names_to_owners(request); }
+    auto resolve(nlohmann::json const &request) const { return m_node_rpc_proxy.bns_resolve(request); }
     struct bns_detail
     {
       std::string name;
@@ -1069,8 +1073,8 @@ private:
     const transfer_details &get_transfer_details(size_t idx) const;
 
     void get_hard_fork_info (uint8_t version, uint64_t &earliest_height) const;
-    std::optional<uint8_t> get_hard_fork_version() const { return m_node_rpc_proxy.get_hardfork_version(); }
-    bool use_fork_rules(uint8_t version, uint64_t early_blocks = 0) const;
+    std::optional<cryptonote::hf> get_hard_fork_version() const { return m_node_rpc_proxy.get_hardfork_version(); }
+    bool use_fork_rules(cryptonote::hf version, uint64_t early_blocks = 0) const;
 
     const fs::path& get_wallet_file() const;
     const fs::path& get_keys_file() const;
@@ -1227,7 +1231,7 @@ private:
 
     // params constructor, accumulates the burn amounts if the priority is
     // a flash and, or a bns tx. If it is a flash TX, bns_burn_type is ignored.
-    static cryptonote::beldex_construct_tx_params construct_params(uint8_t hf_version, cryptonote::txtype tx_type, uint32_t priority, uint64_t extra_burn = 0, bns::mapping_years bns_burn_type = static_cast<bns::mapping_years>(0));
+    static cryptonote::beldex_construct_tx_params construct_params(cryptonote::hf hf_version, cryptonote::txtype tx_type, uint32_t priority, uint64_t extra_burn = 0, bns::mapping_years bns_burn_type = static_cast<bns::mapping_years>(0));
 
     bool is_unattended() const { return m_unattended; }
 
@@ -1306,6 +1310,11 @@ private:
           MERROR("HTTP request failed: unknown error");
       }
       return false;
+    }
+
+    nlohmann::json json_rpc(std::string command, nlohmann::json params)
+    {
+      return m_http_client.json_rpc(command, params);
     }
 
     bool set_ring_database(fs::path filename);
@@ -1403,11 +1412,9 @@ private:
 
     // signature: (Optional) If set, use the signature given, otherwise by default derive the signature from the wallet spend key as an ed25519 key.
     //            The signature is derived from the hash of the previous txid blob and previous value blob of the mapping. By default this is signed using the wallet's spend key as an ed25519 keypair.
-    std::vector<pending_tx> bns_create_update_mapping_tx(std::string name, std::string const *value_bchat, std::string const *value_wallet, std::string const *value_belnet, std::string const *value_eth_addr, std::string const *owner, std::string const *backup_owner, std::string const *signature, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {}, std::vector<cryptonote::rpc::BNS_NAMES_TO_OWNERS::response_entry> *response = {});
-
+    std::vector<pending_tx> bns_create_update_mapping_tx(std::string name, std::string const *value_bchat, std::string const *value_wallet, std::string const *value_belnet, std::string const *value_eth_addr, std::string const *owner, std::string const *backup_owner, std::string const *signature, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {}, nlohmann::json *response = {});
     // BNS renewal (for belnet registrations, not for bchat/wallet)
-    std::vector<pending_tx> bns_create_renewal_tx(bns::mapping_years map_years, std::string name, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {}, std::vector<cryptonote::rpc::BNS_NAMES_TO_OWNERS::response_entry> *response = {});
-
+    std::vector<pending_tx> bns_create_renewal_tx(bns::mapping_years map_years, std::string name, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {}, nlohmann::json *response = {});
     // Generate just the signature required for putting into bns_update_mapping command in the wallet
     bool bns_make_update_mapping_signature(std::string name, std::string const *value_bchat, std::string const *value_wallet, std::string const *value_belnet, std::string const *value_eth_addr, std::string const *owner, std::string const *backup_owner, bns::generic_signature &signature, uint32_t account_index = 0, std::string *reason = nullptr);
 
@@ -1445,17 +1452,6 @@ private:
     std::atomic<bool> m_long_poll_disabled;
     static std::string get_default_daemon_address();
 
-    /// Requests transactions from daemon given hex strings of the tx ids; throws a wallet exception
-    /// on error, otherwise returns the response.
-    cryptonote::rpc::GET_TRANSACTIONS::response request_transactions(std::vector<std::string> txids_hex);
-
-    /// Requests transactions from daemon given a vector of crypto::hash.  Throws a wallet exception
-    /// on error, otherwise returns the response.
-    cryptonote::rpc::GET_TRANSACTIONS::response request_transactions(const std::vector<crypto::hash>& txids);
-
-    /// Same as above, but for a single transaction.
-    cryptonote::rpc::GET_TRANSACTIONS::response request_transaction(const crypto::hash& txid) { return request_transactions(std::vector<crypto::hash>{{txid}}); }
-
     // The wallet's RPC client; public for advanced configuration purposes.
     cryptonote::rpc::http_client m_http_client;
 
@@ -1481,14 +1477,14 @@ private:
      */
     bool load_keys_buf(const std::string& keys_buf, const epee::wipeable_string& password);
     bool load_keys_buf(const std::string& keys_buf, const epee::wipeable_string& password, std::optional<crypto::chacha_key>& keys_to_encrypt);
-    void process_new_transaction(const crypto::hash &txid, const cryptonote::transaction& tx, const std::vector<uint64_t> &o_indices, uint64_t height, uint8_t block_version, uint64_t ts, bool miner_tx, bool pool, bool flash, bool double_spend_seen, const tx_cache_data &tx_cache_data, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
+    void process_new_transaction(const crypto::hash &txid, const cryptonote::transaction& tx, const std::vector<uint64_t> &o_indices, uint64_t height, cryptonote::hf block_version, uint64_t ts, bool miner_tx, bool pool, bool flash, bool double_spend_seen, const tx_cache_data &tx_cache_data, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
     bool should_skip_block(const cryptonote::block &b, uint64_t height) const;
     void process_new_blockchain_entry(const cryptonote::block& b, const cryptonote::block_complete_entry& bche, const parsed_block &parsed_block, const crypto::hash& bl_id, uint64_t height, const std::vector<tx_cache_data> &tx_cache_data, size_t tx_cache_data_offset, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
     void detach_blockchain(uint64_t height, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
     void get_short_chain_history(std::list<crypto::hash>& ids, uint64_t granularity = 1) const;
     bool clear();
     void clear_soft(bool keep_key_images=false);
-    void pull_blocks(uint64_t start_height, uint64_t& blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::rpc::GET_BLOCKS_FAST::block_output_indices> &o_indices, uint64_t &current_height);
+    void pull_blocks(uint64_t start_height, uint64_t& blocks_start_height, const std::list<crypto::hash>& short_chain_history, std::vector<cryptonote::block_complete_entry>& blocks, std::vector<cryptonote::rpc::GET_BLOCKS_BIN::block_output_indices>& o_indices, uint64_t& current_height);
     void pull_hashes(uint64_t start_height, uint64_t& blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::vector<crypto::hash> &hashes);
     void fast_refresh(uint64_t stop_height, uint64_t &blocks_start_height, std::list<crypto::hash> &short_chain_history, bool force = false);
     void pull_and_parse_next_blocks(uint64_t start_height, uint64_t &blocks_start_height, std::list<crypto::hash> &short_chain_history, const std::vector<cryptonote::block_complete_entry> &prev_blocks, const std::vector<parsed_block> &prev_parsed_blocks, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<parsed_block> &parsed_blocks, bool &last, bool &error, std::exception_ptr &exception);
@@ -1662,7 +1658,7 @@ private:
     bool m_light_wallet; /* sends view key to daemon for scanning */
     uint64_t m_light_wallet_scanned_block_height;
     uint64_t m_light_wallet_blockchain_height;
-    uint64_t m_light_wallet_per_kb_fee = FEE_PER_BYTE_V12 * 1024;
+    uint64_t m_light_wallet_per_kb_fee = cryptonote::old::FEE_PER_BYTE_V12 * 1024;
     bool m_light_wallet_connected;
     uint64_t m_light_wallet_balance;
     uint64_t m_light_wallet_unlocked_balance;

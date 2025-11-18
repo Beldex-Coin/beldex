@@ -194,43 +194,43 @@ bool gen_tx_unlock_time::generate(std::vector<test_event_entry>& events) const
 
   transaction tx       = {};
   uint64_t unlock_time = 0;
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).with_unlock_time(unlock_time).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).with_unlock_time(unlock_time).build();
   events.push_back(tx);
   txs_0.push_back(tx);
 
   tx          = {};
   unlock_time = get_block_height(blk_money_unlocked) - 1;
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).with_unlock_time(unlock_time).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).with_unlock_time(unlock_time).build();
   events.push_back(tx);
   txs_0.push_back(tx);
 
   tx          = {};
   unlock_time = get_block_height(blk_money_unlocked);
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).with_unlock_time(unlock_time).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).with_unlock_time(unlock_time).build();
   events.push_back(tx);
   txs_0.push_back(tx);
 
   tx          = {};
   unlock_time = get_block_height(blk_money_unlocked) + 1;
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).with_unlock_time(unlock_time).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).with_unlock_time(unlock_time).build();
   events.push_back(tx);
   txs_0.push_back(tx);
 
   tx          = {};
   unlock_time = get_block_height(blk_money_unlocked) + 2;
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).with_unlock_time(unlock_time).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).with_unlock_time(unlock_time).build();
   events.push_back(tx);
   txs_0.push_back(tx);
 
   tx          = {};
   unlock_time = ts_start - 1;
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).with_unlock_time(unlock_time).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).with_unlock_time(unlock_time).build();
   events.push_back(tx);
   txs_0.push_back(tx);
 
   tx          = {};
   unlock_time = time(0) + 60 * 60;
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).with_unlock_time(unlock_time).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).with_unlock_time(unlock_time).build();
   events.push_back(tx);
   txs_0.push_back(tx);
 
@@ -301,7 +301,7 @@ bool gen_tx_no_inputs_has_outputs::generate(std::vector<test_event_entry>& event
   REWIND_BLOCKS     (events, blk_head,           blk_money_unlocked, miner_account);
 
   transaction tx = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   tx.vin.clear();
 
   DO_CALLBACK(events, "mark_invalid_tx");
@@ -319,7 +319,7 @@ bool gen_tx_has_inputs_no_outputs::generate(std::vector<test_event_entry>& event
   REWIND_BLOCKS     (events, blk_head,           blk_money_unlocked, miner_account);
 
   transaction tx = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   tx.vout.clear();
 
   DO_CALLBACK(events, "mark_invalid_tx"); // NOTE(beldex): This used to be valid in Monero pre RCT, but not anymore with our transactions because we start with RCT type TXs
@@ -339,7 +339,7 @@ bool gen_tx_invalid_input_amount::generate(std::vector<test_event_entry>& events
   std::vector<tx_source_entry>      sources;
   std::vector<tx_destination_entry> destinations;
   uint64_t                          change_amount;
-  fill_tx_sources_and_destinations(events, blk_money_unlocked, miner_account, get_address(miner_account), MK_COINS(1), TESTS_DEFAULT_FEE, CRYPTONOTE_DEFAULT_TX_MIXIN, sources, destinations, &change_amount);
+  fill_tx_sources_and_destinations(events, blk_money_unlocked, miner_account, get_address(miner_account), MK_COINS(1), TESTS_DEFAULT_FEE, cryptonote::TX_OUTPUT_DECOYS, sources, destinations, &change_amount);
   sources.front().amount++;
 
   transaction tx = {};
@@ -362,10 +362,10 @@ bool gen_tx_input_wo_key_offsets::generate(std::vector<test_event_entry>& events
 
   std::vector<tx_source_entry> sources;
   std::vector<tx_destination_entry> destinations;
-  fill_tx_sources_and_destinations(events, blk_money_unlocked, miner_account, get_address(miner_account), MK_COINS(1), TESTS_DEFAULT_FEE, CRYPTONOTE_DEFAULT_TX_MIXIN, sources, destinations);
+  fill_tx_sources_and_destinations(events, blk_money_unlocked, miner_account, get_address(miner_account), MK_COINS(1), TESTS_DEFAULT_FEE, cryptonote::TX_OUTPUT_DECOYS, sources, destinations);
 
   transaction tx = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   txin_to_key& in_to_key = var::get<txin_to_key>(tx.vin.front());
   while (!in_to_key.key_offsets.empty())
     in_to_key.key_offsets.pop_back();
@@ -392,11 +392,11 @@ bool gen_tx_key_offset_points_to_foreign_key::generate(std::vector<test_event_en
   REWIND_BLOCKS          (events, blk_head,           blk_money_unlocked, miner_account);
 
   transaction bob_tx = {};
-  beldex_tx_builder(events, bob_tx, blk_money_unlocked, bob_account, miner_account.get_keys().m_account_address, MK_COINS(15) + 1 - TESTS_DEFAULT_FEE, cryptonote::network_version_7).with_fee(TESTS_DEFAULT_FEE).build();
+  beldex_tx_builder(events, bob_tx, blk_money_unlocked, bob_account, miner_account.get_keys().m_account_address, MK_COINS(15) + 1 - TESTS_DEFAULT_FEE, cryptonote::hf::hf7).with_fee(TESTS_DEFAULT_FEE).build();
 
   std::vector<tx_source_entry>      sources_alice;
   std::vector<tx_destination_entry> destinations_alice;
-  fill_tx_sources_and_destinations(events, blk_money_unlocked, alice_account, get_address(miner_account), MK_COINS(15) + 1 - TESTS_DEFAULT_FEE, TESTS_DEFAULT_FEE, CRYPTONOTE_DEFAULT_TX_MIXIN, sources_alice, destinations_alice);
+  fill_tx_sources_and_destinations(events, blk_money_unlocked, alice_account, get_address(miner_account), MK_COINS(15) + 1 - TESTS_DEFAULT_FEE, TESTS_DEFAULT_FEE, cryptonote::TX_OUTPUT_DECOYS, sources_alice, destinations_alice);
 
   txin_to_key& bob_in_to_key        = var::get<txin_to_key>(bob_tx.vin.front());
   bob_in_to_key.key_offsets.front() = sources_alice.front().outputs.back().first;
@@ -423,7 +423,7 @@ bool gen_tx_sender_key_offset_not_exist::generate(std::vector<test_event_entry>&
   REWIND_BLOCKS     (events, blk_head,           blk_money_unlocked, miner_account);
 
   transaction tx = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   txin_to_key& in_to_key        = var::get<txin_to_key>(tx.vin.front());
   in_to_key.key_offsets.front() = std::numeric_limits<uint64_t>::max();
 
@@ -489,12 +489,12 @@ bool gen_tx_mixed_key_offset_not_exist::generate(std::vector<test_event_entry>& 
   std::vector<tx_source_entry>      sources;
   std::vector<tx_destination_entry> destinations;
   uint64_t                          change_amount;
-  fill_tx_sources_and_destinations(events, blk_money_unlocked, bob_account, miner_account, MK_COINS(1), TESTS_DEFAULT_FEE, CRYPTONOTE_DEFAULT_TX_MIXIN, sources, destinations, &change_amount);
+  fill_tx_sources_and_destinations(events, blk_money_unlocked, bob_account, miner_account, MK_COINS(1), TESTS_DEFAULT_FEE, cryptonote::TX_OUTPUT_DECOYS, sources, destinations, &change_amount);
   sources.front().outputs[(sources.front().real_output + 1) % 2].first = std::numeric_limits<uint64_t>::max();
 
   transaction tx = {};
   cryptonote::tx_destination_entry change_addr{ change_amount, miner_account.get_keys().m_account_address, false /*is_subaddress*/ };
-  assert(cryptonote::construct_tx(miner_account.get_keys(), sources, destinations, change_addr, {} /*tx_extra*/, tx, 0 /*unlock_time*/, cryptonote::network_version_7));
+  assert(cryptonote::construct_tx(miner_account.get_keys(), sources, destinations, change_addr, {} /*tx_extra*/, tx, 0 /*unlock_time*/, cryptonote::hf::hf7));
 
   DO_CALLBACK(events, "mark_invalid_tx");
   events.push_back(tx);
@@ -511,7 +511,7 @@ bool gen_tx_key_image_not_derive_from_tx_key::generate(std::vector<test_event_en
   REWIND_BLOCKS     (events, blk_head,           blk_money_unlocked, miner_account);
 
   transaction tx = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   txin_to_key& in_to_key        = var::get<txin_to_key>(tx.vin.front());
 
   // Use fake key image
@@ -539,7 +539,7 @@ bool gen_tx_key_image_is_invalid::generate(std::vector<test_event_entry>& events
   REWIND_BLOCKS     (events, blk_head,           blk_money_unlocked, miner_account);
 
   transaction tx = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   txin_to_key& in_to_key = var::get<txin_to_key>(tx.vin.front());
   in_to_key.k_image      = generate_invalid_key_image();
 
@@ -623,7 +623,7 @@ bool gen_tx_txout_to_key_has_invalid_key::generate(std::vector<test_event_entry>
   REWIND_BLOCKS     (events, blk_head,           blk_money_unlocked, miner_account);
 
   transaction tx           = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   txout_to_key& out_to_key = var::get<txout_to_key>(tx.vout.front().target);
   out_to_key.key           = generate_invalid_pub_key();
 
@@ -648,7 +648,7 @@ bool gen_tx_output_with_zero_amount::generate(std::vector<test_event_entry>& eve
   std::vector<tx_source_entry>      sources;
   std::vector<tx_destination_entry> destinations;
   uint64_t                          change_amount;
-  fill_tx_sources_and_destinations(events, blk_money_unlocked, miner_account, get_address(miner_account), MK_COINS(1), TESTS_DEFAULT_FEE, CRYPTONOTE_DEFAULT_TX_MIXIN, sources, destinations, &change_amount);
+  fill_tx_sources_and_destinations(events, blk_money_unlocked, miner_account, get_address(miner_account), MK_COINS(1), TESTS_DEFAULT_FEE, cryptonote::TX_OUTPUT_DECOYS, sources, destinations, &change_amount);
 
   for (tx_destination_entry &entry : destinations)
     entry.amount = 0;
@@ -659,7 +659,7 @@ bool gen_tx_output_with_zero_amount::generate(std::vector<test_event_entry>& eve
 
 #else
   transaction tx           = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   tx.vout.front().amount = 0;
 
 #endif
@@ -678,14 +678,14 @@ bool gen_tx_output_is_not_txout_to_key::generate(std::vector<test_event_entry>& 
   REWIND_BLOCKS     (events, blk_head,           blk_money_unlocked, miner_account);
 
   transaction tx = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   tx.vout.back().target = txout_to_script();
 
   DO_CALLBACK(events, "mark_invalid_tx");
   events.push_back(tx);
 
   tx = {};
-  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).build();
+  beldex_tx_builder(events, tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).build();
   tx.vout.back().target = txout_to_scripthash();
 
   DO_CALLBACK(events, "mark_invalid_tx");
@@ -710,7 +710,7 @@ bool gen_tx_signatures_are_invalid::generate(std::vector<test_event_entry>& even
   REWIND_BLOCKS          (events, blk_head,           blk_money_unlocked, miner_account);
 
   transaction miner_tx = {};
-  beldex_tx_builder(events, miner_tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(60), cryptonote::network_version_7).with_fee(TESTS_DEFAULT_FEE).build();
+  beldex_tx_builder(events, miner_tx, blk_money_unlocked, miner_account, miner_account.get_keys().m_account_address, MK_COINS(60), cryptonote::hf::hf7).with_fee(TESTS_DEFAULT_FEE).build();
 
   // TX without signatures
   DO_CALLBACK(events, "mark_invalid_tx");
@@ -730,7 +730,7 @@ bool gen_tx_signatures_are_invalid::generate(std::vector<test_event_entry>& even
   events.push_back(serialized_transaction(sr_tx));
 
   transaction bob_tx = {};
-  beldex_tx_builder(events, bob_tx, blk_money_unlocked, bob_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::network_version_7).with_fee(TESTS_DEFAULT_FEE).build();
+  beldex_tx_builder(events, bob_tx, blk_money_unlocked, bob_account, miner_account.get_keys().m_account_address, MK_COINS(1), cryptonote::hf::hf7).with_fee(TESTS_DEFAULT_FEE).build();
 
   // TX without signatures
   DO_CALLBACK(events, "mark_invalid_tx");

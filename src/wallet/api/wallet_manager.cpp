@@ -220,30 +220,21 @@ void WalletManagerImpl::setDaemonAddress(std::string address)
 }
 
 EXPORT
-bool WalletManagerImpl::connected(uint32_t *version)
-{
+bool WalletManagerImpl::connected(uint32_t* version) {
     using namespace cryptonote::rpc;
     try {
-        auto res = m_http_client.json_rpc<GET_VERSION>(GET_VERSION::names()[0], {});
-        if (version) *version = res.version;
+        auto res = m_http_client.json_rpc("get_version");
+        if (version)
+            *version = res["version"];
         return true;
-    } catch (...) {}
+    } catch (...) {
+    }
 
     return false;
 }
 
-template <typename RPC>
-static std::optional<typename RPC::response> json_rpc(cryptonote::rpc::http_client& http, const typename RPC::request& req = {})
-{
-    using namespace cryptonote::rpc;
-    try { return http.json_rpc<RPC>(RPC::names()[0], req); }
-    catch (...) {}
-    return std::nullopt;
-}
-
-static std::optional<cryptonote::rpc::GET_INFO::response> get_info(cryptonote::rpc::http_client& http)
-{
-    return json_rpc<cryptonote::rpc::GET_INFO>(http);
+static nlohmann::json get_info(cryptonote::rpc::http_client& http) {
+    return http.json_rpc("get_info");
 }
 
 
@@ -251,7 +242,7 @@ EXPORT
 uint64_t WalletManagerImpl::blockchainHeight()
 {
     auto res = get_info(m_http_client);
-    return res ? res->height : 0;
+    return res ? res["height"].get<uint64_t>() : 0;
 }
 
 EXPORT
@@ -260,14 +251,14 @@ uint64_t WalletManagerImpl::blockchainTargetHeight()
     auto res = get_info(m_http_client);
     if (!res)
         return 0;
-    return std::max(res->target_height, res->height);
+    return std::max(res["target_height"].get<uint64_t>(), res["height"].get<uint64_t>());
 }
 
 EXPORT
 uint64_t WalletManagerImpl::blockTarget()
 {
     auto res = get_info(m_http_client);
-    return res ? res->target : 0;
+    return res ? res["target"].get<uint64_t>() : 0;
 }
 
 ///////////////////// WalletManagerFactory implementation //////////////////////

@@ -84,6 +84,7 @@ namespace tools
     //         tx_sum_overflow
     //         tx_too_big
     //         zero_destination
+    //         subtract_fee_from_bad_index
     //       wallet_rpc_error *
     //         daemon_busy
     //         no_connection_to_daemon
@@ -747,10 +748,27 @@ namespace tools
       uint64_t m_tx_weight_limit;
     };
     //----------------------------------------------------------------------------------------------------
+    struct zero_amount: public transfer_error
+    {
+      explicit zero_amount(std::string&& loc)
+        : transfer_error(std::move(loc), "destination amount is zero")
+      {
+      }
+    };
+    //----------------------------------------------------------------------------------------------------
     struct zero_destination : public transfer_error
     {
       explicit zero_destination(std::string&& loc)
         : transfer_error(std::move(loc), "Destination amount is zero")
+      {
+      }
+    };
+    //----------------------------------------------------------------------------------------------------
+    struct subtract_fee_from_bad_index : public transfer_error
+    {
+      explicit subtract_fee_from_bad_index(std::string&& loc, long bad_index)
+        : transfer_error(std::move(loc),
+          "subtractfeefrom: bad index: " + std::to_string(bad_index) + " (indexes are 0-based)")
       {
       }
     };

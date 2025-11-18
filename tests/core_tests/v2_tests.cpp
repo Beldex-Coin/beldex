@@ -54,7 +54,7 @@ bool gen_v2_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
     miner_accounts[n].generate();
     CHECK_AND_ASSERT_MES(generator.construct_block_manually(blocks[n], *prev_block, miner_accounts[n],
         test_generator::bf_major_ver | test_generator::bf_minor_ver | test_generator::bf_timestamp,
-        2, 2, prev_block->timestamp + tools::to_seconds(TARGET_BLOCK_TIME_OLD) * 2, // v2 has blocks twice as long
+        cryptonote::hf::hf1, 2, prev_block->timestamp + tools::to_seconds(cryptonote::old::TARGET_BLOCK_TIME_12) * 2, // v2 has blocks twice as long
           crypto::hash(), 0, transaction(), std::vector<crypto::hash>(), 0),
         false, "Failed to generate block");
     events.push_back(blocks[n]);
@@ -65,12 +65,12 @@ bool gen_v2_tx_validation_base::generate_with(std::vector<test_event_entry>& eve
   cryptonote::block blk_r;
   {
     cryptonote::block blk_last = blocks[3];
-    for (size_t i = 0; i < CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW; ++i)
+    for (size_t i = 0; i < cryptonote::MINED_MONEY_UNLOCK_WINDOW; ++i)
     {
       cryptonote::block blk;
       CHECK_AND_ASSERT_MES(generator.construct_block_manually(blk, blk_last, miner_account,
           test_generator::bf_major_ver | test_generator::bf_minor_ver | test_generator::bf_timestamp,
-          2, 2, blk_last.timestamp + tools::to_seconds(TARGET_BLOCK_TIME_OLD) * 2, // v2 has blocks twice as long
+          cryptonote::hf::hf1, 2, blk_last.timestamp + tools::to_seconds(cryptonote::old::TARGET_BLOCK_TIME_12) * 2, // v2 has blocks twice as long
           crypto::hash(), 0, transaction(), std::vector<crypto::hash>(), 0),
           false, "Failed to generate block");
       events.push_back(blk);

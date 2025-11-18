@@ -229,7 +229,7 @@ int main(int argc, char** argv)
 
   srv_levin_commands_handler *commands_handler = new srv_levin_commands_handler(tcp_server);
   tcp_server.get_config_object().set_handler(commands_handler, [](epee::levin::levin_commands_handler<test_connection_context> *handler) { delete handler; });
-  tcp_server.get_config_object().m_invoke_timeout = 10000;
+  tcp_server.get_config_object().m_invoke_timeout = 1s;
   //tcp_server.get_config_object().m_max_packet_size = max_packet_size;
 
   if (!tcp_server.run_server(thread_count, true))

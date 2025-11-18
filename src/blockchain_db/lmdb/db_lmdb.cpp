@@ -30,12 +30,14 @@
 
 #include <fmt/core.h>
 #include <boost/circular_buffer.hpp>
-#include <boost/endian/conversion.hpp>
+#include <oxenc/endian.h>
+#include <chrono>
 #include <memory>
 #include <cstring>
 #include <type_traits>
 #include <variant>
 
+#include "common/string_util.h"
 #include "cryptonote_basic/hardfork.h"
 #include "epee/string_tools.h"
 #include "common/file.h"
@@ -44,7 +46,6 @@
 #include "common/median.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "crypto/crypto.h"
-#include "epee/profile_tools.h"
 #include "ringct/rctOps.h"
 
 #include "checkpoints/checkpoints.h"
@@ -57,7 +58,6 @@
 
 
 using namespace crypto;
-using namespace boost::endian;
 
 enum struct lmdb_version
 {
@@ -894,12 +894,12 @@ void BlockchainLMDB::add_block(const block& blk, size_t block_weight, uint64_t l
   bi.bi_diff = cumulative_difficulty;
   bi.bi_hash = blk_hash;
   bi.bi_cum_rct = num_rct_outs;
-  if (blk.major_version >= 4 && m_height > 0)
+  if (m_height > 0)
   {
     uint64_t last_height = m_height-1;
     MDB_val_set(h, last_height);
     if ((result = mdb_cursor_get(m_cur_block_info, (MDB_val *)&zerokval, &h, MDB_GET_BOTH)))
-        throw1(BLOCK_DNE(lmdb_error("Failed to get block info: ", result).c_str()));
+        throw1(BLOCK_DNE(lmdb_error("Failed to get parent block info: ", result).c_str()));
     const mdb_block_info *bi_prev = (const mdb_block_info*)h.mv_data;
     bi.bi_cum_rct += bi_prev->bi_cum_rct;
   }
@@ -1417,11 +1417,11 @@ void BlockchainLMDB::open(const fs::path& filename, cryptonote::network_type net
 
   // check for existing LMDB files in base directory
   auto old_files = filename.parent_path();
-  if (fs::exists(old_files / CRYPTONOTE_BLOCKCHAINDATA_FILENAME)
-      || fs::exists(old_files / CRYPTONOTE_BLOCKCHAINDATA_LOCK_FILENAME))
+  if (fs::exists(old_files / BLOCKCHAINDATA_FILENAME)
+      || fs::exists(old_files / BLOCKCHAINDATA_LOCK_FILENAME))
   {
     LOG_PRINT_L0("Found existing LMDB files in " << old_files.u8string());
-    LOG_PRINT_L0("Move " << CRYPTONOTE_BLOCKCHAINDATA_FILENAME << " and/or " << CRYPTONOTE_BLOCKCHAINDATA_LOCK_FILENAME << " to " << filename << ", or delete them, and then restart");
+    LOG_PRINT_L0("Move " << BLOCKCHAINDATA_FILENAME << " and/or " << BLOCKCHAINDATA_LOCK_FILENAME << " to " << filename << ", or delete them, and then restart");
     throw DB_ERROR("Database could not be opened");
   }
 
@@ -1729,14 +1729,14 @@ std::vector<fs::path> BlockchainLMDB::get_filenames() const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   std::vector<fs::path> paths;
-  paths.push_back(m_folder / CRYPTONOTE_BLOCKCHAINDATA_FILENAME);
-  paths.push_back(m_folder / CRYPTONOTE_BLOCKCHAINDATA_LOCK_FILENAME);
+  paths.push_back(m_folder / BLOCKCHAINDATA_FILENAME);
+  paths.push_back(m_folder / BLOCKCHAINDATA_LOCK_FILENAME);
   return paths;
 }
 
 bool BlockchainLMDB::remove_data_file(const fs::path& folder) const
 {
-  auto filename = folder / CRYPTONOTE_BLOCKCHAINDATA_FILENAME;
+  auto filename = folder / BLOCKCHAINDATA_FILENAME;
   try
   {
     fs::remove(filename);
@@ -2052,14 +2052,14 @@ bool BlockchainLMDB::prune_worker(int mode, uint32_t pruning_seed)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   const uint32_t log_stripes = tools::get_pruning_log_stripes(pruning_seed);
-  if (log_stripes && log_stripes != CRYPTONOTE_PRUNING_LOG_STRIPES)
+  if (log_stripes && log_stripes != PRUNING_LOG_STRIPES)
     throw0(DB_ERROR("Pruning seed not in range"));
   pruning_seed = tools::get_pruning_stripe(pruning_seed);
-  if (pruning_seed > (1ul << CRYPTONOTE_PRUNING_LOG_STRIPES))
+  if (pruning_seed > (1ul << PRUNING_LOG_STRIPES))
     throw0(DB_ERROR("Pruning seed not in range"));
   check_open();
 
-  TIME_MEASURE_START(t);
+  auto t = std::chrono::steady_clock::now();
 
   size_t n_total_records = 0, n_prunable_records = 0, n_pruned_records = 0, commit_counter = 0;
   uint64_t n_bytes = 0;
@@ -2084,13 +2084,12 @@ bool BlockchainLMDB::prune_worker(int mode, uint32_t pruning_seed)
     if (mode != prune_mode_prune)
     {
       txn.abort();
-      TIME_MEASURE_FINISH(t);
       MDEBUG("Pruning not enabled, nothing to do");
       return true;
     }
     if (pruning_seed == 0)
       pruning_seed = tools::get_random_stripe();
-    pruning_seed = tools::make_pruning_seed(pruning_seed, CRYPTONOTE_PRUNING_LOG_STRIPES);
+    pruning_seed = tools::make_pruning_seed(pruning_seed, PRUNING_LOG_STRIPES);
     v.mv_data = &pruning_seed;
     v.mv_size = sizeof(pruning_seed);
     result = mdb_put(txn, m_properties, &k, &v, 0);
@@ -2108,9 +2107,9 @@ bool BlockchainLMDB::prune_worker(int mode, uint32_t pruning_seed)
       pruning_seed = tools::get_pruning_stripe(data);
     if (tools::get_pruning_stripe(data) != pruning_seed)
       throw0(DB_ERROR("Blockchain already pruned with different seed"));
-    if (tools::get_pruning_log_stripes(data) != CRYPTONOTE_PRUNING_LOG_STRIPES)
+    if (tools::get_pruning_log_stripes(data) != PRUNING_LOG_STRIPES)
       throw0(DB_ERROR("Blockchain already pruned with different base"));
-    pruning_seed = tools::make_pruning_seed(pruning_seed, CRYPTONOTE_PRUNING_LOG_STRIPES);
+    pruning_seed = tools::make_pruning_seed(pruning_seed, PRUNING_LOG_STRIPES);
     prune_tip_table = (mode == prune_mode_update);
   }
   else
@@ -2149,7 +2148,7 @@ bool BlockchainLMDB::prune_worker(int mode, uint32_t pruning_seed)
 
       uint64_t block_height;
       memcpy(&block_height, v.mv_data, sizeof(block_height));
-      if (block_height + CRYPTONOTE_PRUNING_TIP_BLOCKS < blockchain_height)
+      if (block_height + PRUNING_TIP_BLOCKS < blockchain_height)
       {
         ++n_total_records;
         if (!tools::has_unpruned_block(block_height, blockchain_height, pruning_seed) && !is_v1_tx(c_txs_pruned, &k))
@@ -2217,7 +2216,7 @@ bool BlockchainLMDB::prune_worker(int mode, uint32_t pruning_seed)
       txindex ti;
       memcpy(&ti, v.mv_data, sizeof(ti));
       const uint64_t block_height = ti.data.block_id;
-      if (block_height + CRYPTONOTE_PRUNING_TIP_BLOCKS >= blockchain_height)
+      if (block_height + PRUNING_TIP_BLOCKS >= blockchain_height)
       {
         MDB_val_set(kp, ti.data.tx_id);
         MDB_val_set(vp, block_height);
@@ -2322,10 +2321,8 @@ bool BlockchainLMDB::prune_worker(int mode, uint32_t pruning_seed)
 
   txn.commit();
 
-  TIME_MEASURE_FINISH(t);
-
   MINFO((mode == prune_mode_check ? "Checked" : "Pruned") << " blockchain in " <<
-      t << " ms: " << (n_bytes/1024.0f/1024.0f) << " MB (" << db_bytes/1024.0f/1024.0f << " MB) pruned in " <<
+      tools::friendly_duration(std::chrono::steady_clock::now() - t) << ": " << (n_bytes/1024.0f/1024.0f) << " MB (" << db_bytes/1024.0f/1024.0f << " MB) pruned in " <<
       n_pruned_records << " records (" << pages0 - pages1 << "/" << pages0 << " " << db_stats.ms_psize << " byte pages), " <<
       n_prunable_records << "/" << n_total_records << " pruned records");
   return true;
@@ -2413,14 +2410,14 @@ static_assert(sizeof(blob_header) == 8, "blob_header layout is unexpected, possi
 static blob_header write_little_endian_blob_header(blob_type type, uint32_t size)
 {
   blob_header result = {type, size};
-  native_to_little_inplace(result.size);
+  oxenc::host_to_little_inplace(result.size);
   return result;
 }
 
-static blob_header native_endian_blob_header(const blob_header *header)
+static blob_header host_endian_blob_header(const blob_header *header)
 {
   blob_header result = {header->type, header->size};
-  little_to_native_inplace(result.size);
+  oxenc::little_to_host_inplace(result.size);
   return result;
 }
 
@@ -2439,7 +2436,7 @@ static bool read_alt_block_data_from_mdb_val(MDB_val const v, alt_block_data_t *
   src = reinterpret_cast<const char *>(alt_data + 1);
   while (src < end)
   {
-    blob_header header = native_endian_blob_header(reinterpret_cast<const blob_header *>(src));
+    blob_header header = host_endian_blob_header(reinterpret_cast<const blob_header *>(src));
     src += sizeof(header);
     if (header.type == blob_type::block)
     {
@@ -3049,15 +3046,14 @@ bool BlockchainLMDB::tx_exists(const crypto::hash& h) const
   MDB_val_set(key, h);
   bool tx_found = false;
 
-  TIME_MEASURE_START(time1);
+  auto time1 = std::chrono::steady_clock::now();
   auto get_result = mdb_cursor_get(m_cur_tx_indices, (MDB_val *)&zerokval, &key, MDB_GET_BOTH);
   if (get_result == 0)
     tx_found = true;
   else if (get_result != MDB_NOTFOUND)
     throw0(DB_ERROR(lmdb_error(std::string("DB error attempting to fetch transaction index from hash ") + tools::type_to_hex(h) + ": ", get_result).c_str()));
 
-  TIME_MEASURE_FINISH(time1);
-  time_tx_exists += time1;
+  time_tx_exists += std::chrono::steady_clock::now() - time1;
 
   if (! tx_found)
   {
@@ -3077,10 +3073,9 @@ bool BlockchainLMDB::tx_exists(const crypto::hash& h, uint64_t& tx_id) const
 
   MDB_val_set(v, h);
 
-  TIME_MEASURE_START(time1);
+  auto time1 = std::chrono::steady_clock::now();
   auto get_result = mdb_cursor_get(m_cur_tx_indices, (MDB_val *)&zerokval, &v, MDB_GET_BOTH);
-  TIME_MEASURE_FINISH(time1);
-  time_tx_exists += time1;
+  time_tx_exists += std::chrono::steady_clock::now() - time1;
   if (!get_result) {
     txindex *tip = (txindex *)v.mv_data;
     tx_id = tip->data.tx_id;
@@ -3726,10 +3721,9 @@ void BlockchainLMDB::batch_commit()
 
   check_open();
 
-  TIME_MEASURE_START(time1);
+  auto time1 = std::chrono::steady_clock::now();
   m_write_txn->commit();
-  TIME_MEASURE_FINISH(time1);
-  time_commit1 += time1;
+  time_commit1 += std::chrono::steady_clock::now() - time1;
 
   m_write_txn = nullptr;
   delete m_write_batch_txn;
@@ -3759,12 +3753,11 @@ void BlockchainLMDB::batch_stop()
     throw1(DB_ERROR("batch transaction owned by other thread"));
   check_open();
 
-  TIME_MEASURE_START(time1);
+  auto time1 = std::chrono::steady_clock::now();
   try
   {
     m_write_txn->commit();
-    TIME_MEASURE_FINISH(time1);
-    time_commit1 += time1;
+    time_commit1 += std::chrono::steady_clock::now() - time1;
     cleanup_batch();
   }
   catch (const std::exception &e)
@@ -3899,16 +3892,15 @@ void BlockchainLMDB::block_wtxn_stop()
     throw0(DB_ERROR_TXN_START((std::string("Attempted to stop write txn from the wrong thread in ")+__FUNCTION__).c_str()));
   {
     if (! m_batch_active)
-	{
-      TIME_MEASURE_START(time1);
+    {
+      auto time1 = std::chrono::steady_clock::now();
       m_write_txn->commit();
-      TIME_MEASURE_FINISH(time1);
-      time_commit1 += time1;
+      time_commit1 += std::chrono::steady_clock::now() - time1;
 
       delete m_write_txn;
       m_write_txn = nullptr;
       memset(&m_wcursors, 0, sizeof(m_wcursors));
-	}
+    }
   }
 }
 
@@ -3977,8 +3969,8 @@ static bool convert_checkpoint_into_buffer(checkpoint_t const &checkpoint, check
   header.block_hash            = checkpoint.block_hash;
   header.num_signatures        = checkpoint.signatures.size();
 
-  native_to_little_inplace(header.height);
-  native_to_little_inplace(header.num_signatures);
+  oxenc::host_to_little_inplace(header.height);
+  oxenc::host_to_little_inplace(header.num_signatures);
 
   size_t const bytes_for_signatures = sizeof(*checkpoint.signatures.data()) * checkpoint.signatures.size();
   result.len                        = sizeof(header) + bytes_for_signatures;
@@ -4061,8 +4053,8 @@ static checkpoint_t convert_mdb_val_to_checkpoint(MDB_val const value)
   auto const *signatures =
       reinterpret_cast<master_nodes::quorum_signature *>(static_cast<uint8_t *>(value.mv_data) + sizeof(*header));
 
-  auto num_sigs = little_to_native(header->num_signatures);
-  result.height     = little_to_native(header->height);
+  auto num_sigs     = oxenc::little_to_host(header->num_signatures);
+  result.height     = oxenc::little_to_host(header->height);
   result.type       = (num_sigs > 0) ? checkpoint_type::master_node : checkpoint_type::hardcoded;
   result.block_hash = header->block_hash;
   result.signatures.insert(result.signatures.end(), signatures, signatures + num_sigs);
@@ -4243,7 +4235,7 @@ void BlockchainLMDB::get_output_key(const epee::span<const uint64_t> &amounts, c
     throw0(DB_ERROR("Invalid sizes of amounts and offets"));
 
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
-  TIME_MEASURE_START(db3);
+  auto db3 = std::chrono::steady_clock::now();
   check_open();
   outputs.clear();
   outputs.reserve(offsets.size());
@@ -4286,8 +4278,7 @@ void BlockchainLMDB::get_output_key(const epee::span<const uint64_t> &amounts, c
     }
   }
 
-  TIME_MEASURE_FINISH(db3);
-  LOG_PRINT_L3("db3: " << db3);
+  LOG_PRINT_L3("db3: " << tools::friendly_duration(std::chrono::steady_clock::now() - db3));
 }
 
 void BlockchainLMDB::get_output_tx_and_index(const uint64_t& amount, const std::vector<uint64_t> &offsets, std::vector<tx_out_index> &indices) const
@@ -4317,13 +4308,12 @@ void BlockchainLMDB::get_output_tx_and_index(const uint64_t& amount, const std::
     tx_indices.push_back(okp->output_id);
   }
 
-  TIME_MEASURE_START(db3);
+  auto db3 = std::chrono::steady_clock::now();
   if(tx_indices.size() > 0)
   {
     get_output_tx_and_index_from_global(tx_indices, indices);
   }
-  TIME_MEASURE_FINISH(db3);
-  LOG_PRINT_L3("db3: " << db3);
+  LOG_PRINT_L3("db3: " << tools::friendly_duration(std::chrono::steady_clock::now() - db3));
 }
 
 std::map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>> BlockchainLMDB::get_output_histogram(const std::vector<uint64_t> &amounts, bool unlocked, uint64_t recent_cutoff, uint64_t min_count,cryptonote::network_type nettype) const
@@ -4389,10 +4379,10 @@ std::map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>> BlockchainLMDB::get
       while (num_elems > 0) {
         const tx_out_index toi = get_output_tx_and_index(amount, num_elems - 1);
         const uint64_t height = get_tx_block_height(toi.first);
-        const uint8_t hf_version = cryptonote::get_network_version(nettype, height);
-        LOG_PRINT_L2("TX hf_version:"  << hf_version);
+        const auto hf_version = cryptonote::get_network_version(nettype, height);
+        LOG_PRINT_L2("TX hf_version:"  << static_cast<int>(hf_version));
 
-        if ((height + (hf_version>=cryptonote::network_version_17_POS?CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE_V17:CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE)) <= blockchain_height)
+        if ((height + (hf_version >= cryptonote::hf::hf17_POS ? DEFAULT_TX_SPENDABLE_AGE_V17 : cryptonote::old::DEFAULT_TX_SPENDABLE_AGE)) <= blockchain_height)
           break;
         --num_elems;
       }
@@ -4656,7 +4646,7 @@ bool BlockchainLMDB::is_read_only() const
 
 uint64_t BlockchainLMDB::get_database_size() const
 {
-  return fs::file_size(m_folder / CRYPTONOTE_BLOCKCHAINDATA_FILENAME);
+  return fs::file_size(m_folder / BLOCKCHAINDATA_FILENAME);
 }
 
 void BlockchainLMDB::fixup(cryptonote::network_type nettype)
@@ -4699,7 +4689,7 @@ void BlockchainLMDB::fixup(cryptonote::network_type nettype)
           add_timestamp_and_difficulty(nettype, curr_chain_height, timestamps, difficulties, curr_timestamp, curr_cumulative_diff);
 
           // NOTE: Calculate next block difficulty
-          if (is_hard_fork_at_least(nettype, cryptonote::network_version_17_POS, curr_height)
+          if (is_hard_fork_at_least(nettype, hf::hf17_POS, curr_height)
               && block_header_has_POS_components(get_block_header_from_height(curr_height)))
           {
             diff = POS_FIXED_DIFFICULTY; // TARGET_BLOCK_TIME
@@ -4708,7 +4698,7 @@ void BlockchainLMDB::fixup(cryptonote::network_type nettype)
           {
             diff = next_difficulty_v2(timestamps,
                                       difficulties,
-                                      tools::to_seconds(TARGET_BLOCK_TIME_OLD), //use OLD BLOCK_TIME
+                                      tools::to_seconds(old::TARGET_BLOCK_TIME_12), //use OLD BLOCK_TIME
                                       difficulty_mode(nettype, curr_height + 1));
           }
         }
@@ -5694,7 +5684,7 @@ void BlockchainLMDB::migrate_3_4()
       throw0(DB_ERROR(lmdb_error("Failed to query m_blocks: ", result).c_str()));
     const uint64_t blockchain_height = db_stats.ms_entries;
 
-    boost::circular_buffer<uint64_t> long_term_block_weights(CRYPTONOTE_LONG_TERM_BLOCK_WEIGHT_WINDOW_SIZE);
+    boost::circular_buffer<uint64_t> long_term_block_weights(LONG_TERM_BLOCK_WEIGHT_WINDOW_SIZE);
 
     /* the block_info table name is the same but the old version and new version
      * have incompatible data. Create a new table. We want the name to be similar
@@ -5760,8 +5750,8 @@ void BlockchainLMDB::migrate_3_4()
           throw0(DB_ERROR(lmdb_error("Failed to query m_blocks: ", result).c_str()));
         if (vb.mv_size == 0)
           throw0(DB_ERROR("Invalid data from m_blocks"));
-        const uint8_t block_major_version = *((const uint8_t*)vb.mv_data);
-        if (block_major_version >= HF_VERSION_LONG_TERM_BLOCK_WEIGHT)
+        const hf block_major_version {*((const uint8_t*)vb.mv_data)};
+        if (block_major_version >= feature::LONG_TERM_BLOCK_WEIGHT)
           past_long_term_weight = true;
       }
 
@@ -5769,7 +5759,7 @@ void BlockchainLMDB::migrate_3_4()
       if (past_long_term_weight)
       {
         std::vector<uint64_t> weights(long_term_block_weights.begin(), long_term_block_weights.end());
-        uint64_t long_term_effective_block_median_weight = std::max<uint64_t>(CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V5,  tools::median(weights));
+        uint64_t long_term_effective_block_median_weight = std::max<uint64_t>(BLOCK_GRANTED_FULL_REWARD_ZONE_V5,  tools::median(weights));
         long_term_block_weight = std::min<uint64_t>(bi.bi_weight, long_term_effective_block_median_weight + long_term_effective_block_median_weight * 2 / 5);
       }
       else
@@ -5939,12 +5929,12 @@ void BlockchainLMDB::migrate_5_6()
     // unexpected padding
 
     auto const *header = static_cast<blk_checkpoint_header const *>(val.mv_data);
-    auto num_sigs      = little_to_native(header->num_signatures);
+    auto num_sigs      = oxenc::little_to_host(header->num_signatures);
     auto const *aligned_signatures = reinterpret_cast<master_nodes::quorum_signature *>(static_cast<uint8_t *>(val.mv_data) + sizeof(*header));
     if (num_sigs == 0) continue; // NOTE: Hardcoded checkpoints
 
     checkpoint_t checkpoint = {};
-    checkpoint.height       = little_to_native(header->height);
+    checkpoint.height       = oxenc::little_to_host(header->height);
     checkpoint.type         = (num_sigs > 0) ? checkpoint_type::master_node : checkpoint_type::hardcoded;
     checkpoint.block_hash   = header->block_hash;
 
@@ -6160,15 +6150,15 @@ void BlockchainLMDB::clear_master_node_data()
 }
 
 template <typename C>
-C native_to_little_container(const C& c) {
+C host_to_little_container(const C& c) {
   C result{c};
-  for (auto& x : result) native_to_little_inplace(x);
+  for (auto& x : result) oxenc::host_to_little_inplace(x);
   return result;
 }
 template <typename C>
-C little_to_native_container(const C& c) {
+C little_to_host_container(const C& c) {
   C result{c};
-  for (auto& x : result) little_to_native_inplace(x);
+  for (auto& x : result) oxenc::little_to_host_inplace(x);
   return result;
 }
 
@@ -6176,25 +6166,25 @@ struct master_node_proof_serialized_old
 {
   master_node_proof_serialized_old() = default;
   master_node_proof_serialized_old(const master_nodes::proof_info &info)
-    : timestamp{native_to_little(info.timestamp)},
-      ip{native_to_little(info.proof->public_ip)},
-      storage_https_port{native_to_little(info.proof->storage_https_port)},
-      storage_omq_port{native_to_little(info.proof->storage_omq_port)},
-      quorumnet_port{native_to_little(info.proof->qnet_port)},
-      version{native_to_little_container(info.proof->version)},
+    : timestamp{oxenc::host_to_little(info.timestamp)},
+      ip{oxenc::host_to_little(info.proof->public_ip)},
+      storage_https_port{oxenc::host_to_little(info.proof->storage_https_port)},
+      storage_omq_port{oxenc::host_to_little(info.proof->storage_omq_port)},
+      quorumnet_port{oxenc::host_to_little(info.proof->qnet_port)},
+      version{host_to_little_container(info.proof->version)},
       pubkey_ed25519{info.proof->pubkey_ed25519}
   {}
 
   void update(master_nodes::proof_info &info) const
   {
-    info.timestamp = little_to_native(timestamp);
+    info.timestamp = oxenc::little_to_host(timestamp);
     if (info.timestamp > info.effective_timestamp)
       info.effective_timestamp = info.timestamp;
-    info.proof->public_ip = little_to_native(ip);
-    info.proof->storage_https_port = little_to_native(storage_https_port);
-    info.proof->storage_omq_port = little_to_native(storage_omq_port);
-    info.proof->qnet_port = little_to_native(quorumnet_port);
-    info.proof->version = little_to_native_container(version);
+    info.proof->public_ip = oxenc::little_to_host(ip);
+    info.proof->storage_https_port = oxenc::little_to_host(storage_https_port);
+    info.proof->storage_omq_port = oxenc::little_to_host(storage_omq_port);
+    info.proof->qnet_port = oxenc::little_to_host(quorumnet_port);
+    info.proof->version = little_to_host_container(version);
     info.proof->storage_server_version = {0, 0, 0};
     info.proof->belnet_version = {0, 0, 0};
     info.update_pubkey(pubkey_ed25519);
@@ -6221,8 +6211,8 @@ struct master_node_proof_serialized : master_node_proof_serialized_old {
   master_node_proof_serialized() = default;
   master_node_proof_serialized(const master_nodes::proof_info &info)
     : master_node_proof_serialized_old{info},
-      storage_server_version{native_to_little_container(info.proof->storage_server_version)},
-      belnet_version{native_to_little_container(info.proof->belnet_version)}
+      storage_server_version{host_to_little_container(info.proof->storage_server_version)},
+      belnet_version{host_to_little_container(info.proof->belnet_version)}
   {}
   std::array<uint16_t, 3> storage_server_version{};
   std::array<uint16_t, 3> belnet_version{};
@@ -6231,8 +6221,8 @@ struct master_node_proof_serialized : master_node_proof_serialized_old {
   void update(master_nodes::proof_info& info) const {
     if (!info.proof) info.proof = std::unique_ptr<uptime_proof::Proof>(new uptime_proof::Proof());
     master_node_proof_serialized_old::update(info);
-    info.proof->storage_server_version = little_to_native_container(storage_server_version);
-    info.proof->belnet_version = little_to_native_container(belnet_version);
+    info.proof->storage_server_version = little_to_host_container(storage_server_version);
+    info.proof->belnet_version = little_to_host_container(belnet_version);
   }
 
   operator master_nodes::proof_info() const

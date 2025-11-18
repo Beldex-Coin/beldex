@@ -55,7 +55,7 @@ namespace cryptonote
     if (result) MINFO   ("CHECKPOINT PASSED FOR HEIGHT " << height << " " << block_hash);
     else        MWARNING("CHECKPOINT FAILED FOR HEIGHT " << height << ". EXPECTED HASH " << block_hash << "GIVEN HASH: " << hash);
     return result;
-  }
+  };
 
   height_to_hash const HARDCODED_MAINNET_CHECKPOINTS[] =
   {
@@ -78,10 +78,10 @@ namespace cryptonote
   {
     crypto::hash result = crypto::null_hash;
     *height = 0;
-    if (nettype != MAINNET && nettype != TESTNET)
+    if (nettype != network_type::MAINNET && nettype != network_type::TESTNET)
       return result;
 
-    if (nettype == MAINNET)
+    if (nettype == network_type::MAINNET)
     {
       uint64_t last_index         = beldex::array_count(HARDCODED_MAINNET_CHECKPOINTS) - 1;
       height_to_hash const &entry = HARDCODED_MAINNET_CHECKPOINTS[last_index];
@@ -180,7 +180,7 @@ namespace cryptonote
   void checkpoints::block_add(const block_add_info& info)
   {
     uint64_t const height = get_block_height(info.block);
-    if (height < master_nodes::CHECKPOINT_STORE_PERSISTENTLY_INTERVAL || info.block.major_version < network_version_13_checkpointing)
+    if (height < master_nodes::CHECKPOINT_STORE_PERSISTENTLY_INTERVAL || info.block.major_version < hf::hf13_checkpointing)
       return;
 
     uint64_t end_cull_height = 0;
@@ -317,12 +317,13 @@ namespace cryptonote
       return true;
 
 #if !defined(BELDEX_ENABLE_INTEGRATION_TEST_HOOKS)
-    if (nettype == MAINNET)
+    if (nettype == network_type::MAINNET)
     {
       for (size_t i = 0; i < beldex::array_count(HARDCODED_MAINNET_CHECKPOINTS); ++i)
       {
         height_to_hash const &checkpoint = HARDCODED_MAINNET_CHECKPOINTS[i];
-        ADD_CHECKPOINT(checkpoint.height, checkpoint.hash);
+        bool added = add_checkpoint(checkpoint.height, checkpoint.hash);
+        CHECK_AND_ASSERT(added, false);
       }
     }
 #endif
