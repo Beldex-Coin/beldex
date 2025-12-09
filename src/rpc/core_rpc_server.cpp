@@ -1438,7 +1438,9 @@ namespace cryptonote::rpc {
     if (!m_core.handle_incoming_tx(tx.request.tx, tvc, tx_pool_options::new_tx()) || tvc.m_verifivation_failed || !tvc.m_should_be_relayed)
     {
       tx.response["status"] = STATUS_FAILED;
-      auto reason = print_tx_verification_context(tvc);
+      const vote_verification_context& vvc = tvc.m_vote_ctx;
+      std::string reason = print_tx_verification_context(tvc);
+      reason += print_vote_verification_context(vvc);
       LOG_PRINT_L0("[on_submit_transaction]: " << (tvc.m_verifivation_failed ? "tx verification failed" : "Failed to process tx") << reason);
       tx.response["reason"] = std::move(reason);
       tx.response["reason_codes"] = tx_verification_failure_codes(tvc);

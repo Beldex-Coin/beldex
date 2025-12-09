@@ -2797,10 +2797,7 @@ namespace cryptonote::rpc {
     SYNC_INFO,
     TEST_TRIGGER_P2P_RESYNC,
     TEST_TRIGGER_UPTIME_PROOF,
-    SET_BOOTSTRAP_DAEMON
-  >;
-  using FIXME_old_rpc_types = tools::type_list<
+    SET_BOOTSTRAP_DAEMON,
     RELAY_TX
   >;
-
 } // namespace cryptonote::rpc

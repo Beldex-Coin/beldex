@@ -105,7 +105,6 @@ namespace db
       wire::field("timestamp", self.timestamp),
       wire::field("tx_hash", std::cref(self.link.tx_hash)),
       wire::field("tx_prefix_hash", std::cref(self.tx_prefix_hash)),
-      wire::field("locked_key_image", std::cref(self.locked_key_image)),
       wire::field("tx_public", std::cref(self.spend_meta.tx_public)),
       wire::optional_field("rct_mask", rct_mask),
       wire::optional_field("payment_id", payment_id),

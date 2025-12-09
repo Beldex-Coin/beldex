@@ -490,20 +490,22 @@ bool rpc_command_executor::show_status() {
     if (!maybe_master_keys)
       return false;
 
-    my_mn_key = (*maybe_master_keys)["master_node_pubkey"];
+    if (maybe_master_keys->contains("master_node_pubkey")) {
+      my_mn_key = (*maybe_master_keys)["master_node_pubkey"].get<std::string>();
 
-    auto maybe_mns = try_running([&] { return invoke<GET_MASTER_NODES>(json{{"master_node_pubkeys", json::array({my_mn_key})}}); }, "Failed to retrieve master node info");
+      auto maybe_mns = try_running([&] { return invoke<GET_MASTER_NODES>(json{{"master_node_pubkeys", json::array({my_mn_key})}}); }, "Failed to retrieve master node info");
 
-    if (maybe_mns) {
-      if (auto it = maybe_mns->find("master_node_states"); it != maybe_mns->end() && it->is_array() && it->size() > 0) {
-        auto& state = it->front();
-        my_mn_registered = true;
-        my_mn_staked = state["total_contributed"].get<uint64_t>() >= state["staking_requirement"].get<uint64_t>();
-        my_mn_active = state["active"].get<bool>();
-        my_decomm_remaining = state["earned_downtime_blocks"].get<uint64_t>();
-        my_mn_last_uptime = state["last_uptime_proof"].get<uint64_t>();
-        my_reason_all = state.value<uint16_t>("last_decommission_reason_consensus_all", 0);
-        my_reason_any = state.value<uint16_t>("last_decommission_reason_consensus_any", 0);
+      if (maybe_mns) {
+        if (auto it = maybe_mns->find("master_node_states"); it != maybe_mns->end() && it->is_array() && it->size() > 0) {
+          auto& state = it->front();
+          my_mn_registered = true;
+          my_mn_staked = state["total_contributed"].get<uint64_t>() >= state["staking_requirement"].get<uint64_t>();
+          my_mn_active = state["active"].get<bool>();
+          my_decomm_remaining = state["earned_downtime_blocks"].get<uint64_t>();
+          my_mn_last_uptime = state["last_uptime_proof"].get<uint64_t>();
+          my_reason_all = state.value<uint16_t>("last_decommission_reason_consensus_all", 0);
+          my_reason_any = state.value<uint16_t>("last_decommission_reason_consensus_any", 0);
+        }
       }
     }
   }
@@ -1722,14 +1724,14 @@ static void append_printable_master_node_list_entry(cryptonote::network_type net
     // NOTE: Component Versions
     //
     auto show_component_version = [] (const json& j, std::string_view name) {
-      if (!j.is_array() || j.front().get<int>() == 0)
+      if (!j.is_array() || j.empty())
         return "("s + std::string{name} + " ping not yet received)"s;
       return tools::join(".", j.get<std::array<int, 3>>());
     };
     stream << indent2 << "Storage Server / Belnet Router versions: "
       << show_component_version(entry["storage_server_version"], "Storage Server")
       << " / "
-      << show_component_version(entry["storage_server_version"], "Belnet")
+      << show_component_version(entry["belnet_version"], "Belnet")
       << "\n";
 
     //

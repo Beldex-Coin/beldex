@@ -53,7 +53,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET 10.15 CACHE STRING "macOS deployment target (App
 project(beldex
     VERSION 7.0.0
     LANGUAGES CXX C)
-set(BELDEX_RELEASE_CODENAME "Hermes")
+set(BELDEX_RELEASE_CODENAME "Obscura")
 
 # String value to append to the full version string; this is intended to easily identify whether a
 # binary was build from the release or development branches.  This should be permanently set to an
@@ -544,7 +544,7 @@ else()
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${ARCH_FLAG}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ARCH_FLAG}")
 
-  set(WARNINGS "-Wall -Wextra -Wpointer-arith -Wwrite-strings -Wno-error=extra -Wno-error=deprecated-declarations -Wno-unused-parameter -Wno-unused-variable -Wno-error=unused-variable -Wno-error=uninitialized -Wno-error=class-memaccess -Wno-error=sign-compare -Werror=misleading-indentation")
+  set(WARNINGS "-Wall -Wextra -Wpointer-arith -Wwrite-strings -Wno-error=extra -Wno-error=deprecated-declarations -Wno-unused-parameter -Wno-unused-variable -Wno-error=unused-variable -Wno-error=uninitialized -Wno-error=class-memaccess -Wno-error=attributes -Wno-error=unused-but-set-variable")
 
   option(WARNINGS_AS_ERRORS "Enable warning as errors" OFF)
   if(NOT MINGW AND WARNINGS_AS_ERRORS)

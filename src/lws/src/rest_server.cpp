@@ -202,48 +202,13 @@ namespace lws
       static expect<response> handle(const request &req, db::storage disk)
       {
 
-        std::vector<crypto::key_image> processed;
-
-        lws::db::account_address primary_address{req.address.view_public, req.address.spend_public};
-        cryptonote::account_public_address crypto_address;
-        crypto_address.m_view_public_key = primary_address.view_public;
-        crypto_address.m_spend_public_key = primary_address.spend_public;
-
-        std::string wallet_address = cryptonote::get_account_address_as_str(lws::config::network, false, crypto_address);
-
-        json request_body = {
-            {"jsonrpc", "2.0"},
-            {"id", "0"},
-            {"method", "get_master_nodes"}
-
-        };
-
-        auto master_data = cpr::Post(cpr::Url{lws::daemon_add},
-                                     cpr::Body{request_body.dump()},
-                                     cpr::Header{{"Content-Type", "application/json"}});
-
-        json mn_response = json::parse(master_data.text);
-
-        json request_body_blacklist = {
-            {"jsonrpc", "2.0"},
-            {"id", "0"},
-            {"method", "get_master_node_blacklisted_key_images"}
-
-        };
-
-        auto master_data_blacklist = cpr::Post(cpr::Url{lws::daemon_add},
-                                               cpr::Body{request_body_blacklist.dump()},
-                                               cpr::Header{{"Content-Type", "application/json"}});
-
-        json mn_response_blacklist = json::parse(master_data_blacklist.text);
-
         auto user = open_account(req, std::move(disk));
         if (!user)
           return user.error();
 
         response resp{};
 
-        auto outputs = user->second.get_outputs(user->first.id); // The code retrieves all the outputs for the user's account
+        auto outputs = user->second.get_outputs(user->first.id);
         if (!outputs)
           return outputs.error();
 
@@ -277,69 +242,8 @@ namespace lws
 
           resp.total_received = rpc::safe_uint64(std::uint64_t(resp.total_received) + meta.amount);
 
-          const crypto::key_image locked_key_image =
-              output.get_value<MONERO_FIELD(db::output, locked_key_image)>();
-
-          auto it = std::find(processed.begin(), processed.end(), locked_key_image);
-          bool is_loop_processed = false;
-
-          if (!(it != processed.end()) && locked_key_image != crypto::key_image{})
-          {
-            for (const auto &item : mn_response_blacklist["result"]["blacklist"])
-            {
-              std::string blacklist_key_image_str = item["key_image"];
-              crypto::key_image blacklist_key_image;
-
-              // Convert the blacklist key image string to crypto::key_image (assuming a proper conversion function)
-              if (!epee::string_tools::hex_to_pod(blacklist_key_image_str, blacklist_key_image))
-              {
-                std::cerr << "Failed to convert blacklist key image string to crypto::key_image." << std::endl;
-                continue;
-              }
-
-              // If the locked_key_image matches a blacklist key_image, process this output
-              if (locked_key_image == blacklist_key_image)
-              {
-                resp.locked_funds = rpc::safe_uint64(std::uint64_t(resp.locked_funds) + std::uint64_t(item["amount"]));
-                processed.push_back(locked_key_image);
-                break;
-              }
-              bool is_loop_processed = true;
-            }
-
-            if (!(is_loop_processed))
-            {
-
-              for (auto &mn_all : mn_response["result"]["master_node_states"])
-              {
-
-                std::string master_node_pub_key = mn_all["master_node_pubkey"].get<std::string>();
-
-                for (auto &mn_contrib : mn_all["contributors"])
-                {
-                  // Extract the address as a string from the JSON value
-                  std::string address_str = mn_contrib["address"].get<std::string>();
-
-                  if (wallet_address != address_str)
-                    continue;
-
-                  for (auto const &contribution : mn_contrib["locked_contributions"])
-                  {
-                    crypto::key_image check_image;
-                    std::string key_image_str = contribution["key_image"].get<std::string>();
-                    if (tools::hex_to_type(key_image_str, check_image) && locked_key_image == check_image)
-                    {
-                      resp.locked_funds = rpc::safe_uint64(std::uint64_t(resp.locked_funds) + std::uint64_t(contribution["amount"]));
-                      processed.push_back(locked_key_image);
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          if (is_locked(output.get_value<MONERO_FIELD(db::output, unlock_time)>(), user->first.scan_height))
+          
+          if (is_locked(output.get_value<MONERO_FIELD(db::output, unlock_time)>(), last->id))
           {
             resp.locked_funds = rpc::safe_uint64(std::uint64_t(resp.locked_funds) + meta.amount);
           }
@@ -371,42 +275,7 @@ namespace lws
 
       static expect<response> handle(request req, db::storage disk)
       {
-        // using rpc_command = cryptonote::rpc::GET_BASE_FEE_ESTIMATE;
-
-        lws::db::account_address primary_address{req.creds.address.view_public, req.creds.address.spend_public};
-        cryptonote::account_public_address crypto_address;
-        crypto_address.m_view_public_key = primary_address.view_public;
-        crypto_address.m_spend_public_key = primary_address.spend_public;
-
-        std::string wallet_address = cryptonote::get_account_address_as_str(lws::config::network, false, crypto_address);
-
-        std::vector<crypto::key_image> processed;
-
-        json request_body = {
-            {"jsonrpc", "2.0"},
-            {"id", "0"},
-            {"method", "get_master_nodes"}
-
-        };
-
-        auto master_data = cpr::Post(cpr::Url{lws::daemon_add},
-                                     cpr::Body{request_body.dump()},
-                                     cpr::Header{{"Content-Type", "application/json"}});
-
-        json mn_response = json::parse(master_data.text);
-
-        json request_body_blacklist = {
-            {"jsonrpc", "2.0"},
-            {"id", "0"},
-            {"method", "get_master_node_blacklisted_key_images"}
-
-        };
-
-        auto master_data_blacklist = cpr::Post(cpr::Url{lws::daemon_add},
-                                               cpr::Body{request_body_blacklist.dump()},
-                                               cpr::Header{{"Content-Type", "application/json"}});
-
-        json mn_response_blacklist = json::parse(master_data_blacklist.text);
+        // using rpc_command = cryptonote::rpc::GET_BASE_FEE_ESTIMATE
 
         auto user = open_account(req.creds, std::move(disk));
         if (!user)
@@ -444,90 +313,20 @@ namespace lws
         {
           const std::pair<db::extra, std::uint8_t> unpacked = db::unpack(out.extra);
           const bool coinbase = (unpacked.first & lws::db::coinbase_output);
-          if (out.spend_meta.amount < std::uint64_t(*req.dust_threshold) ||  (out.spend_meta.mixin_count < *req.mixin && !(coinbase == 1))) 
+          if (out.spend_meta.amount < std::uint64_t(*req.dust_threshold) ||  (out.spend_meta.mixin_count < *req.mixin && !(coinbase == 1)))
             continue;
 
-          const crypto::key_image locked_key_image = out.locked_key_image;
-          std::uint64_t value_l = out.spend_meta.amount;
+          received += out.spend_meta.amount;
+          unspent.push_back({out, {}});
 
-          bool should_skip_output = false;
+          auto images = user->second.get_images(out.spend_meta.id);
+          if (!images)
+            return images.error();
 
-          if (locked_key_image != crypto::key_image{})
-          {
+          unspent.back().second.reserve(images->count());
+          auto range = images->make_range<MONERO_FIELD(db::key_image, value)>();
+          std::copy(range.begin(), range.end(), std::back_inserter(unspent.back().second));
 
-            for (const auto &item : mn_response_blacklist["result"]["blacklist"])
-            {
-              std::string blacklist_key_image_str = item["key_image"];
-              crypto::key_image blacklist_key_image;
-
-              // Convert the blacklist key image string to crypto::key_image (assuming a proper conversion function)
-              if (!epee::string_tools::hex_to_pod(blacklist_key_image_str, blacklist_key_image))
-              {
-                std::cerr << "Failed to convert blacklist key image string to crypto::key_image." << std::endl;
-                continue;
-              }
-
-              // If the locked_key_image matches a blacklist key_image, process this output
-              if (locked_key_image == blacklist_key_image && value_l == item["amount"])
-              {
-                should_skip_output = true;
-                break;
-              }
-            }
-
-            if (!(should_skip_output))
-            {
-
-              for (auto &mn_all : mn_response["result"]["master_node_states"])
-              {
-
-                if (should_skip_output)
-                  break;
-
-                std::string master_node_pub_key = mn_all["master_node_pubkey"].get<std::string>();
-
-                for (auto &mn_contrib : mn_all["contributors"])
-                {
-                  // Extract the address as a string from the JSON value
-                  std::string address_str = mn_contrib["address"].get<std::string>();
-
-                  if (wallet_address != address_str)
-                    continue;
-
-                  for (auto const &contribution : mn_contrib["locked_contributions"])
-                  {
-                    crypto::key_image check_image;
-                    std::string key_image_str = contribution["key_image"].get<std::string>();
-                    std::uint64_t conAmount = contribution["amount"].get<std::uint64_t>();
-
-                    if (tools::hex_to_type(key_image_str, check_image) && locked_key_image == check_image && value_l == conAmount)
-                    {
-
-                      should_skip_output = true;
-
-                      break;
-                    }
-                  }
-                  if (should_skip_output)
-                    break;
-                }
-              }
-            }
-          }
-
-          if (!should_skip_output)
-          {
-            received += out.spend_meta.amount;
-            unspent.push_back({out, {}});
-
-            auto images = user->second.get_images(out.spend_meta.id);
-            if (!images)
-              return images.error();
-
-            unspent.back().second.reserve(images->count());
-            auto range = images->make_range<MONERO_FIELD(db::key_image, value)>();
-            std::copy(range.begin(), range.end(), std::back_inserter(unspent.back().second));
-          }
         }
 
         if (received < std::uint64_t(req.amount))
@@ -952,7 +751,7 @@ namespace lws
         const auto flags = req.generated_locally ? db::account_generated_locally : db::default_account;
         // MONERO_CHECK(disk.creation_request(req.creds.address, req.creds.key, flags));
         MONERO_UNWRAP(disk.add_account(req.creds.address, req.creds.key));
-        std::cout <<"add_account called\n";
+        // std::cout <<"add_account called\n";
         return response{true, req.generated_locally};
       }
     };//login

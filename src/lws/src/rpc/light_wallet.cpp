@@ -101,7 +101,6 @@ namespace
       wire::field("tx_id", self.data.first.spend_meta.id.low),
       wire::field("tx_hash", std::cref(self.data.first.link.tx_hash)),
       wire::field("tx_prefix_hash", std::cref(self.data.first.tx_prefix_hash)),
-      wire::field("locked_key_image", std::cref(self.data.first.locked_key_image)),
       wire::field("tx_pub_key", self.data.first.spend_meta.tx_public),
       wire::field("timestamp", iso_timestamp(self.data.first.timestamp)),
       wire::field("height", self.data.first.link.height),

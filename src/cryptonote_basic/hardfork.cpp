@@ -45,6 +45,7 @@ static constexpr std::array mainnet_hard_forks =
   hard_fork{hf::hf17_POS,               0,   742421, 1636320540 },
   hard_fork{hf::hf18_bns,               0,  2986890, 1706506200 }, // Monday, January 29, 2024 5:30:00 AM (UTC)
   hard_fork{hf::hf19_enhance_bns,       0,  3546545, 1725514200 }, // Thursday, September 5, 2024 5:30:00 AM (UTC)
+  hard_fork{hf::hf20_bulletproof_plus,  0,  4939540, 1765105200 }, // Sunday, December 7, 2025 4:30:00 AM (UTC)
 };
 
 static constexpr std::array testnet_hard_forks =

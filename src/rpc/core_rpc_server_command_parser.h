@@ -58,4 +58,5 @@ namespace cryptonote::rpc {
   void parse_request(START_MINING& start_mining, rpc_input in);
   void parse_request(STORAGE_SERVER_PING& storage_server_ping, rpc_input in);
   void parse_request(SUBMIT_TRANSACTION& tx, rpc_input in);
+  void parse_request(RELAY_TX& tx, rpc_input in);
 }

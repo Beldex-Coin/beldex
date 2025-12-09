@@ -31,6 +31,7 @@
 
 #include <optional>
 #include <string>
+#include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include "epee/misc_log_ex.h"
