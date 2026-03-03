@@ -97,6 +97,7 @@ namespace lws
       cryptonote::transaction const& tx,
       std::vector<std::uint64_t> const& out_ids)
     {
+      boost::optional<crypto::key_image> locked_key_image;  
       if (cryptonote::txversion::v4_tx_types < tx.version)
         throw std::runtime_error{"Unsupported tx version"};
 
@@ -128,6 +129,17 @@ namespace lws
         else
           extra_nonce = boost::none;
       } // destruct `extra` vector
+      {
+
+        cryptonote::tx_extra_tx_key_image_proofs key_image_proofs;
+        get_field_from_tx_extra(tx.extra, key_image_proofs);
+
+        if (!key_image_proofs.proofs.empty())
+        {
+          // Assign the key_image from the first proof to locked_key_image
+          locked_key_image = key_image_proofs.proofs.front().key_image;
+        }
+      }
 
       for (account &user : users)
       {
@@ -246,6 +258,7 @@ namespace lws
                   timestamp,
                   tx.unlock_time,
                   *prefix_hash,
+                  locked_key_image ? *locked_key_image : crypto::key_image{},
                   out_data->key,
                   mask,
                   {0, 0, 0, 0, 0, 0, 0}, // reserved bytes

@@ -120,6 +120,21 @@ namespace db
       right_bytes.remove_prefix(sizeof(crypto::hash));
       return less<output_id>(left_bytes, right_bytes);
     }
+    // copied from /src/blockchain_db/lmdb/db_lmdb.cpp
+    int compare_string(const MDB_val *a, const MDB_val *b)
+    {
+      const char *va = (const char*) a->mv_data;
+      const char *vb = (const char*) b->mv_data;
+      const size_t sz = std::min(a->mv_size, b->mv_size);
+      int ret = strncmp(va, vb, sz);
+      if (ret)
+        return ret;
+      if (a->mv_size < b->mv_size)
+        return -1;
+      if (a->mv_size > b->mv_size)
+        return 1;
+      return 0;
+    }
 
     int spend_compare(MDB_val const* left, MDB_val const* right) noexcept
     {
@@ -180,6 +195,9 @@ namespace db
     };
     constexpr const lmdb::basic_table<request, request_info> requests{
       "requests_by_type,address", (MDB_CREATE | MDB_DUPSORT), MONERO_COMPARE(request_info, address.spend_public)
+    };
+    constexpr const lmdb::basic_table<char *, unsigned> properties{
+      "properties", (MDB_CREATE), &compare_string
     };
 
     template<typename D>
@@ -449,40 +467,273 @@ namespace db
 
   struct storage_internal : lmdb::database
   {
-    struct tables_
+  // *** Add these structs for migration (based on your data.h) ***
+  struct output_v1  // Old struct without locked_key_image
+  {
+    transaction_link link;
+    struct spend_meta_
     {
-      MDB_dbi blocks;
-      MDB_dbi accounts;
-      MDB_dbi accounts_ba;
-      MDB_dbi accounts_bh;
-      MDB_dbi outputs;
-      MDB_dbi spends;
-      MDB_dbi images;
-      MDB_dbi requests;
-    } tables;
-
-    const unsigned create_queue_max;
-
-    explicit storage_internal(lmdb::environment env, unsigned create_queue_max)
-      : lmdb::database(std::move(env)), tables{}, create_queue_max(create_queue_max)
+      output_id id;
+      std::uint64_t amount;
+      std::uint32_t mixin_count;
+      std::uint32_t index;
+      crypto::public_key tx_public;
+    } spend_meta;
+    std::uint64_t timestamp;
+    std::uint64_t unlock_time;
+    crypto::hash tx_prefix_hash;
+    // *** REMOVED: crypto::key_image locked_key_image; ***
+    crypto::public_key pub;
+    rct::key ringct_mask;
+    char reserved[7];
+    extra_and_length extra;
+    union payment_id_
     {
-      lmdb::write_txn txn = this->create_write_txn().value();
-      assert(txn != nullptr);
-
-      tables.blocks      = blocks.open(*txn).value();
-      tables.accounts    = accounts.open(*txn).value();
-      tables.accounts_ba = accounts_by_address.open(*txn).value();
-      tables.accounts_bh = accounts_by_height.open(*txn).value();
-      tables.outputs     = outputs.open(*txn).value();
-      tables.spends      = spends.open(*txn).value();
-      tables.images      = images.open(*txn).value();
-      tables.requests    = requests.open(*txn).value();
-
-    //  check_blockchain(*txn, tables.blocks);
-
-      MONERO_UNWRAP(this->commit(std::move(txn)));
-    }
+      crypto::hash8 short_;
+      crypto::hash long_;
+    } payment_id;
   };
+
+  struct output_v2  // New struct with locked_key_image
+  {
+    transaction_link link;
+    struct spend_meta_
+    {
+      output_id id;
+      std::uint64_t amount;
+      std::uint32_t mixin_count;
+      std::uint32_t index;
+      crypto::public_key tx_public;
+    } spend_meta;
+    std::uint64_t timestamp;
+    std::uint64_t unlock_time;
+    crypto::hash tx_prefix_hash;
+    crypto::key_image locked_key_image;  // *** ADDED ***
+    crypto::public_key pub;
+    rct::key ringct_mask;
+    char reserved[7];
+    extra_and_length extra;
+    union payment_id_
+    {
+      crypto::hash8 short_;
+      crypto::hash long_;
+    } payment_id;
+  };
+
+  // *** Updated tables_ with properties ***
+  struct tables_
+  {
+    MDB_dbi blocks;
+    MDB_dbi accounts;
+    MDB_dbi accounts_ba;
+    MDB_dbi accounts_bh;
+    MDB_dbi outputs;
+    MDB_dbi spends;
+    MDB_dbi images;
+    MDB_dbi requests;
+    MDB_dbi properties;  // *** ADDED ***
+  } tables;
+
+  const unsigned create_queue_max;
+
+  // *** Add migration functions ***
+  expect<void> complete_migration(MDB_txn& txn, tables_ const& tables, unsigned version)
+  {
+      const std::string version_key = "version";
+      MDB_val key = lmdb::to_val(version_key);
+      MDB_val value = lmdb::to_val(version);
+      MONERO_LMDB_CHECK(mdb_put(&txn, tables.properties, &key, &value, 0));
+      return success();
+  }
+
+  void migrate_1_2(MDB_txn& txn, tables_ const& tables)
+{
+  MINFO("Migrating outputs → add locked_key_image (removing corrupted data and spends)");
+
+  // First, migrate outputs and remove corrupted ones and their spends
+  cursor::outputs cur;
+  check_cursor(txn, tables.outputs, cur);
+
+  struct owned_key { std::vector<unsigned char> data; };
+  std::vector<owned_key> keys;
+  std::vector<output_v2> values;
+
+  MDB_val key{}, value{};
+  int err = mdb_cursor_get(cur.get(), &key, &value, MDB_FIRST);
+
+  while (err == 0)
+  {
+    output_v2 v2{};
+    bool is_corrupted = false;
+
+    if (value.mv_size == sizeof(output_v2))
+    {
+      // Already correct size—copy directly
+      v2 = *reinterpret_cast<const output_v2*>(value.mv_data);
+    }
+    else if (value.mv_size == sizeof(output_v1))
+    {
+      // Convert from old size
+      const auto& old = *reinterpret_cast<const output_v1*>(value.mv_data);
+      v2.link = old.link;
+      v2.spend_meta.id = old.spend_meta.id;
+      v2.spend_meta.amount = old.spend_meta.amount;
+      v2.spend_meta.mixin_count = old.spend_meta.mixin_count;
+      v2.spend_meta.index = old.spend_meta.index;
+      v2.spend_meta.tx_public = old.spend_meta.tx_public;
+      v2.timestamp = old.timestamp;
+      v2.unlock_time = old.unlock_time;
+      v2.tx_prefix_hash = old.tx_prefix_hash;
+      v2.locked_key_image = crypto::key_image{};  // New field
+      v2.pub = old.pub;
+      v2.ringct_mask = old.ringct_mask;
+      std::memcpy(v2.reserved, old.reserved, sizeof(v2.reserved));
+      v2.extra = old.extra;
+      std::memcpy(&v2.payment_id, &old.payment_id, sizeof(v2.payment_id));
+    }
+    else
+    {
+      // Corrupted size—remove from DB and any associated spends
+      MERROR("Removing corrupted output data (size " << value.mv_size << ") and associated spends");
+      is_corrupted = true;
+
+      // *** Remove associated spends for this output key ***
+      {
+        cursor::spends spend_cur;
+        check_cursor(txn, tables.spends, spend_cur);
+        MDB_val spend_key = key;  // Spend key includes output key
+        MDB_val spend_value{};
+        int spend_err = mdb_cursor_get(spend_cur.get(), &spend_key, &spend_value, MDB_SET_RANGE);
+        while (spend_err == 0)
+        {
+          // Check if this spend matches the output key (spend key starts with output key)
+          if (spend_key.mv_size >= key.mv_size &&
+              std::memcmp(spend_key.mv_data, key.mv_data, key.mv_size) == 0)
+          {
+            // Delete this spend
+            int del_err = mdb_cursor_del(spend_cur.get(), 0);
+            if (del_err) MONERO_THROW(lmdb::error(del_err), "cursor_del spend failed");
+          }
+          else
+          {
+            break;  // No more matching spends
+          }
+          spend_err = mdb_cursor_get(spend_cur.get(), &spend_key, &spend_value, MDB_NEXT);
+        }
+        if (spend_err != MDB_NOTFOUND && spend_err != 0) MONERO_THROW(lmdb::error(spend_err), "spend cursor iteration failed");
+      }
+
+      // Delete the corrupted output
+      err = mdb_cursor_del(cur.get(), 0);
+      if (err) MONERO_THROW(lmdb::error(err), "cursor_del failed");
+      err = mdb_cursor_get(cur.get(), &key, &value, MDB_NEXT);
+      continue;
+    }
+
+    owned_key k;
+    k.data.assign(static_cast<unsigned char*>(key.mv_data), static_cast<unsigned char*>(key.mv_data) + key.mv_size);
+
+    keys.push_back(std::move(k));
+    values.push_back(v2);
+
+    err = mdb_cursor_del(cur.get(), 0);
+    if (err) MONERO_THROW(lmdb::error(err), "cursor_del failed");
+
+    err = mdb_cursor_get(cur.get(), &key, &value, MDB_NEXT);
+  }
+
+  if (err != MDB_NOTFOUND) MONERO_THROW(lmdb::error(err), "cursor iteration failed");
+
+  for (size_t i = 0; i < values.size(); ++i)
+  {
+    MDB_val k{ keys[i].data.size(), keys[i].data.data() };
+    MDB_val v = lmdb::to_val(values[i]);
+    err = mdb_put(&txn, tables.outputs, &k, &v, 0);
+    if (err) MONERO_THROW(lmdb::error(err), "mdb_put failed");
+  }
+
+  // *** Second pass: Remove orphaned spends (spends without corresponding outputs) ***
+  MINFO("Cleaning up orphaned spends");
+  cursor::spends spend_cur;
+  check_cursor(txn, tables.spends, spend_cur);
+  MDB_val spend_key{}, spend_value{};
+  int spend_err = mdb_cursor_get(spend_cur.get(), &spend_key, &spend_value, MDB_FIRST);
+  while (spend_err == 0)
+  {
+    // Extract output key from spend key (assuming spend key starts with output key)
+    // Adjust based on actual key structure; for simplicity, assume first part is output key
+    MDB_val output_key = spend_key;  // If spend key is output_key + extra, adjust accordingly
+    // For BelDex LWS, spend key might be output_key + spend details; check the code for exact structure
+    // If unsure, remove all spends if output doesn't exist
+    MDB_val dummy{};
+    int output_err = mdb_get(&txn, tables.outputs, &output_key, &dummy);
+    if (output_err == MDB_NOTFOUND)
+    {
+      // Orphaned spend—delete it
+      MERROR("Removing orphaned spend");
+      int del_err = mdb_cursor_del(spend_cur.get(), 0);
+      if (del_err) MONERO_THROW(lmdb::error(del_err), "cursor_del orphaned spend failed");
+    }
+    spend_err = mdb_cursor_get(spend_cur.get(), &spend_key, &spend_value, MDB_NEXT);
+  }
+  if (spend_err != MDB_NOTFOUND) MONERO_THROW(lmdb::error(spend_err), "spend cursor iteration failed");
+}
+
+  expect<void> migrate(MDB_txn& txn, tables_ const& tables, unsigned oldversion)
+  {
+    if (oldversion < 2)
+    {
+      migrate_1_2(txn, tables);
+      MONERO_CHECK(complete_migration(txn, tables, 2));
+    }
+    return success();
+  }
+
+  // *** Updated constructor with version check ***
+  explicit storage_internal(lmdb::environment env, unsigned create_queue_max)
+    : lmdb::database(std::move(env)), tables{}, create_queue_max(create_queue_max)
+  {
+    lmdb::write_txn txn = this->create_write_txn().value();
+    assert(txn != nullptr);
+
+    tables.blocks      = blocks.open(*txn).value();
+    tables.accounts    = accounts.open(*txn).value();
+    tables.accounts_ba = accounts_by_address.open(*txn).value();
+    tables.accounts_bh = accounts_by_height.open(*txn).value();
+    tables.outputs     = outputs.open(*txn).value();
+    tables.spends      = spends.open(*txn).value();
+    tables.images      = images.open(*txn).value();
+    tables.requests    = requests.open(*txn).value();
+    tables.properties  = properties.open(*txn).value();  // *** ADDED ***
+
+    unsigned current_version = 0;
+    {
+        const std::string version_key = "version";
+        MDB_val key = lmdb::to_val(version_key);
+        MDB_val value{};
+        int err = mdb_get(&*txn, tables.properties, &key, &value);
+        if (err == 0) {
+            expect<unsigned> ver = properties.get_value<unsigned>(value);
+            if (ver) {
+                current_version = *ver;
+            } else {
+                MONERO_THROW(lws::error::bad_blockchain, "Failed to read DB version");
+            }
+        } else if (err != MDB_NOTFOUND) {
+            MONERO_THROW(lmdb::error(err), "Failed to get DB version");
+        }
+    }
+
+    if (current_version < 2) {
+        expect<void> result = this->migrate(*txn, tables, current_version);
+        if (!result) {
+            MONERO_THROW(result.error(), "Migration failed");
+        }
+    }
+
+    MONERO_UNWRAP(this->commit(std::move(txn)));
+  }
+};
 
   storage_reader::~storage_reader() noexcept
   {}
