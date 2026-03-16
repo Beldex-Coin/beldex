@@ -891,11 +891,13 @@ bool get_pruned_tx(const nlohmann::json& entry, cryptonote::transaction &tx, cry
   cryptonote::blobdata bd;
 
   // easy case if we have the whole tx
-  if (auto hex_it = entry.find("as_hex"); hex_it != entry.end() || (entry.contains("prunable") && entry.contains("pruned")))
+  if (auto hex_it = entry.find("as_hex"); hex_it != entry.end() || entry.contains("data") || (entry.contains("prunable") && entry.contains("pruned")))
   {
     std::string hex_blob;
     if (hex_it != entry.end())
       hex_blob = hex_it->get<std::string>();
+    else if (entry.contains("data"))
+      hex_blob = entry["data"].get<std::string>();
     else
       hex_blob = entry["pruned"].get<std::string>() + entry["prunable"].get<std::string>();
 
@@ -3266,9 +3268,10 @@ std::vector<wallet2::get_pool_state_tx> wallet2::get_pool_state(bool refreshed)
 
     try {
       nlohmann::json get_transactions_params{
-        {"tx_hashes", hex_hashes},
+        {{"txs_hashes", hex_hashes}},
         {"prune",true},
-        {"split",true}
+        {"split",true},
+        {"data",true}
       };
       res = m_http_client.json_rpc("get_transactions", get_transactions_params);
     } catch (const std::exception& e) {
@@ -7966,7 +7969,8 @@ bool wallet2::unset_ring(const crypto::hash &txid)
     return false;
 
   nlohmann::json get_transactions_params{
-    {"tx_hashes", tools::type_to_hex(txid)}
+    {"txs_hashes", {tools::type_to_hex(txid)}},
+    {"data",true}
   };
   cryptonote::transaction tx;
   try {
@@ -8006,7 +8010,8 @@ bool wallet2::find_and_save_rings(bool force)
   {
     size_t ntxes = slice + SLICE_SIZE > txs_hashes.size() ? txs_hashes.size() - slice : SLICE_SIZE;
     nlohmann::json get_transactions_params{
-      {"tx_hashes", hashes_to_hex(txs_hashes.begin() + slice, txs_hashes.begin() + ntxes)}
+      {"txs_hashes", {hashes_to_hex(txs_hashes.begin() + slice, txs_hashes.begin() + ntxes)}},
+      {"data",true}
     };
     auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
 
@@ -12491,7 +12496,7 @@ bool wallet2::get_tx_key(const crypto::hash &txid, crypto::secret_key &tx_key, s
   if (tx_key_data.tx_prefix_hash.empty())
   {
     nlohmann::json get_transactions_params{
-      {"tx_hashes", tools::type_to_hex(txid)}
+      {"txs_hashes", { tools::type_to_hex(txid) }}
     };
     auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
 
@@ -12537,12 +12542,13 @@ void wallet2::set_tx_key(const crypto::hash &txid, const crypto::secret_key &tx_
 {
   // fetch tx from daemon and check if secret keys agree with corresponding public keys
   nlohmann::json get_transactions_params{
-    {"tx_hashes", tools::type_to_hex(txid)}
+    {"txs_hashes", {tools::type_to_hex(txid)}},
+    {"data",true}
   };
   auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
   cryptonote::transaction tx;
   crypto::hash tx_hash;
-  THROW_WALLET_EXCEPTION_IF(!get_pruned_tx(res["txs"][0], tx, tx_hash), error::wallet_internal_error,
+  THROW_WALLET_EXCEPTION_IF(!get_pruned_tx(res["txs"].front(), tx, tx_hash), error::wallet_internal_error,
       "Failed to get transaction from daemon");
   THROW_WALLET_EXCEPTION_IF(tx_hash != txid, error::wallet_internal_error, "txid mismatch");
   std::vector<tx_extra_field> tx_extra_fields;
@@ -12576,7 +12582,8 @@ std::string wallet2::get_spend_proof(const crypto::hash &txid, std::string_view 
 
   // fetch tx from daemon
   nlohmann::json get_transactions_params{
-    {"tx_hashes", tools::type_to_hex(txid)}
+    {"txs_hashes", {tools::type_to_hex(txid)}},
+    {"data",true}
   };
   auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
 
@@ -12676,7 +12683,8 @@ bool wallet2::check_spend_proof(const crypto::hash &txid, std::string_view messa
 
   // fetch tx from daemon
   nlohmann::json get_transactions_params{
-    {"tx_hashes", tools::type_to_hex(txid)}
+    {"txs_hashes", {tools::type_to_hex(txid)}},
+    {"data",true}
   };
   auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
 
@@ -12832,7 +12840,8 @@ void wallet2::check_tx_key_helper(const cryptonote::transaction &tx, const crypt
 void wallet2::check_tx_key_helper(const crypto::hash &txid, const crypto::key_derivation &derivation, const std::vector<crypto::key_derivation> &additional_derivations, const cryptonote::account_public_address &address, uint64_t &received, bool &in_pool, uint64_t &confirmations)
 {
   nlohmann::json get_transactions_params{
-    {"tx_hashes", tools::type_to_hex(txid)}
+    {"txs_hashes", { tools::type_to_hex(txid) }},
+    {"data", true},
   };
   auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
   cryptonote::transaction tx;
@@ -12846,7 +12855,7 @@ void wallet2::check_tx_key_helper(const crypto::hash &txid, const crypto::key_de
 
   check_tx_key_helper(tx, derivation, additional_derivations, address, received);
 
-  in_pool = res["txs"].front()["in_pool"];
+  in_pool = res["txs"].front().value("in_pool", false);
   confirmations = 0;
   if (!in_pool)
   {
@@ -12861,7 +12870,8 @@ std::string wallet2::get_tx_proof(const crypto::hash &txid, const cryptonote::ac
 {
     // fetch tx pubkey from the daemon
     nlohmann::json get_transactions_params{
-      {"tx_hashes", tools::type_to_hex(txid)}
+      {"txs_hashes", {tools::type_to_hex(txid)}},
+      {"data", true},
     };
     auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
 
@@ -12998,7 +13008,8 @@ bool wallet2::check_tx_proof(const crypto::hash &txid, const cryptonote::account
 {
   // fetch tx pubkey from the daemon
   nlohmann::json get_transactions_params{
-    {"tx_hashes", tools::type_to_hex(txid)}
+    {"txs_hashes", {tools::type_to_hex(txid)}},
+    {"data",true}
   };
   auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
 
@@ -13011,7 +13022,7 @@ bool wallet2::check_tx_proof(const crypto::hash &txid, const cryptonote::account
   if (!check_tx_proof(tx, address, is_subaddress, message, sig_str, received))
     return false;
 
-  in_pool = res["txs"].front()["in_pool"];
+  in_pool = res["txs"].front().value("in_pool", false);;
   confirmations = 0;
   if (!in_pool)
   {
@@ -13284,7 +13295,8 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
 
   // fetch txes from daemon
   nlohmann::json get_transactions_params{
-    {"tx_hashes", std::move(txids_hex)}
+    {"txs_hashes", {std::move(txids_hex)}},
+    {"data",true}
   };
   auto gettx_res = m_http_client.json_rpc("get_transactions", get_transactions_params);
 
@@ -14012,7 +14024,7 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
     // query outgoing txes
     PERF_TIMER_START(import_key_images_E);
     nlohmann::json get_transactions_params{
-      {"tx_hashes", hashes_to_hex(spent_txids.begin(), spent_txids.end())}
+      {"txs_hashes", {hashes_to_hex(spent_txids.begin(), spent_txids.end())}}
     };
     auto gettxs_res = m_http_client.json_rpc("get_transactions", get_transactions_params);
     PERF_TIMER_STOP(import_key_images_E);
