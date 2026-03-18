@@ -166,6 +166,11 @@ namespace cryptonote
      */
     bool deinit();
 
+        bool _get_blocks_only(
+            uint64_t start_offset,
+            size_t count,
+            std::vector<block>& blocks,
+            size_t* blocks_size) const;
     bool get_blocks_only(uint64_t start_offset, size_t count, std::vector<block>& blocks, std::vector<cryptonote::blobdata> *txs = nullptr) const;
     /**
      * @brief get blocks and transactions from blocks based on start height and count
@@ -741,6 +746,11 @@ namespace cryptonote
      */
     bool get_transactions_blobs(const std::vector<crypto::hash>& txs_ids, std::vector<blobdata>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr, bool pruned = false) const;
     bool get_split_transactions_blobs(const std::vector<crypto::hash>& txs_ids, std::vector<std::tuple<crypto::hash, cryptonote::blobdata, crypto::hash, cryptonote::blobdata>>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
+        bool _get_transactions(
+            const std::vector<crypto::hash>& txs_ids,
+            std::vector<transaction>& txs,
+            std::unordered_set<crypto::hash>* missed_txs,
+            size_t* total_size) const;
     bool get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<transaction>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
 
     /**
@@ -1028,7 +1038,7 @@ namespace cryptonote
      */
     void flush_invalid_blocks();
 
-    bool load_missing_blocks_into_beldex_subsystems();
+    bool load_missing_blocks_into_beldex_subsystems(const std::atomic<bool>* abort = nullptr, bool use_threaded_load = false);
 
 #ifndef IN_UNIT_TESTS
   private:

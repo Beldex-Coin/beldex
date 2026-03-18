@@ -707,10 +707,13 @@ bool BlockchainLMDB::need_resize(uint64_t threshold_size) const
   // additional size needed.
   uint64_t size_used = mst.ms_psize * mei.me_last_pgno;
 
-  LOG_PRINT_L3("DB map size:     " << mei.me_mapsize);
-  LOG_PRINT_L3("Space used:      " << size_used);
-  LOG_PRINT_L3("Space remaining: " << mei.me_mapsize - size_used);
-  LOG_PRINT_L3("Size threshold:  " << threshold_size);
+  LOG_PRINT_L3("DB map size:     " << tools::get_human_readable_bytes(mei.me_mapsize));
+  LOG_PRINT_L3("Space used:      " << tools::get_human_readable_bytes(size_used));
+  LOG_PRINT_L3("Space remaining: "
+               << tools::get_human_readable_bytes(mei.me_mapsize - size_used));
+  LOG_PRINT_L3("Size threshold:  "
+               << tools::get_human_readable_bytes(threshold_size));
+
   float resize_percent = RESIZE_PERCENT;
   LOG_PRINT_L3(fmt::format("Percent used: {:.04f}  Percent threshold: {:.04f}", 100. * size_used / mei.me_mapsize, 100. * resize_percent));
 
@@ -1470,7 +1473,7 @@ void BlockchainLMDB::open(const fs::path& filename, cryptonote::network_type net
       throw0(DB_ERROR(lmdb_error("Failed to set max memory map size: ", result).c_str()));
     mdb_env_info(m_env, &mei);
     cur_mapsize = (uint64_t)mei.me_mapsize;
-    LOG_PRINT_L1("LMDB memory map size: " << cur_mapsize);
+    LOG_PRINT_L1("LMDB memory map size: " << tools::get_human_readable_bytes(cur_mapsize));
   }
 
   if (need_resize())
@@ -2532,7 +2535,7 @@ template <typename T,
           std::enable_if_t<std::is_same_v<T, cryptonote::block> ||
                            std::is_same_v<T, cryptonote::block_header> ||
                            std::is_same_v<T, cryptonote::blobdata>, int>>
-T BlockchainLMDB::get_and_convert_block_blob_from_height(uint64_t height) const
+T BlockchainLMDB::get_and_convert_block_blob_from_height(uint64_t height , size_t* size) const
 {
   // NOTE: Avoid any intermediary functions like taking a blob, then converting
   // to block which incurs a copy into blobdata then conversion, and prefer
@@ -2573,12 +2576,15 @@ T BlockchainLMDB::get_and_convert_block_blob_from_height(uint64_t height) const
     result = blob;
   }
 
+  if (size)
+    *size = blob.size();
+
   return result;
 }
 
-block BlockchainLMDB::get_block_from_height(uint64_t height) const
+block BlockchainLMDB::get_block_from_height(uint64_t height, size_t* size) const
 {
-  block result = get_and_convert_block_blob_from_height<block>(height);
+  block result = get_and_convert_block_blob_from_height<block>(height , size);
   return result;
 }
 
@@ -6121,6 +6127,7 @@ bool BlockchainLMDB::get_master_node_data(std::string& data, bool long_term) con
     }
   }
 
+  data.clear();
   data.assign(reinterpret_cast<const char*>(v.mv_data), v.mv_size);
   return true;
 }
