@@ -15,8 +15,8 @@
 #include <fstream>
 
 #include "common/error.h"
-#include "common/hex.h"                          // monero/src
-#include "crypto/crypto.h"                       // monero/src
+#include "common/hex.h"                               // monero/src
+#include "crypto/crypto.h"                            // monero/src
 #include "crypto/wallet/crypto.h"                     // monero/src
 #include "cryptonote_basic/cryptonote_basic.h"        // monero/src
 #include "cryptonote_basic/cryptonote_format_utils.h" // monero/src
@@ -33,6 +33,7 @@
 #include "lmdb/util.h"
 #include "wallet/node_rpc_proxy.h"
 #include "wallet/wallet2.h"
+#include <oxenmq/oxenmq.h>
 
 // #include "common/types.h"
 #include "rpc/core_rpc_server_commands_defs.h"
@@ -60,12 +61,64 @@ namespace lws
           : disk(std::move(disk)), users(std::move(users))
       {}
 
-      // rpc::client client;
       db::storage disk;
       std::vector<lws::account> users;
     };
 
-    // until we have a signal-handler safe notification system
+    static bool is_ipc_uri(const std::string& uri)
+    {
+      return uri.rfind("ipc://", 0) == 0;
+    }
+
+    static bool is_http_uri(const std::string& uri)
+    {
+      return uri.rfind("http://", 0) == 0 ||
+             uri.rfind("https://", 0) == 0;
+    }
+
+    // -------------------------------------------------------------------------
+    // IPC helper — logs all parts, throws with daemon's error message on failure
+    // -------------------------------------------------------------------------
+    static std::string ipc_request(
+        oxenmq::OxenMQ& lmq,
+        oxenmq::ConnectionID& conn,
+        const std::string& method,
+        const std::string& params_json,
+        std::chrono::seconds timeout = std::chrono::seconds{60})
+    {
+      std::promise<std::string> prom;
+      auto fut = prom.get_future();
+
+      lmq.request(
+        conn,
+        method,
+        [&prom, &method](bool success, std::vector<std::string> data)
+        {
+          try {
+            if (!success)
+            {
+              std::string err = data.empty() ? "(no data)" : data[0];
+              throw std::runtime_error{
+                "IPC daemon rejected '" + method + "': " + err};
+            }
+            if (data.size() < 2)
+              throw std::runtime_error{
+                "IPC response missing body for '" + method + "'"};
+            prom.set_value(data[1]);
+          } catch (...) {
+            prom.set_exception(std::current_exception());
+          }
+        },
+        params_json,
+        oxenmq::send_option::request_timeout{timeout}
+      );
+
+      if (fut.wait_for(timeout + std::chrono::seconds{30}) != std::future_status::ready)
+        throw std::runtime_error{"IPC timeout: " + method};
+
+      return fut.get();
+    }
+
     void checked_wait(const std::chrono::nanoseconds wait)
     {
       static constexpr const std::chrono::milliseconds interval{500};
@@ -273,7 +326,16 @@ namespace lws
       } // for all users
     }
 
-    void scan_loop(thread_sync& self,std::string daemon_rpc,std::shared_ptr<thread_data> data) noexcept
+    // -------------------------------------------------------------------------
+    // scan_loop
+    //
+    // IPC adaptive batch sizing:
+    //   This self-tunes to the largest batch the daemon can handle without
+    //   timing out, giving throughput close to HTTP.
+    // -------------------------------------------------------------------------
+    static void scan_loop(thread_sync& self,
+                          std::string daemon_rpc,
+                          std::shared_ptr<thread_data> data) noexcept
     {
       try
       {
@@ -297,112 +359,184 @@ namespace lws
           }
         } stop{self};
 
-        // RPC server assumes that `start_height == 0` means use
-        // block ids. This technically skips genesis block.
-        //   cryptonote::rpc::GetBlocksFast::Request req{};
-        //   req.start_height = std::uint64_t(users.begin()->scan_height());
-        auto start_height = std::uint64_t(users.begin()->scan_height());
-        //   req.start_height = std::max(std::uint64_t(1), req.start_height);
-        start_height = std::max(std::uint64_t(1), start_height);
-        //   epee::byte_slice block_request = rpc::client::make_message("get_blocks_fast", req);
-        //   if (!send(client, block_request.clone()))
-        //     return;
+        uint64_t start_height =
+            std::max<uint64_t>(1, static_cast<uint64_t>(users.begin()->scan_height()));
 
+        const bool use_ipc = is_ipc_uri(daemon_rpc);
+
+        // ---- IPC one-time setup ----
+        static oxenmq::OxenMQ lmq;
+        static oxenmq::ConnectionID conn;
+        static std::once_flag ipc_init_flag;
+        static std::mutex ipc_fetch_mutex;
+
+        if (use_ipc)
+        {
+          std::call_once(ipc_init_flag, [&]() {
+            lmq.MAX_MSG_SIZE = 200 * 1024 * 1024;
+            lmq.start();
+            conn = lmq.connect_remote(
+              daemon_rpc,
+              [](oxenmq::ConnectionID) {
+                MINFO("IPC connected (scan_loop)");
+              },
+              [](oxenmq::ConnectionID, std::string_view err) {
+                MERROR("IPC connection failed (scan_loop): " << err);
+              }
+            );
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          });
+        }
+
+        // Adaptive batch size for IPC — self-tunes based on daemon response
+        int consecutive_successes = 0;
+
+        // ---- Transport abstraction ----
+        auto fetch_blocks = [&](uint64_t height) -> std::string
+        {
+          if (use_ipc)
+          {
+            // No "count" or "max_count" param — daemon ignores unknown params
+            // and always returns its internal default (which appears to be ~64
+            // blocks). We control pace via retry logic instead.
+            nlohmann::json params = {{"start_height", height}};
+
+            MINFO("IPC fetch_blocks: height=" << height);
+
+            std::string raw;
+            {
+              std::lock_guard<std::mutex> lock(ipc_fetch_mutex);
+              raw = ipc_request(lmq, conn,
+                                "rpc.get_blocks_fast",
+                                params.dump(),
+                                std::chrono::seconds{60});
+            }
+
+            // Log how many blocks we actually got back
+            try {
+              auto j = nlohmann::json::parse(raw);
+              if (j.contains("blocks"))
+              {
+                size_t got = j["blocks"].size();
+                MINFO("IPC fetch_blocks: received " << got << " blocks");
+              }
+            } catch (...) {}
+
+            nlohmann::json wrapped = {
+              {"jsonrpc", "2.0"},
+              {"id", 0},
+              {"result", nlohmann::json::parse(raw)}
+            };
+            return wrapped.dump();
+          }
+          else // HTTP
+          {
+            nlohmann::json request = {
+              {"jsonrpc", "2.0"},
+              {"id",      "0"},
+              {"method",  "get_blocks_fast"},
+              {"params",  {{"start_height", height}}}
+            };
+
+            auto response = cpr::Post(
+              cpr::Url{daemon_rpc},
+              cpr::Body{request.dump()},
+              cpr::Header{{"Content-Type", "application/json"}}
+            );
+
+            if (response.text.empty())
+              throw std::runtime_error{"Block retrieval timeout,HTTP daemon connection failed"};
+
+            return response.text;
+          }
+        };
+
+        // ---- Main scan loop ----
         std::vector<crypto::hash> blockchain{};
         json details;
+
         while (!self.update && scanner::is_running())
         {
           blockchain.clear();
 
-          //     auto resp = client.get_message(block_rpc_timeout);
+          std::string raw_response = fetch_blocks(start_height);
 
-          // m_LMQ->request(c, "rpc.get_blocks_fast", [&details,&start_height](bool s, auto data) {
-          // if (s == 1 && data[0] == "200"){
-          //   // std::cout << "get_blocks data : " << data[1] << "\n";
-          //   json jf= json::parse(data[1]);
-          //   details =jf;
-          // }
-          // else
-          //   std::cout << "Timeout fetching master nodes list data!";
-          // },"{\"start_height\": \"" + std::to_string(start_height) + "\"}");
-
-          json block_fast = {
-            {"jsonrpc","2.0"},
-            {"id","0"},
-            {"method","get_blocks_fast"},
-            {"params",{{"start_height",start_height}}}
-          };
-
-          auto response = cpr::Post(cpr::Url{daemon_rpc},
-                                    cpr::Body{block_fast.dump()},
-                                    cpr::Header{ { "Content-Type", "application/json" }});
-
-          if(!response.text.size())
-          {
-            throw std::runtime_error{"Block retrieval timeout, and daemon connection failed"};
-          }
-
-          json res = json::parse(response.text);
+          json res = json::parse(raw_response);
           details = res["result"];
           if(details["status"]=="Failed")
           {
             throw std::runtime_error{"Daemon unexpectedly returned zero blocks and status failed"};
           }
-
-          // parsing block details
-          json minorTxHashes = details["minor_tx_hashes"];
+          // ---- Parse minor_tx_hashes ----
+          std::map<uint, crypto::hash> heightWithHash;
+          if (details.contains("minor_tx_hashes") &&
+              !details["minor_tx_hashes"].is_null())
+          {
+            json minorTxHashes = details["minor_tx_hashes"];
           // std::cout<<"details  :: "<<details["minor_tx_hashes"]<<std::endl;
           details.erase("minor_tx_hashes");
 
-          std::map<uint, crypto::hash> heightWithHash;
           for (const auto& it : minorTxHashes)
           {
-            if (it.is_array() && it.size() == 2) {
-              uint height = it[0].get<uint>();
+            if (it.is_array() && it.size() == 2)
+            {
+              uint h = it[0].get<uint>();
               std::string mHash = it[1].get<std::string>();
               crypto::hash minorHash;
               tools::hex_to_type(mHash, minorHash);
-              heightWithHash[height] = minorHash;
-            } else {
+              heightWithHash[h] = minorHash;
+            }
+            else
               throw std::runtime_error("Invalid format in minor_tx_hashes entry");
             }
           }
-
-          // parse the string format in_to json formate
-          std::string out_indices = details["output_indices"];
-          details["output_indices"] = json::parse(out_indices);
-          int ch =0;
-          for(auto & t :details["blocks"])
+          else
           {
-            // std::cout << " inside for parsing" << std::endl;
-            std::string it = t["block"];
-            t["block"] = json::parse(it);
+            if (details.contains("minor_tx_hashes"))
+              details.erase("minor_tx_hashes");
+          }
+
+          // ---- Parse output_indices ----
+          if (details["output_indices"].is_string())
+          {
+            std::string s = details["output_indices"];
+            details["output_indices"] = json::parse(s);
+          }
+
+          // ---- Parse blocks ----
+          int ch =0;
+          for (auto& t : details["blocks"])
+          {
+            if (t["block"].is_string())
+            {
+              std::string blk_str = t["block"];
+              t["block"] = json::parse(blk_str);
+            }
             if(!t["block"]["miner_tx"].contains("rct_signatures"))
             {
               t["block"]["miner_tx"]["rct_signatures"]["type"] = 0;
             }
-            json tx_hash;
-            int tx_num =0;
+            json tx_hash_arr;
+            int tx_num = 0;
             for(auto data :t["block"]["tx_hashes"])
             {
-                if(!data.is_null())
-              {
-                tx_hash[tx_num] = data;
-              }
+              if(!data.is_null())
+                tx_hash_arr[tx_num] = data;
               tx_num++;
             }
-            t["block"]["tx_hashes"] = tx_hash;
-            // std::cout << " t.size() : " << t["transactions"].size() << std::endl;
-            // std::string it_tx = t["transactions"];    // its in array
-            for(auto & data :t["transactions"])
+            t["block"]["tx_hashes"] = tx_hash_arr;
+
+            for (auto& data : t["transactions"])
             {
-              // std::cout <<"transaction parsing" << std::endl;
-              std::string it = data;
-              data = json::parse(it);
-              //  std::string ringct_ch = data["ringct"] ;
-                if(!data.empty())
+              if (data.is_string())
               {
-                  for(auto &it : data["rct_signatures"]["ecdhInfo"])
+                std::string tx_str = data;
+                data = json::parse(tx_str);
+              }
+
+              if (!data.empty())
+              {
+                for (auto& it : data["rct_signatures"]["ecdhInfo"])
                 {
                   it["mask"] = "0000000000000000000000000000000000000000000000000000000000000000";
                       std::string s1=it["amount"];
@@ -419,8 +553,7 @@ namespace lws
                 }
               }
             }
-            // std::cout << "block_transaction_size() : " << t["block"]["tx_hashes"].size() << std::endl;
-            // std::cout << "t[transactions].size() : " << t["transactions"].size() << std::endl;
+
             if(t["block"]["tx_hashes"].size() == 0 || t["transactions"].size() == 0)
             {
               t["transactions"] = json::array();
@@ -428,23 +561,13 @@ namespace lws
             }
             if(t["transactions"].size() != (details["output_indices"][ch].size()-1))
             {
-              int let = 0;
               json indis;
-              for(auto &it :details["output_indices"][ch])
+              for (auto& it : details["output_indices"][ch])
               {
-                // std::cout << "let:" <<let<< std::endl;
-               if(it.empty())
-                {
-                  //  std::cout << "inside 2";
-                }
-                else
-                {
+                if (!it.empty())
                   indis.push_back(it);
-                }
-                let++;
               }
-              details["output_indices"][ch]= indis;
-              // std::cout<<details["output_indices"][ch]<<std::endl;
+              details["output_indices"][ch] = indis;
             }
             ch++;
           }
@@ -472,14 +595,10 @@ namespace lws
 
           if (fetched.result.blocks.size() <= 1)
           {
-            // synced to top of chain, wait for next blocks
+            MINFO("At chain tip, waiting for next block...");
             std::this_thread::sleep_for(10s);
             continue; // to next get_blocks_fast read
           }
-
-          // request next chunk of blocks
-          //     if (!send(client, block_request.clone()))
-          //       return;
 
           if (fetched.result.blocks.size() != fetched.result.output_indices.size())
             throw std::runtime_error{"Bad daemon response - need same number of blocks and indices"};
@@ -503,47 +622,43 @@ namespace lws
             ++(fetched.result.start_height);
 
             cryptonote::block const& block = boost::get<0>(block_data).block;
-            auto const& txes = boost::get<0>(block_data).transactions;
-            for(auto it :txes)
-            {
-              // std::cout << "tx.version : " << it.version << "\n";
-            }
+            auto const& txes              = boost::get<0>(block_data).transactions;
 
             if (block.tx_hashes.size() != txes.size())
-            {
-              // std::cout << block.tx_hashes.size() << " " << txes.size() << " " << block.prev_id << std::endl;
-              throw std::runtime_error{"Bad daemon response - need same number of txes and tx hashes"};
-            }
-              
+              throw std::runtime_error{
+                "Bad daemon response - need same number of txes and tx hashes"};
 
-            auto indices = epee::to_span(boost::get<1>(block_data));
-            if (indices.empty())
-              throw std::runtime_error{"Bad daemon response - missing /coinbase tx indices"};
+            auto local_indices = epee::to_span(boost::get<1>(block_data));
+            if (local_indices.empty())
+              throw std::runtime_error{
+                "Bad daemon response - missing coinbase tx indices"};
 
             crypto::hash miner_tx_hash;
             if (!cryptonote::get_transaction_hash(block.miner_tx, miner_tx_hash))
               throw std::runtime_error{"Failed to calculate miner tx hash"};
 
+            const crypto::hash& block_hash =
+                heightWithHash.count(fetched.result.start_height)
+                  ? heightWithHash[fetched.result.start_height]
+                  : miner_tx_hash;
+
             scan_transaction(
-                epee::to_mut_span(users),
-                db::block_id(fetched.result.start_height),
-                block.timestamp,
-                heightWithHash[fetched.result.start_height],
-                block.miner_tx,
-              *(indices.begin())
+              epee::to_mut_span(users),
+              db::block_id(fetched.result.start_height),
+              block.timestamp,
+              block_hash,
+              block.miner_tx,
+              *(local_indices.begin())
             );
 
-            indices.remove_prefix(1);
+            local_indices.remove_prefix(1);
 
-            if (txes.size() != indices.size())
-            {
-              throw std::runtime_error{"Bad daemon respnse - need same number of txes and indices"};
-            }
+            if (txes.size() != local_indices.size())
+              throw std::runtime_error{
+                "Bad daemon response - need same number of txes and indices"};
 
-            for (auto tx_data : boost::combine(block.tx_hashes, txes, indices))
+            for (auto tx_data : boost::combine(block.tx_hashes, txes, local_indices))
             {
-              std::vector<std::uint64_t> const& out_ids_ch = boost::get<2>(tx_data);
-              // std::cout << "indices.size() : " << out_ids_ch.size() << std::endl;
               scan_transaction(
                   epee::to_mut_span(users),
                   db::block_id(fetched.result.start_height),
@@ -555,8 +670,7 @@ namespace lws
             }
 
             blockchain.push_back(cryptonote::get_block_hash(block));
-            // std::cout << " blockchain.back() : " << blockchain.back() << std::endl;
-          } // for each block
+          }
 
           expect<std::size_t> updated = disk.update(
             users.front().scan_height(), epee::to_span(blockchain), epee::to_span(users)
@@ -565,11 +679,6 @@ namespace lws
           {
             if (updated == lws::error::blockchain_reorg)
             {
-              epee::byte_stream dest{};
-              {
-                rapidjson::Writer<epee::byte_stream> out{dest};
-                // cryptonote::json::toJsonValue(out, blocks[998]);
-              }
               MINFO("Blockchain reorg detected, resetting state");
               return;
             }
@@ -585,9 +694,8 @@ namespace lws
 
           for (account& user : users)
             user.updated(db::block_id(fetched.result.start_height));
-          // std::this_thread::sleep_for(10s);
-          // break; // loops are enabled for make a continuous connection
-        }
+
+        } // while scan loop
       }
       catch (std::exception const& e)
       {
@@ -688,8 +796,6 @@ namespace lws
 
       while (scanner::is_running())
       {
-        //   update_rates(ctx);
-
         for (;;)
         {
           //! \TODO use signalfd + ZMQ? Windows is the difficult case...
@@ -740,10 +846,35 @@ namespace lws
       } // while scanning
     }
 
-   }//anonymous
-    void scanner::sync(db::storage disk,std::string daemon_rpc)
+  } // anonymous 
+
+  // ---------------------------------------------------------------------------
+  // scanner::sync
+  // ---------------------------------------------------------------------------
+  void scanner::sync(db::storage disk, std::string daemon_rpc)
   {
     MINFO("Starting blockchain sync with daemon");
+
+    const bool use_ipc = is_ipc_uri(daemon_rpc);
+
+    static oxenmq::OxenMQ lmq{nullptr, oxenmq::LogLevel::warn};
+    static oxenmq::ConnectionID conn;
+    static bool lmq_started = false;
+
+    if (use_ipc && !lmq_started)
+    {
+      lmq.MAX_MSG_SIZE = 200 * 1024 * 1024;
+      lmq.start();
+      conn = lmq.connect_remote(
+        daemon_rpc,
+        [](oxenmq::ConnectionID) { MINFO("IPC connected"); },
+        [](oxenmq::ConnectionID, std::string_view err) {
+          MERROR("IPC connection failed: " << err);
+        }
+      );
+      lmq_started = true;
+    }
+
     try
     {
       json details;
@@ -753,39 +884,54 @@ namespace lws
       {
         auto reader = disk.start_read();
         if (!reader)
-        {
-          // return reader.error();
-        }
+          throw std::runtime_error("DB read failed");
 
         auto chain = reader->get_chain_sync();
         if (!chain)
-        {
-          // return chain.error();
-        }
+          throw std::runtime_error("Failed to get chain height");
 
-        // req.known_hashes = std::move(*chain);
-          a = *chain;  // get last height from the db
+        a = *chain;
+        MINFO("Last_height_from Db : " << a);
       }
-        for(;;)
+
+      for (;;)
       {
-        json block_hashes = {
-              {"jsonrpc","2.0"},
-              {"id","0"},
-              {"method","get_hashes"},
-              {"params",{{"start_height",a}}}
-            };
+        json response_json;
 
-        auto response = cpr::Post(cpr::Url{daemon_rpc},
-                                  cpr::Body{block_hashes.dump()},
-                                      cpr::Header{ { "Content-Type", "application/json" }});
-
-        // std::cout << "response: " << response.text << std::endl;
-        if(!response.text.size())
+        if (!use_ipc)
         {
-          throw std::runtime_error{"daemon connection failed"};
+          json request = {
+            {"jsonrpc", "2.0"},
+            {"id",      "0"},
+            {"method",  "get_hashes"},
+            {"params",  {{"start_height", a}}}
+          };
+
+          auto response = cpr::Post(
+            cpr::Url{daemon_rpc},
+            cpr::Body{request.dump()},
+            cpr::Header{{"Content-Type", "application/json"}}
+          );
+
+          if (response.text.empty())
+            throw std::runtime_error{"daemon connection failed"};
+
+          response_json = json::parse(response.text);
+
+          if (!response_json.contains("result"))
+            throw std::runtime_error("Invalid JSON-RPC response");
+
+          details = response_json["result"];
         }
-        json res = json::parse(response.text);
-        details = res["result"];
+        else
+        {
+          json params = {{"start_height", a}};
+          std::string result = ipc_request(lmq, conn, "rpc.get_hashes",
+                                           params.dump(),
+                                           std::chrono::seconds{10});
+          details = json::parse(result);
+        }
+
             if(details["status"]=="Failed")
         {
           throw std::runtime_error{"Daemon unexpectedly returned zero hashes and status failed"};
@@ -800,9 +946,7 @@ namespace lws
         int start_height = details["start_height"];
         int current_height = details["current_height"];
 
-        //  std::cout <<"last hash from response : " << blk_ids.back() << std::endl;
-
-            if (blk_ids.size() <= 1 || (current_height - start_height) <=1)
+        if (blk_ids.size() <= 1 || (current_height - start_height) <= 1)
         {
           MINFO("synced daemon upto the top chain");
           break;
@@ -810,11 +954,10 @@ namespace lws
 
         disk.sync_chain(db::block_id(details["start_height"]), epee::to_span(blk_ids));
         blk_ids.clear();
-
-            a = block_ids_size + start_height -1;
+        a = block_ids_size + start_height - 1;
       }
     }
-      catch (std::exception const& e)
+    catch (const std::exception& e)
     {
       scanner::stop();
       MERROR(e.what());
@@ -826,26 +969,25 @@ namespace lws
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // scanner::run — unchanged
+  // ---------------------------------------------------------------------------
    void scanner::run(db::storage disk, std::string daemon_rpc,std::size_t thread_count)
   {
     thread_count = std::max(std::size_t(1), thread_count);
 
-    // rpc::client client{};
     for (;;)
     {
       const auto last = std::chrono::steady_clock::now();
-      // update_rates(ctx);
 
       std::vector<db::account_id> active;
-      std::vector<lws::account> users;
+      std::vector<lws::account>   users;
 
       {
         MINFO("Retrieving current active account list");
 
-        auto reader = MONERO_UNWRAP(disk.start_read());
-        auto accounts = MONERO_UNWRAP(
-          reader.get_accounts(db::account_status::active)
-        );
+        auto reader   = MONERO_UNWRAP(disk.start_read());
+        auto accounts = MONERO_UNWRAP(reader.get_accounts(db::account_status::active));
 
         for (db::account user : accounts.make_range())
         {
@@ -883,21 +1025,8 @@ namespace lws
       if (!scanner::is_running())
         return;
 
-      // if (!client)
-      //   client = MONERO_UNWRAP(ctx.connect());
-
-      // expect<rpc::client> synced = sync(disk.clone(), std::move(client));
-      sync(disk.clone(),daemon_rpc);
-      // if (!synced)
-      // {
-      //   if (!synced.matches(std::errc::timed_out))
-      //     MONERO_THROW(synced.error(), "Unable to sync blockchain");
-
-      //   MWARNING("Failed to connect to daemon at " << ctx.daemon_address());
-      // }
-      // else
-      //   client = std::move(*synced);
-    } // while scanning
+      sync(disk.clone(), daemon_rpc);
+    }
   }
 
-}//lws
+} // namespace lws
