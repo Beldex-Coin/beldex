@@ -180,15 +180,18 @@ namespace epee
     bool portable_storage::get_value(const std::string& value_name, T& val, section* parent_section)
     {
       static_assert(variant_contains<T, storage_entry>);
-      //TRY_ENTRY();
-      if(!parent_section) parent_section = &m_root;
+      if (!parent_section)
+          parent_section = &m_root;
       storage_entry* pentry = find_storage_entry(value_name, parent_section);
-      if(!pentry)
-        return false;
+      if (!pentry)
+          return false;
 
-      var::visit([&val](const auto& v) { convert_t(v, val); }, *pentry);
-      return true;
-      //CATCH_ENTRY("portable_storage::template<>get_value", false);
+      try {
+          var::visit([&val](const auto& v) { convert_t(v, val); }, *pentry);
+          return true;
+      } catch (const std::exception&) {
+          return false;
+      }
     }
     //---------------------------------------------------------------------------------------------------------------
     template <typename T>

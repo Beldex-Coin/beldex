@@ -1589,7 +1589,6 @@ namespace master_nodes
       // NOTE: No POS quorums are generated when the network has insufficient nodes to generate quorums
       //       Or, block specifies time after all the rounds have timed out
       bool miner_block = !POS_hf || !POS_quorum;
-      // std::cout << "miner_block : " << miner_block << std::endl;
 
       result = verify_block_components(m_blockchain.nettype(),
                                        block,

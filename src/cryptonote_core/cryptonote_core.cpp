@@ -1758,9 +1758,10 @@ namespace cryptonote
     return m_mempool.check_for_key_images(key_im, spent);
   }
   //-----------------------------------------------------------------------------------------------
-  std::optional<std::tuple<int64_t, int64_t, int64_t>> core::get_coinbase_tx_sum(uint64_t start_offset, size_t count)
+  std::optional<std::tuple<unsigned long long, unsigned long long, unsigned long long>>
+  core::get_coinbase_tx_sum(uint64_t start_offset, size_t count)
   {
-    std::optional<std::tuple<int64_t, int64_t, int64_t>> result{{0, 0, 0}};
+    std::optional<std::tuple<unsigned long long, unsigned long long, unsigned long long>> result{{0ULL, 0ULL, 0ULL}};
     if (count == 0)
       return result;
 
@@ -1787,6 +1788,8 @@ namespace cryptonote
       {
         std::shared_lock lock{m_coinbase_cache.mutex};
         if (count >= m_coinbase_cache.height) {
+          // NOTE: if m_coinbase_cache.emissions/fees/burnt are signed types, they will be implicitly
+          // converted to unsigned here. If they are signed, consider static_cast<unsigned long long>.
           emission_amount = m_coinbase_cache.emissions;
           total_fee_amount = m_coinbase_cache.fees;
           burnt_beldex = m_coinbase_cache.burnt;
@@ -1837,20 +1840,24 @@ namespace cryptonote
       [this, &cache_to, &result, &cache_build_started](uint64_t height, const crypto::hash& hash, const block& b){
       auto& [emission_amount, total_fee_amount, burnt_beldex] = *result;
       std::vector<transaction> txs;
-      auto coinbase_amount = static_cast<int64_t>(get_outs_money_amount(b.miner_tx));
+
+      // Convert amounts into unsigned accumulators
+      const unsigned long long coinbase_amount = static_cast<unsigned long long>(get_outs_money_amount(b.miner_tx));
       get_transactions(b.tx_hashes, txs);
-      int64_t tx_fee_amount = 0;
-      for(const auto& tx: txs)
+
+      unsigned long long tx_fee_amount = 0ULL;
+      for (const auto& tx: txs)
       {
-        tx_fee_amount += static_cast<int64_t>(get_tx_miner_fee(tx, b.major_version >= feature::FEE_BURNING));
-        if(b.major_version >= feature::FEE_BURNING)
+        tx_fee_amount += static_cast<unsigned long long>(get_tx_miner_fee(tx, b.major_version >= feature::FEE_BURNING));
+        if (b.major_version >= feature::FEE_BURNING)
         {
-          burnt_beldex += static_cast<int64_t>(get_burned_amount_from_tx_extra(tx.extra));
+          burnt_beldex += static_cast<unsigned long long>(get_burned_amount_from_tx_extra(tx.extra));
         }
       }
 
       emission_amount += coinbase_amount - tx_fee_amount;
       total_fee_amount += tx_fee_amount;
+
       if (cache_to && cache_to == height)
       {
         std::unique_lock lock{m_coinbase_cache.mutex};
