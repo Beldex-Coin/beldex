@@ -14024,7 +14024,8 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
     // query outgoing txes
     PERF_TIMER_START(import_key_images_E);
     nlohmann::json get_transactions_params{
-      {"txs_hashes", {hashes_to_hex(spent_txids.begin(), spent_txids.end())}}
+      {"txs_hashes", hashes_to_hex(spent_txids.begin(), spent_txids.end())},
+      {"data", true}
     };
     auto gettxs_res = m_http_client.json_rpc("get_transactions", get_transactions_params);
     PERF_TIMER_STOP(import_key_images_E);
@@ -14036,7 +14037,10 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
     auto it = spent_txids.begin();
     for (const auto& e : gettxs_res["txs"])
     {
-      THROW_WALLET_EXCEPTION_IF(e["in_pool"], error::wallet_internal_error, "spent tx isn't supposed to be in txpool");
+      if (e.contains("in_pool") && e["in_pool"].get<int>() != 0)
+      {
+        THROW_WALLET_EXCEPTION_IF(true, error::wallet_internal_error, "spent tx isn't supposed to be in txpool");
+      }
 
       cryptonote::transaction spent_tx;
       crypto::hash spnet_txid_parsed;
