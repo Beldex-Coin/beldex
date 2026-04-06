@@ -310,8 +310,8 @@ struct block_data
 };
 struct block_load_context
 {
-  static constexpr uint64_t CHUNK_SIZE = 300;  // tuneable chunk size
-  static constexpr size_t MAX_QUEUE_SIZE = 12;        // tuneable queue depth
+  static constexpr uint64_t CHUNK_SIZE = 50;  // tuneable chunk size
+  static constexpr size_t MAX_QUEUE_SIZE = 5;        // tuneable queue depth
   std::mutex block_mut;
   std::condition_variable block_cv;
   std::queue<block_data> next_blocks;
