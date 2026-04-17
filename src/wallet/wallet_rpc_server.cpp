@@ -223,10 +223,21 @@ namespace tools
       if(!ps.load_from_json(body))
         return jsonrpc_error_response(res, -32700, "Parse error", {});
 
+      nlohmann::json id;
       epee::serialization::storage_entry epee_id{std::string{}};
-      ps.get_value("id", epee_id, nullptr);
-
-      nlohmann::json id = var::get<std::string>(epee_id);
+      if (std::string str_val; ps.get_value("id", str_val, nullptr)) {
+          epee_id = str_val;
+          id = std::move(str_val);
+      } else if (int64_t i64_val; ps.get_value("id", i64_val, nullptr)) {
+          epee_id = i64_val;
+          id = i64_val;
+      } else {
+          return jsonrpc_error_response(
+                  res,
+                  -32700,
+                  "Parse error, missing a valid (string or integer) JSON RPC 'id'",
+                  {});
+      }
 
       std::string method;
       if(!ps.get_value("method", method, nullptr))

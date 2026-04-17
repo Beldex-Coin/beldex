@@ -44,11 +44,11 @@ WORKDIR /usr/local/src
 #     && make -j$(nproc) \
 #     && make install_sw -j$(nproc)
 
-ARG BOOST_VERSION=1_72_0
-ARG BOOST_VERSION_DOT=1.72.0
-ARG BOOST_HASH=59c9b274bc451cf91a9ba1dd2c7fdcaf5d60b1b3aa83f2c9fa143417cc660722
+ARG BOOST_VERSION=1_83_0
+ARG BOOST_VERSION_DOT=1.83.0
+ARG BOOST_HASH=6478edfe2f3305127cffe8caf73ea0176c53769f4bf1585be237eb30798c3b8e
 RUN set -ex \
-    && curl -s -L -O  https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION_DOT}/source/boost_${BOOST_VERSION}.tar.bz2 \
+    && curl -s -L -O  https://archives.boost.io/release/${BOOST_VERSION_DOT}/source/boost_${BOOST_VERSION}.tar.bz2 \
     && tar xf boost_${BOOST_VERSION}.tar.bz2 \
     && cd boost_${BOOST_VERSION} \
     && ./bootstrap.sh \

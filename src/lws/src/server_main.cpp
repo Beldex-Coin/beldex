@@ -31,7 +31,7 @@ namespace
   struct options : lws::options
   {
     const command_line::arg_descriptor<std::string> daemon_rpc;
-    // const command_line::arg_descriptor<std::string> daemon_sub;
+    const command_line::arg_descriptor<std::string> daemon_sub;
     const command_line::arg_descriptor<std::vector<std::string>> rest_servers;
     const command_line::arg_descriptor<std::vector<std::string>> admin_rest_servers;
     const command_line::arg_descriptor<std::string> rest_ssl_key;
@@ -64,7 +64,7 @@ namespace
     options()
       : lws::options()
       , daemon_rpc{"daemon", "[(https|http)://<address>:]<port> for daemon connections", get_default_zmq()}
-      // , daemon_sub{"sub", "tcp://address:port or ipc://path of a beldexd OMQ Pub", ""}
+      , daemon_sub{"sub", "tcp://address:port or ipc://path of a beldexd OMQ Pub", ""}
       , rest_servers{"rest-server", "[(https|http)://<address>:]<port>[/<prefix>] for incoming connections, multiple declarations allowed"}
       , admin_rest_servers{"admin-rest-server", "[(https|http])://<address>:]<port>[/<prefix>] for incoming admin connections, multiple declarations allowed"}      , rest_ssl_key{"rest-ssl-key", "<path> to PEM formatted SSL key for https REST server", ""}
       , rest_ssl_cert{"rest-ssl-certificate", "<path> to PEM formatted SSL certificate (chains supported) for https REST server", ""}
@@ -84,7 +84,7 @@ namespace
 
       lws::options::prepare(description);
       command_line::add_arg(description, daemon_rpc);
-      // command_line::add_arg(description, daemon_sub);
+      command_line::add_arg(description, daemon_sub);
       description.add_options()(rest_servers.name, boost::program_options::value<std::vector<std::string>>()->default_value({rest_default}, rest_default), rest_servers.description);
       command_line::add_arg(description, admin_rest_servers);
       command_line::add_arg(description, rest_ssl_key);
@@ -106,7 +106,7 @@ namespace
     std::vector<std::string> admin_rest_servers;
     lws::rest_server::configuration rest_config;
     std::string daemon_rpc;
-    // std::string daemon_sub;
+    std::string daemon_sub;
     std::chrono::minutes rates_interval;
     std::size_t scan_threads;
     unsigned create_queue_max;
@@ -166,7 +166,7 @@ namespace
             command_line::get_arg(args, opts.rest_threads),
             command_line::get_arg(args, opts.external_bind)},
         command_line::get_arg(args, opts.daemon_rpc),
-        // command_line::get_arg(args, opts.daemon_sub),
+        command_line::get_arg(args, opts.daemon_sub),
         std::chrono::minutes{command_line::get_arg(args, opts.rates_interval)},
         command_line::get_arg(args, opts.scan_threads),
         command_line::get_arg(args, opts.create_queue_max),
@@ -175,12 +175,29 @@ namespace
     prog.rest_config.threads = std::max(std::size_t(1), prog.rest_config.threads);
     prog.scan_threads = std::max(std::size_t(1), prog.scan_threads);
 
-    if (command_line::is_arg_defaulted(args, opts.daemon_rpc))
-        prog.daemon_rpc = options::get_default_zmq()+ "/json_rpc";
-    else
-      prog.daemon_rpc = prog.daemon_rpc +"/json_rpc";
+    // Detect IPC mode
+  const bool ipc_mode = prog.daemon_rpc.rfind("ipc://", 0) == 0;
 
-    lws::daemon_add = prog.daemon_rpc;
+  if (command_line::is_arg_defaulted(args, opts.daemon_rpc))
+  {
+      prog.daemon_rpc = options::get_default_zmq();
+
+      // Append only for HTTP mode
+      if (!ipc_mode)
+          prog.daemon_rpc += "/json_rpc";
+  }
+  else
+  {
+      // Append only for HTTP mode
+      if (!ipc_mode)
+          prog.daemon_rpc += "/json_rpc";
+  }
+
+    // For cpr::Post HTTP calls in rest_server.cpp, always use HTTP endpoint
+    if (prog.daemon_rpc.rfind("ipc://", 0) == 0)
+      lws::daemon_add = options::get_default_zmq() + "/json_rpc";
+    else
+      lws::daemon_add = prog.daemon_rpc;
     return prog;
   }
   void run(program prog)
