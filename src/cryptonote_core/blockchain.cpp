@@ -1264,8 +1264,8 @@ bool Blockchain::prevalidate_miner_transaction(const block& b, uint64_t height, 
       return false;
     }
 
-    txversion min_version = transaction::get_max_version_for_hf(hf_version);
-    txversion max_version = transaction::get_min_version_for_hf(hf_version);
+    txversion min_version = transaction::get_min_version_for_hf(hf_version);
+    txversion max_version = transaction::get_max_version_for_hf(hf_version);
     if (b.miner_tx.version < min_version || b.miner_tx.version > max_version)
     {
       MERROR_VER("Coinbase invalid version: " << b.miner_tx.version << " for hardfork: " << static_cast<int>(hf_version) << " min/max version:  " << min_version << "/" << max_version);
@@ -1342,7 +1342,7 @@ bool Blockchain::validate_miner_transaction(const block& b, size_t cumulative_bl
     }
   }
 
-  if (already_generated_coins != 0 && block_has_governance_output(nettype(), b) && version > hf::hf20_bulletproof_plus)
+  if (already_generated_coins != 0 && block_has_governance_output(nettype(), b))
   {
     if (version >= hf::hf17_POS && reward_parts.governance_paid == 0)
     {
@@ -1372,7 +1372,7 @@ bool Blockchain::validate_miner_transaction(const block& b, size_t cumulative_bl
   // TODO(beldex): eliminate all floating point math in reward calculations.
   uint64_t max_base_reward = reward_parts.base_miner + reward_parts.governance_paid + reward_parts.master_node_total + 1;
   uint64_t max_money_in_use = max_base_reward + reward_parts.miner_fee;
-  if (money_in_use > max_money_in_use && version > hf::hf20_bulletproof_plus)
+  if (money_in_use > max_money_in_use)
   {
     MERROR_VER("coinbase transaction spends too much money (" << print_money(money_in_use) << "). Maximum block reward is "
             << print_money(max_money_in_use) << " (= " << print_money(max_base_reward) << " base + " << print_money(reward_parts.miner_fee) << " fees)");
@@ -3449,7 +3449,8 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
       CHECK_AND_ASSERT_MES((*pmax_used_block_height + spendable_age) <= m_db->height(),
           false, "Transaction spends at least one output which is too young");
     }
-if (tx.version >= cryptonote::txversion::v2_ringct)
+
+  if (tx.version >= cryptonote::txversion::v2_ringct)
 	{
     if (!expand_transaction_2(tx, tx_prefix_hash, pubkeys))
     {
@@ -3637,14 +3638,17 @@ if (tx.version >= cryptonote::txversion::v2_ringct)
     }
     else if (tx.type == txtype::coin_burn)
     {
-      uint64_t burn = cryptonote::get_burned_amount_from_tx_extra(tx.extra);
-      if (burn == 0)
+      const uint64_t burn = cryptonote::get_burned_amount_from_tx_extra(tx.extra);
+      const uint64_t fee  = tx.rct_signatures.txnFee;
+      if (burn == 0 || burn > fee)
       {
-        std::string fail_reason = "Burn amount must not equals to zero";
-        MERROR_VER("Failed to validate Burn TX reason: " << fail_reason);
-        tvc.m_verbose_error = std::move(fail_reason);
+        tvc.m_verbose_error = (burn == 0)
+          ? "Burn amount must not be zero"
+          : "Burn amount must be <= fee";
+
+        MERROR_VER("Failed to validate Burn TX reason: " << tvc.m_verbose_error);
         return false;
-      }      
+      }
     }
   }
   }
