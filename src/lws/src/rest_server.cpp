@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <boost/utility/string_ref.hpp>
+#include <chrono>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <cpr/cpr.h>
@@ -88,6 +90,85 @@ namespace lws
         }
       };
       return std::lower_bound(metas.begin(), metas.end(), id, by_output_id{});
+    }
+
+    expect<json> post_json_rpc(std::string method, json params = json::object())
+    {
+      json request_body = {
+        {"jsonrpc", "2.0"},
+        {"id", "0"},
+        {"method", std::move(method)}
+      };
+      if (!params.empty())
+        request_body["params"] = std::move(params);
+
+      auto response = cpr::Post(
+        cpr::Url{lws::daemon_add},
+        cpr::Body{request_body.dump()},
+        cpr::Header{{"Content-Type", "application/json"}}
+      );
+
+      if (response.status_code != 200)
+      {
+        MERROR("daemon RPC call failed with HTTP code: " << response.status_code);
+        return make_error_code(std::errc::io_error);
+      }
+
+      try
+      {
+        json parsed = json::parse(response.text);
+        return parsed;
+      }
+      catch (const std::exception& e)
+      {
+        MERROR("daemon RPC JSON parse failed: " << e.what());
+        return make_error_code(std::errc::invalid_argument);
+      }
+    }
+
+    struct master_node_cache
+    {
+      json master_nodes;
+      json blacklist;
+    };
+
+    expect<master_node_cache> get_master_node_cache()
+    {
+      static constexpr const auto cache_ttl = std::chrono::seconds{10};
+      static std::mutex cache_mutex;
+      static master_node_cache cache{};
+      static auto last_update = std::chrono::steady_clock::now();
+      static bool cache_initialized = false;
+
+      const auto now = std::chrono::steady_clock::now();
+      {
+        const std::lock_guard<std::mutex> lock{cache_mutex};
+        if (cache_initialized && now - last_update < cache_ttl)
+          return cache;
+      }
+
+      auto master_nodes = post_json_rpc("get_master_nodes");
+      if (!master_nodes)
+        return master_nodes.error();
+
+      auto blacklist = post_json_rpc("get_master_node_blacklisted_key_images");
+      if (!blacklist)
+        return blacklist.error();
+
+      const std::lock_guard<std::mutex> lock{cache_mutex};
+      if (master_nodes->is_array() && !master_nodes->empty())
+        cache.master_nodes = std::move(master_nodes->at(0));
+      else
+        cache.master_nodes = std::move(*master_nodes);
+
+      if (blacklist->is_array() && !blacklist->empty())
+        cache.blacklist = std::move(blacklist->at(0));
+      else
+        cache.blacklist = std::move(*blacklist);
+
+      last_update = std::chrono::steady_clock::now();
+      cache_initialized = true;
+      return cache;
     }
 
 
@@ -201,10 +282,22 @@ namespace lws
 
       static expect<response> handle(const request &req, db::storage disk)
       {
-
         auto user = open_account(req, std::move(disk));
         if (!user)
           return user.error();
+
+        std::vector<crypto::key_image> processed;
+
+        lws::db::account_address primary_address{req.address.view_public, req.address.spend_public};
+        cryptonote::account_public_address crypto_address;
+        crypto_address.m_view_public_key = primary_address.view_public;
+        crypto_address.m_spend_public_key = primary_address.spend_public;
+
+        std::string wallet_address = cryptonote::get_account_address_as_str(lws::config::network, false, crypto_address);
+
+        auto master_node_data = get_master_node_cache();
+        if (!master_node_data)
+          return master_node_data.error();
 
         response resp{};
 
@@ -242,8 +335,70 @@ namespace lws
 
           resp.total_received = rpc::safe_uint64(std::uint64_t(resp.total_received) + meta.amount);
 
-          
-          if (is_locked(output.get_value<MONERO_FIELD(db::output, unlock_time)>(), last->id))
+          const crypto::key_image locked_key_image =
+              output.get_value<MONERO_FIELD(db::output, locked_key_image)>();
+
+          auto it = std::find(processed.begin(), processed.end(), locked_key_image);
+          bool matched_master_node_lock = false;
+
+          if (!(it != processed.end()) && locked_key_image != crypto::key_image{})
+          {
+            for (const auto &item : (*master_node_data).blacklist["result"]["blacklist"])
+            {
+              std::string blacklist_key_image_str = item["key_image"];
+              crypto::key_image blacklist_key_image;
+
+              if (!epee::string_tools::hex_to_pod(blacklist_key_image_str, blacklist_key_image))
+              {
+                MWARNING("Failed to convert blacklist key image string to crypto::key_image");
+                continue;
+              }
+
+              if (locked_key_image == blacklist_key_image)
+              {
+                
+                resp.locked_funds = rpc::safe_uint64(std::uint64_t(resp.locked_funds) + std::uint64_t(item["amount"]));
+                processed.push_back(locked_key_image);
+                matched_master_node_lock = true;
+                break;
+              }
+            }
+
+            if (!matched_master_node_lock)
+            {
+              for (auto &mn_all : (*master_node_data).master_nodes["result"]["master_node_states"])
+              {
+                for (auto &mn_contrib : mn_all["contributors"])
+                {
+                  std::string address_str = mn_contrib["address"].get<std::string>();
+
+                  if (wallet_address != address_str)
+                    continue;
+
+                  for (auto const &contribution : mn_contrib["locked_contributions"])
+                  {
+                    crypto::key_image check_image;
+                    std::string key_image_str = contribution["key_image"].get<std::string>();
+                    if (tools::hex_to_type(key_image_str, check_image) && locked_key_image == check_image)
+                    {
+                      resp.locked_funds = rpc::safe_uint64(std::uint64_t(resp.locked_funds) + std::uint64_t(contribution["amount"]));
+                      processed.push_back(locked_key_image);
+                      matched_master_node_lock = true;
+                      break;
+                    }
+                  }
+
+                  if (matched_master_node_lock)
+                    break;
+                }
+
+                if (matched_master_node_lock)
+                  break;
+              }
+            }
+          }
+
+          if (is_locked(output.get_value<MONERO_FIELD(db::output, unlock_time)>(), user->first.scan_height))
           {
             resp.locked_funds = rpc::safe_uint64(std::uint64_t(resp.locked_funds) + meta.amount);
           }
