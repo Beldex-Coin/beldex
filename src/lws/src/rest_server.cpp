@@ -430,11 +430,19 @@ namespace lws
 
       static expect<response> handle(request req, db::storage disk)
       {
-        // using rpc_command = cryptonote::rpc::GET_BASE_FEE_ESTIMATE
-
         auto user = open_account(req.creds, std::move(disk));
         if (!user)
           return user.error();
+
+        lws::db::account_address primary_address{req.creds.address.view_public, req.creds.address.spend_public};
+        cryptonote::account_public_address crypto_address;
+        crypto_address.m_view_public_key = primary_address.view_public;
+        crypto_address.m_spend_public_key = primary_address.spend_public;
+        std::string wallet_address = cryptonote::get_account_address_as_str(lws::config::network, false, crypto_address);
+
+        auto master_node_data = get_master_node_cache();
+        if (!master_node_data)
+          return master_node_data.error();
 
         uint64_t grace_blocks = 10;
 
@@ -470,17 +478,77 @@ namespace lws
           const bool coinbase = (unpacked.first & lws::db::coinbase_output);
           if (out.spend_meta.amount < std::uint64_t(*req.dust_threshold) ||  (out.spend_meta.mixin_count < *req.mixin && !(coinbase == 1)))
             continue;
+          
+          bool should_skip_output = false;
+          const std::uint64_t value_l = out.spend_meta.amount;
+          const crypto::key_image locked_key_image = out.locked_key_image;
 
-          received += out.spend_meta.amount;
-          unspent.push_back({out, {}});
+          if (locked_key_image != crypto::key_image{})
+          {
+            for (const auto& item : (*master_node_data).blacklist["result"]["blacklist"])
+            {
+              std::string blacklist_key_image_str = item["key_image"];
+              crypto::key_image blacklist_key_image;
 
-          auto images = user->second.get_images(out.spend_meta.id);
-          if (!images)
-            return images.error();
+              if (!epee::string_tools::hex_to_pod(blacklist_key_image_str, blacklist_key_image))
+              {
+                std::cerr << "Failed to convert blacklist key image string to crypto::key_image." << std::endl;
+                continue;
+              }
 
-          unspent.back().second.reserve(images->count());
-          auto range = images->make_range<MONERO_FIELD(db::key_image, value)>();
-          std::copy(range.begin(), range.end(), std::back_inserter(unspent.back().second));
+              if (locked_key_image == blacklist_key_image && value_l == item["amount"].get<std::uint64_t>())
+              {
+                should_skip_output = true;
+                break;
+              }
+            }
+
+            if (!should_skip_output)
+            {
+              for (const auto& mn_all : (*master_node_data).master_nodes["result"]["master_node_states"])
+              {
+                if (should_skip_output)
+                  break;
+
+                for (const auto& mn_contrib : mn_all["contributors"])
+                {
+                  std::string address_str = mn_contrib["address"].get<std::string>();
+
+                  if (wallet_address != address_str)
+                    continue;
+
+                  for (const auto& contribution : mn_contrib["locked_contributions"])
+                  {
+                    crypto::key_image check_image;
+                    std::string key_image_str = contribution["key_image"].get<std::string>();
+                    std::uint64_t conAmount = contribution["amount"].get<std::uint64_t>();
+
+                    if (tools::hex_to_type(key_image_str, check_image) && locked_key_image == check_image && value_l == conAmount)
+                    {
+                      should_skip_output = true;
+                      break;
+                    }
+                  }
+                  if (should_skip_output)
+                    break;
+                }
+              }
+            }
+          }
+
+          if (!should_skip_output)
+          {
+            received += out.spend_meta.amount;
+            unspent.push_back({out, {}});
+
+            auto images = user->second.get_images(out.spend_meta.id);
+            if (!images)
+              return images.error();
+
+            unspent.back().second.reserve(images->count());
+            auto range = images->make_range<MONERO_FIELD(db::key_image, value)>();
+            std::copy(range.begin(), range.end(), std::back_inserter(unspent.back().second));
+          }
 
         }
 
