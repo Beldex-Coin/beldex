@@ -28,6 +28,7 @@
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 add_library(cryptonote_core
+  asset_history_utils.cpp
   blockchain.cpp
   cryptonote_core.cpp
   master_node_rules.cpp

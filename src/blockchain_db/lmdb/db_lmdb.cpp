@@ -65,6 +65,7 @@ enum struct lmdb_version
     v5,     // alt_block_data_1_t => alt_block_data_t: Alt block data has boolean for if the block was checkpointed
     v6,     // remigrate quorum_signature struct due to alignment change
     v7,     // rebuild the checkpoint table because v6 update in-place made MDB_LAST not give us the newest checkpoint
+    v8,     // add asset history table for custom asset registry state
     _count
 };
 
@@ -217,6 +218,7 @@ namespace
  * txpool_blob       txn hash     txn blob
  *
  * alt_blocks       block hash   {block data, block blob}
+ * assets           asset_id     [tx_extra_asset_descriptor_operation...]
  *
  * Note: where the data items are of uniform size, DUPFIXED tables have
  * been used to save space. In most of these cases, a dummy "zerokval"
@@ -255,8 +257,9 @@ const char* const LMDB_MASTER_NODE_DATA = "master_node_data";
 const char* const LMDB_MASTER_NODE_LATEST = "master_node_proofs"; // contains the latest data sent with a proof: time, aux keys, ip, ports
 
 const char* const LMDB_PROPERTIES = "properties";
+const char* const LMDB_ASSET_HISTORIES = "asset_histories";
 
-constexpr unsigned int LMDB_DB_COUNT = 23; // Should agree with the number of db's above
+constexpr unsigned int LMDB_DB_COUNT = 24; // Should agree with the number of db's above
 
 const char zerokey[8] = {0};
 const MDB_val zerokval = { sizeof(zerokey), (void *)zerokey };
@@ -399,6 +402,7 @@ void setup_rcursor(const MDB_dbi& db, MDB_cursor*& cursor, MDB_txn* txn, bool* r
 #define m_cur_alt_blocks	m_cursors->alt_blocks
 #define m_cur_hf_versions	m_cursors->hf_versions
 #define m_cur_properties	m_cursors->properties
+#define m_cur_asset_histories	m_cursors->asset_histories
 
 namespace cryptonote
 {
@@ -1528,6 +1532,7 @@ void BlockchainLMDB::open(const fs::path& filename, cryptonote::network_type net
   lmdb_db_open(txn, LMDB_MASTER_NODE_DATA, MDB_INTEGERKEY | MDB_CREATE, m_master_node_data, "Failed to open db handle for m_master_node_data");
 
   lmdb_db_open(txn, LMDB_MASTER_NODE_LATEST, MDB_CREATE, m_master_node_proofs, "Failed to open db handle for m_master_node_proofs");
+  lmdb_db_open(txn, LMDB_ASSET_HISTORIES, MDB_CREATE, m_asset_histories, "Failed to open db handle for m_asset_histories");
 
   lmdb_db_open(txn, LMDB_PROPERTIES, MDB_CREATE, m_properties, "Failed to open db handle for m_properties");
 
@@ -1548,6 +1553,7 @@ void BlockchainLMDB::open(const fs::path& filename, cryptonote::network_type net
   mdb_set_compare(txn, m_txpool_blob, compare_hash32);
   mdb_set_compare(txn, m_alt_blocks, compare_hash32);
   mdb_set_compare(txn, m_master_node_proofs, compare_hash32);
+  mdb_set_compare(txn, m_asset_histories, compare_hash32);
   mdb_set_compare(txn, m_properties, compare_string);
 
   if (!(mdb_flags & MDB_RDONLY))
@@ -1711,6 +1717,8 @@ void BlockchainLMDB::reset()
     throw0(DB_ERROR(lmdb_error("Failed to drop m_hf_versions: ", result).c_str()));
   if (auto result = mdb_drop(txn, m_master_node_data, 0))
     throw0(DB_ERROR(lmdb_error("Failed to drop m_master_node_data: ", result).c_str()));
+  if (auto result = mdb_drop(txn, m_asset_histories, 0))
+    throw0(DB_ERROR(lmdb_error("Failed to drop m_asset_histories: ", result).c_str()));
   if (auto result = mdb_drop(txn, m_properties, 0))
     throw0(DB_ERROR(lmdb_error("Failed to drop m_properties: ", result).c_str()));
 
@@ -6054,6 +6062,22 @@ void BlockchainLMDB::migrate_6_7()
     throw0(DB_ERROR(lmdb_error("Failed to update version for the db: ", result).c_str()));
 }
 
+void BlockchainLMDB::migrate_7_8()
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  MGINFO_YELLOW("Migrating blockchain from DB version 7 to 8 - adding asset history table");
+
+  mdb_txn_safe txn(false);
+  if (auto result = mdb_txn_begin(m_env, NULL, 0, txn))
+    throw0(DB_ERROR(lmdb_error("Failed to create a transaction for the db: ", result).c_str()));
+
+  lmdb_db_open(txn, LMDB_ASSET_HISTORIES, MDB_CREATE, m_asset_histories, "Failed to open db handle for m_asset_histories");
+  txn.commit();
+
+  if (int result = write_db_version(m_env, m_properties, (uint32_t)lmdb_version::v8))
+    throw0(DB_ERROR(lmdb_error("Failed to update version for the db: ", result).c_str()));
+}
+
 void BlockchainLMDB::migrate(const uint32_t oldversion, cryptonote::network_type nettype)
 {
   switch(oldversion) {
@@ -6071,6 +6095,8 @@ void BlockchainLMDB::migrate(const uint32_t oldversion, cryptonote::network_type
     migrate_5_6(); /* FALLTHRU */
   case 6:
     migrate_6_7(); /* FALLTHRU */
+  case 7:
+    migrate_7_8(); /* FALLTHRU */
   default:
     break;
   }
@@ -6313,6 +6339,123 @@ bool BlockchainLMDB::remove_master_node_proof(const crypto::public_key& pubkey)
   if (result)
     throw0(DB_ERROR(lmdb_error("Error remove master node proof", result)));
   return true;
+}
+
+void BlockchainLMDB::set_asset_history(const crypto::public_key& asset_id, const std::string& data)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_BLOCK_PREFIX(0);
+  mdb_txn_cursors *m_cursors = &m_wcursors;
+  setup_cursor(m_asset_histories, m_cur_asset_histories, *txn_ptr);
+
+  MDB_val key{sizeof(asset_id), (void*)&asset_id};
+  MDB_val_sized(blob, data);
+  int result = mdb_cursor_put(m_cur_asset_histories, &key, &blob, 0);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to write asset history to db transaction: ", result)));
+
+  TXN_BLOCK_POSTFIX_SUCCESS();
+}
+
+bool BlockchainLMDB::get_asset_history(const crypto::public_key& asset_id, std::string& data) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(asset_histories);
+
+  MDB_val k{sizeof(asset_id), (void*)&asset_id};
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_asset_histories, &k, &v, MDB_SET_KEY);
+  if (result != MDB_SUCCESS)
+  {
+    if (result == MDB_NOTFOUND)
+    {
+      return false;
+    }
+    else
+    {
+      throw0(DB_ERROR(lmdb_error("DB error attempting to get asset history", result).c_str()));
+    }
+  }
+
+  data.assign(reinterpret_cast<const char*>(v.mv_data), v.mv_size);
+  return true;
+}
+
+bool BlockchainLMDB::remove_asset_history(const crypto::public_key& asset_id)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_BLOCK_PREFIX(0);
+  mdb_txn_cursors *m_cursors = &m_wcursors;
+  setup_cursor(m_asset_histories, m_cur_asset_histories, *txn_ptr);
+
+  MDB_val key{sizeof(asset_id), (void*)&asset_id};
+  int result = mdb_cursor_get(m_cur_asset_histories, &key, nullptr, MDB_SET_KEY);
+  if (result == MDB_NOTFOUND)
+    return false;
+  if (result != MDB_SUCCESS)
+    throw0(DB_ERROR(lmdb_error("Error finding asset history to remove: ", result)));
+
+  result = mdb_cursor_del(m_cur_asset_histories, 0);
+  if (result != MDB_SUCCESS)
+    throw0(DB_ERROR(lmdb_error("Error removing asset history: ", result)));
+
+  TXN_BLOCK_POSTFIX_SUCCESS();
+  return true;
+}
+
+bool BlockchainLMDB::asset_exists(const crypto::public_key& asset_id) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(asset_histories)
+
+  MDB_val key{sizeof(asset_id), (void*)&asset_id};
+  MDB_val value{};
+  int result = mdb_cursor_get(m_cur_asset_histories, &key, &value, MDB_SET_KEY);
+  if (result == MDB_NOTFOUND)
+    return false;
+  if (result != MDB_SUCCESS)
+    throw0(DB_ERROR(lmdb_error("Error checking asset existence: ", result)));
+
+  return true;
+}
+
+std::vector<crypto::public_key> BlockchainLMDB::get_all_asset_ids() const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(asset_histories)
+
+  std::vector<crypto::public_key> result;
+  MDB_val key{}, value{};
+  MDB_cursor_op op = MDB_FIRST;
+  while (true)
+  {
+    int get_result = mdb_cursor_get(m_cur_asset_histories, &key, &value, op);
+    op = MDB_NEXT;
+
+    if (get_result == MDB_NOTFOUND)
+      break;
+    if (get_result != MDB_SUCCESS)
+      throw0(DB_ERROR(lmdb_error("Failed to enumerate assets: ", get_result)));
+    if (key.mv_size != sizeof(crypto::public_key))
+      throw0(DB_ERROR("Invalid key size in assets table"));
+
+    result.push_back(*static_cast<const crypto::public_key*>(key.mv_data));
+  }
+
+  return result;
 }
 
 

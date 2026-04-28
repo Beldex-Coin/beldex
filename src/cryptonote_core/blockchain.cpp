@@ -32,6 +32,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <limits>
+#include <string_view>
+#include <unordered_map>
 #include <oxenc/endian.h>
 #include <fmt/core.h>
 
@@ -41,7 +44,9 @@
 #include "common/median.h"
 #include "cryptonote_basic/cryptonote_basic.h"
 #include "cryptonote_basic/cryptonote_basic_impl.h"
+#include "cryptonote_basic/asset_descriptor_operation_utils.h"
 #include "cryptonote_basic/hardfork.h"
+#include "cryptonote_core/asset_history_utils.h"
 #include "cryptonote_core/cryptonote_tx_utils.h"
 #include "ringct/rctTypes.h"
 #include "tx_pool.h"
@@ -741,6 +746,13 @@ block Blockchain::pop_block_from_blockchain()
   {
     LOG_ERROR("Error popping block from blockchain, throwing!");
     throw;
+  }
+
+  {
+    std::string rewind_reason;
+    CHECK_AND_ASSERT_THROW_MES(
+        rewind_assets_from_transactions(*m_db, popped_txs, &rewind_reason),
+        "Failed to rewind asset history while popping block: " + rewind_reason);
   }
 
   m_bns_db.block_detach(*this, m_db->height());
@@ -3719,6 +3731,19 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     }
   }
 
+  // Asset consensus rules must pass in mempool and block-context tx input validation.
+  {
+    std::string reason;
+    if (!validate_tx_asset_operations_against_db(*m_db, tx, reason))
+    {
+      MERROR_VER("TX " << get_transaction_hash(tx) << " failed asset consensus validation: " << reason);
+      tvc.m_invalid_input = true;
+      tvc.m_verifivation_failed = true;
+      tvc.m_verbose_error = std::move(reason);
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -4322,6 +4347,7 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
   size_t cumulative_block_weight = coinbase_weight;
 
   std::vector<std::pair<transaction, blobdata>> txs;
+  std::unordered_map<crypto::public_key, asset_consensus_state> pending_asset_states;
   key_images_container keys;
 
   uint64_t fee_summary = 0;
@@ -4427,6 +4453,57 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
     }
 #endif
     t_checktx += std::chrono::steady_clock::now() - cc;
+
+    // Gather and validate asset descriptor operations carried in tx.extra.
+    {
+      size_t op_index = 0;
+      tx_extra_asset_descriptor_operation op{};
+      while (cryptonote::get_asset_descriptor_operation_from_tx_extra(tx.extra, op, op_index++))
+      {
+        std::string op_validation_reason;
+        if (!validate_asset_descriptor_operation(op, op_validation_reason))
+        {
+          MERROR_VER("Invalid asset descriptor operation in tx " << tx_id << ": " << op_validation_reason);
+          bvc.m_verifivation_failed = true;
+          return_tx_to_pool(txs);
+          return false;
+        }
+
+        if (tx.type != txtype::deploy_new_asset)
+        {
+          MERROR_VER("Asset operation found in tx type " << tx.type << " but only deploy_new_asset is allowed");
+          bvc.m_verifivation_failed = true;
+          return_tx_to_pool(txs);
+          return false;
+        }
+
+        crypto::public_key const asset_id = cryptonote::get_or_calculate_asset_id(op);
+
+        auto [state_it, inserted] = pending_asset_states.try_emplace(asset_id);
+        if (inserted)
+        {
+          std::string load_reason;
+          if (!load_asset_state_from_history(*m_db, asset_id, state_it->second, load_reason))
+          {
+            MERROR_VER("Failed to load existing asset state for tx " << tx_id << ": " << load_reason);
+            bvc.m_verifivation_failed = true;
+            return_tx_to_pool(txs);
+            return false;
+          }
+        }
+
+        std::string state_reason;
+        if (!apply_asset_operation_to_state(asset_id, op, state_it->second, state_reason))
+        {
+          MERROR_VER("Invalid asset operation state transition in tx " << tx_id << ": " << state_reason);
+          bvc.m_verifivation_failed = true;
+          return_tx_to_pool(txs);
+          return false;
+        }
+
+      }
+    }
+
     fee_summary += fee;
     cumulative_block_weight += tx_weight;
   }
@@ -4550,6 +4627,22 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
   if (!update_next_cumulative_weight_limit())
   {
     MGINFO_RED("Failed to update next cumulative weight limit");
+    return false;
+  }
+
+  // Persist validated asset operations once block/tx acceptance has succeeded.
+  try
+  {
+    std::string append_reason;
+    CHECK_AND_ASSERT_MES(
+        append_assets_from_transactions(*m_db, only_txs, &append_reason),
+        false,
+        "Failed to persist asset operation(s): " << append_reason);
+  }
+  catch (const std::exception& e)
+  {
+    MGINFO_RED("Failed to persist asset operation(s): " << e.what());
+    bvc.m_verifivation_failed = true;
     return false;
   }
 
