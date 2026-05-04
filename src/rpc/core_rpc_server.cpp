@@ -705,6 +705,48 @@ namespace cryptonote::rpc {
       void operator()(const tx_extra_merge_mining_tag& x) { set("mm_depth", x.depth); set("mm_root", x.merkle_root); }
       void operator()(const tx_extra_additional_pub_keys& x) { set("additional_pubkeys", x.data); }
       void operator()(const tx_extra_burn& x) { set("burn_amount", x.amount); }
+      static const char* asset_op_type_name(asset_descriptor_operation_type type) {
+        switch (type)
+        {
+          case asset_descriptor_operation_type::register_asset: return "register";
+          case asset_descriptor_operation_type::emit_asset: return "emit";
+          case asset_descriptor_operation_type::update_asset: return "update";
+          case asset_descriptor_operation_type::public_burn: return "public_burn";
+          case asset_descriptor_operation_type::undefined:
+          case asset_descriptor_operation_type::_count: return "undefined";
+        }
+        return "unknown";
+      }
+      void operator()(const tx_extra_asset_descriptor_operation& x) {
+        json ado{
+          {"version", x.version},
+          {"operation_type", asset_op_type_name(x.operation_type)},
+          {"fields", x.fields}
+        };
+        if (x.field_is_set(asset_field_asset_id))
+          ado["asset_id"] = tools::type_to_hex(x.asset_id);
+        if (x.field_is_set(asset_field_amount_commitment))
+          ado["amount_commitment"] = tools::type_to_hex(x.amount_commitment);
+        if (x.field_is_set(asset_field_amount))
+          ado["amount"] = x.amount;
+        if (x.field_is_set(asset_field_asset_id_salt))
+          ado["asset_id_salt"] = x.asset_id_salt;
+        if (x.field_is_set(asset_field_descriptor))
+        {
+          ado["descriptor"] = json{
+            {"version", x.descriptor.version},
+            {"ticker", x.descriptor.ticker},
+            {"full_name", x.descriptor.full_name},
+            {"meta_info", x.descriptor.meta_info},
+            {"owner", tools::type_to_hex(x.descriptor.owner)},
+            {"total_max_supply", x.descriptor.total_max_supply},
+            {"current_supply", x.descriptor.current_supply},
+            {"decimal_point", x.descriptor.decimal_point},
+            {"hidden_supply", x.descriptor.hidden_supply}
+          };
+        }
+        set("asset", std::move(ado));
+      }
       void operator()(const tx_extra_master_node_winner& x) { set("mn_winner", x.m_master_node_key); }
       void operator()(const tx_extra_master_node_pubkey& x) { set("mn_pubkey", x.m_master_node_key); }
       void operator()(const tx_extra_security_signature& x) { set("security_sig", tools::type_to_hex(x.m_security_signature)); }

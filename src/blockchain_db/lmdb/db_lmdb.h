@@ -80,6 +80,7 @@ struct mdb_txn_cursors
   MDB_cursor *master_node_proofs;
   MDB_cursor *output_blacklist;
   MDB_cursor *properties;
+  MDB_cursor *asset_histories;
 };
 
 struct mdb_rflags
@@ -107,6 +108,7 @@ struct mdb_rflags
   bool m_rf_master_node_data;
   bool m_rf_master_node_proofs;
   bool m_rf_properties;
+  bool m_rf_asset_histories;
 };
 
 struct mdb_threadinfo
@@ -429,6 +431,7 @@ private:
   void migrate_4_5(cryptonote::network_type nettype);
   void migrate_5_6();
   void migrate_6_7();
+  void migrate_7_8();
 
   void cleanup_batch();
 
@@ -441,6 +444,11 @@ private:
   void set_master_node_proof(const crypto::public_key& pubkey, const master_nodes::proof_info& proof) override;
   std::unordered_map<crypto::public_key, master_nodes::proof_info> get_all_master_node_proofs() const override;
   bool remove_master_node_proof(const crypto::public_key& pubkey) override;
+  void set_asset_history(const crypto::public_key &asset_id, const std::string &data) override;
+  bool get_asset_history(const crypto::public_key &asset_id, std::string &data) const override;
+  bool remove_asset_history(const crypto::public_key& asset_id) override;
+  bool asset_exists(const crypto::public_key &asset_id) const override;
+  std::vector<crypto::public_key> get_all_asset_ids() const override;
 
 private:
   template <typename T,
@@ -480,6 +488,7 @@ private:
 
   MDB_dbi m_master_node_data;
   MDB_dbi m_master_node_proofs;
+  MDB_dbi m_asset_histories;
 
   MDB_dbi m_properties;
 
