@@ -63,6 +63,7 @@ constexpr uint8_t
   TX_EXTRA_TAG_MASTER_NODE_STATE_CHANGE  = 0x78,
   TX_EXTRA_TAG_BURN                       = 0x79,
   TX_EXTRA_TAG_BELDEX_NAME_SYSTEM           = 0x7A,
+  TX_EXTRA_TAG_ASSET_DESCRIPTOR_OPERATION = 0x7B,
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
@@ -545,6 +546,82 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Initial protocol-layer scaffold for Zano-style custom assets.
+  // This introduces the wire representation in tx.extra; construction and
+  // consensus rules will be added in follow-up changes.
+  struct asset_descriptor_base
+  {
+    uint8_t version = 1;
+    uint64_t total_max_supply = 0;
+    uint64_t current_supply = 0;
+    uint8_t decimal_point = 0;
+    std::string ticker;
+    std::string full_name;
+    std::string meta_info;
+    crypto::public_key owner = crypto::null_pkey;
+    bool hidden_supply = false;
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      FIELD(total_max_supply)
+      FIELD(current_supply)
+      FIELD(decimal_point)
+      FIELD(ticker)
+      FIELD(full_name)
+      FIELD(meta_info)
+      FIELD(owner)
+      FIELD(hidden_supply)
+    END_SERIALIZE()
+  };
+
+  enum class asset_descriptor_operation_type : uint8_t
+  {
+    undefined = 0,
+    register_asset = 1,
+    emit_asset = 2,
+    update_asset = 3,
+    public_burn = 4,
+    _count
+  };
+
+  enum asset_descriptor_operation_field : uint8_t
+  {
+    asset_field_none = 0,
+    asset_field_amount_commitment = 1 << 0,
+    asset_field_asset_id = 1 << 1,
+    asset_field_descriptor = 1 << 2,
+    asset_field_amount = 1 << 3,
+    asset_field_asset_id_salt = 1 << 4,
+  };
+
+  struct tx_extra_asset_descriptor_operation
+  {
+    uint8_t version = 1;
+    asset_descriptor_operation_type operation_type = asset_descriptor_operation_type::undefined;
+    uint8_t fields = asset_field_none;
+    crypto::public_key amount_commitment = crypto::null_pkey;
+    crypto::public_key asset_id = crypto::null_pkey;
+    asset_descriptor_base descriptor{};
+    uint64_t amount = 0;
+    uint32_t asset_id_salt = 0;
+
+    bool field_is_set(asset_descriptor_operation_field field) const
+    {
+      return (fields & static_cast<uint8_t>(field)) != 0;
+    }
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      ENUM_FIELD(operation_type, operation_type < asset_descriptor_operation_type::_count)
+      FIELD(fields)
+      if (field_is_set(asset_field_amount_commitment)) FIELD(amount_commitment)
+      if (field_is_set(asset_field_asset_id)) FIELD(asset_id)
+      if (field_is_set(asset_field_descriptor)) FIELD(descriptor)
+      if (field_is_set(asset_field_amount)) FIELD(amount)
+      if (field_is_set(asset_field_asset_id_salt)) FIELD(asset_id_salt)
+    END_SERIALIZE()
+  };
+
   struct tx_extra_beldex_name_system
   {
     uint8_t                 version = 0;
@@ -642,6 +719,7 @@ namespace cryptonote
       tx_extra_tx_key_image_proofs,
       tx_extra_tx_key_image_unlock,
       tx_extra_burn,
+      tx_extra_asset_descriptor_operation,
       tx_extra_merge_mining_tag,
       tx_extra_mysterious_minergate,
       tx_extra_padding,
@@ -668,5 +746,6 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_secret_key,               cryptonote:
 BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_proofs,         cryptonote::TX_EXTRA_TAG_TX_KEY_IMAGE_PROOFS);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_unlock,         cryptonote::TX_EXTRA_TAG_TX_KEY_IMAGE_UNLOCK);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_burn,                        cryptonote::TX_EXTRA_TAG_BURN);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_asset_descriptor_operation,  cryptonote::TX_EXTRA_TAG_ASSET_DESCRIPTOR_OPERATION);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_beldex_name_system,            cryptonote::TX_EXTRA_TAG_BELDEX_NAME_SYSTEM);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_security_signature,            cryptonote::TX_EXTRA_TAG_SECURITY_SIGNATURE);

@@ -955,6 +955,19 @@ namespace cryptonote
     return result;
   }
   //---------------------------------------------------------------
+  bool add_asset_descriptor_operation_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_asset_descriptor_operation& op)
+  {
+    tx_extra_field field = op;
+    bool result = add_tx_extra_field_to_tx_extra(tx_extra, field);
+    CHECK_AND_NO_ASSERT_MES_L1(result, false, "failed to serialize tx extra asset descriptor operation");
+    return result;
+  }
+  //---------------------------------------------------------------
+  bool get_asset_descriptor_operation_from_tx_extra(const std::vector<uint8_t>& tx_extra, tx_extra_asset_descriptor_operation& op, size_t skip)
+  {
+    return get_field_from_tx_extra(tx_extra, op, skip);
+  }
+  //---------------------------------------------------------------
   bool get_inputs_money_amount(const transaction& tx, uint64_t& money)
   {
     money = 0;

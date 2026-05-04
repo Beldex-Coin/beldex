@@ -1823,6 +1823,12 @@ public:
   /// found, false if not found.
   virtual bool remove_master_node_proof(const crypto::public_key &pubkey) = 0;
 
+  virtual void set_asset_history(const crypto::public_key &asset_id, const std::string &data) = 0;
+  virtual bool get_asset_history(const crypto::public_key &asset_id, std::string &data) const = 0;
+  virtual bool remove_asset_history(const crypto::public_key& asset_id) = 0;
+  virtual bool asset_exists(const crypto::public_key &asset_id) const = 0;
+  virtual std::vector<crypto::public_key> get_all_asset_ids() const = 0;
+
   // This function accepts an empty timestamps/difficulties array to fill, or
   // a prior timestamps/difficulties array that was filled by a previous call to
   // this same function in which case it will optimally insert and remove the
