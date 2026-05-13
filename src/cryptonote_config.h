@@ -56,6 +56,42 @@ inline constexpr uint64_t DEFAULT_TX_SPENDABLE_AGE_V17         = 2;
 inline constexpr uint64_t TX_OUTPUT_DECOYS                     = 9;
 inline constexpr size_t   TX_BULLETPROOF_MAX_OUTPUTS           = 16;
 inline constexpr size_t   TX_BULLETPROOF_PLUS_MAX_OUTPUTS      = 16;
+
+// ── Confidential asset ring design (HF21+) ─────────────────────────────────
+//
+// Zarcanum inputs (spending a tx_out_zarcanum) use the SAME output_amounts[0]
+// pool as native BDX RingCT outputs for decoy selection.  Both BDX RCT outputs
+// (txout_to_key) and confidential asset outputs (tx_out_zarcanum) store
+// tx_out.amount == 0 on-chain, so they live in the same LMDB bucket.
+//
+// The CLSAG ring is 1-layer (key only):
+//   - BDX decoy  → ring member pubkey = txout_to_key.key
+//   - ZC decoy   → ring member pubkey = tx_out_zarcanum.stealth_address
+//   - ZC real    → ring member pubkey = tx_out_zarcanum.stealth_address
+//
+// Amount balance and asset integrity are proven separately:
+//   - Balance:   linear_composition_proof  (proves tx balances in G and X)
+//   - Asset:     BGE surjection proof       (proves output asset is real)
+//   - Range:     BulletproofPlus            (proves amounts in [0, 2^64))
+//
+// Result: no bootstrapping problem — day-1 asset transfers can draw decoys
+// from the existing BDX output pool (millions of outputs available).
+inline constexpr size_t ASSET_RING_SIZE = TX_OUTPUT_DECOYS; // same as BDX
+
+// ── Mandatory fan-out for deploy / emit transactions (HF21+) ───────────────
+//
+// Every deploy_new_asset or emit_asset transaction MUST produce at least
+// MIN_ASSET_EMISSION_OUTPUTS tx_out_zarcanum outputs.
+//
+// Why: even though the ring draws from the shared BDX pool, we want
+// dedicated ZC ring members for future asset-specific BGE proofs.
+// The wallet auto-generates self-send outputs (to its own subaddresses)
+// to reach this minimum whenever the user's destinations fall short.
+//
+// Value = TX_OUTPUT_DECOYS + 1 = 10: guarantees a full ring of 9 decoys
+// + 1 real is always achievable using only prior ZC outputs of the same
+// asset, independent of the BDX pool.
+inline constexpr size_t MIN_ASSET_EMISSION_OUTPUTS = TX_OUTPUT_DECOYS + 1; // 10
 inline constexpr uint64_t PUBLIC_ADDRESS_TEXTBLOB_VER          = 0;
 
 inline constexpr uint64_t FINAL_SUBSIDY_PER_MINUTE             = 500000000; // 3 * pow(10, 7)
@@ -204,6 +240,7 @@ enum class hf : uint8_t
     hf18_bns,
     hf19_enhance_bns, // provided EVM address in BNS
     hf20_bulletproof_plus,
+    hf21_confidential_assets, // Confidential custom asset transfers
 
     _next,
     none = 0
@@ -235,6 +272,7 @@ namespace feature {
   constexpr auto CLSAG                        = hf::hf15_flash;
   constexpr auto PROOF_BTENC                  = hf::hf18_bns;
   constexpr auto BULLETPROOF_PLUS             = hf::hf20_bulletproof_plus;
+  constexpr auto CONFIDENTIAL_ASSETS          = hf::hf21_confidential_assets;
 }
 
 enum network_type : uint8_t
