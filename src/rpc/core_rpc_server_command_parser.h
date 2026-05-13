@@ -43,6 +43,8 @@ namespace cryptonote::rpc {
   void parse_request(BNS_RESOLVE& resolve, rpc_input in);
   void parse_request(BNS_LOOKUP& lookup, rpc_input in);
   void parse_request(BNS_VALUE_DECRYPT& value_decrypt, rpc_input in);
+  void parse_request(GET_ASSET_INFO& asset_info, rpc_input in);
+  void parse_request(GET_ASSET_LIST& asset_list, rpc_input in);
   void parse_request(OUT_PEERS& out_peers, rpc_input in);
   void parse_request(GET_OUTPUT_DISTRIBUTION& get_output_distribution, rpc_input in);
   void parse_request(POP_BLOCKS& pop_blocks, rpc_input in);

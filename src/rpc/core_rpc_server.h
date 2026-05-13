@@ -198,6 +198,9 @@ namespace cryptonote::rpc {
     void invoke(BNS_LOOKUP& lookup, rpc_context context);
     void invoke(BNS_VALUE_DECRYPT& value_decrypt, rpc_context context);
     void invoke(SET_BOOTSTRAP_DAEMON& set_bootstrap, rpc_context context);
+    // HF21 confidential asset endpoints
+    void invoke(GET_ASSET_INFO& req_resp, rpc_context context);
+    void invoke(GET_ASSET_LIST& req_resp, rpc_context context);
 
 
 

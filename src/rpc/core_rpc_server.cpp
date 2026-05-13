@@ -67,6 +67,7 @@
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_basic/account.h"
 #include "cryptonote_basic/cryptonote_basic_impl.h"
+#include "cryptonote_core/asset_history_utils.h"
 #include "cryptonote_core/uptime_proof.h"
 #include "net/parse.h"
 #include "crypto/hash.h"
@@ -3728,4 +3729,60 @@ namespace cryptonote::rpc {
     value_decrypt.response["value"] = value.to_readable_value(nettype(), type);
     value_decrypt.response["status"] = STATUS_OK;
   }
+
+  // ── HF21 Confidential Asset RPC handlers ─────────────────────────────────
+
+  void core_rpc_server::invoke(GET_ASSET_INFO& req_resp, rpc_context /*context*/)
+  {
+    auto& req  = req_resp.request;
+    auto& resp = req_resp.response;
+
+    if (req.asset_id.size() != 64 || !oxenc::is_hex(req.asset_id))
+      throw rpc_error{ERROR_WRONG_PARAM, "asset_id must be a 64-character hex string"};
+
+    crypto::public_key asset_id{};
+    if (!tools::hex_to_type(req.asset_id, asset_id))
+      throw rpc_error{ERROR_WRONG_PARAM, "Failed to parse asset_id"};
+
+    auto& db = m_core.get_blockchain_storage().get_db();
+    if (!db.asset_exists(asset_id))
+      throw rpc_error{ERROR_WRONG_PARAM, "Asset not found: " + req.asset_id};
+
+    std::string reason;
+    cryptonote::asset_consensus_state state{};
+    if (!cryptonote::load_asset_state_from_history(db, asset_id, state, reason))
+      throw rpc_error{ERROR_INTERNAL, "Failed to load asset state: " + reason};
+
+    resp["asset_id"]         = req.asset_id;
+    resp["ticker"]           = state.descriptor.ticker;
+    resp["full_name"]        = state.descriptor.full_name;
+    resp["owner"]            = tools::type_to_hex(state.descriptor.owner);
+    resp["current_supply"]   = state.current_supply;
+    resp["total_max_supply"] = state.total_max_supply;
+    resp["decimal_point"]    = state.descriptor.decimal_point;
+    resp["hidden_supply"]    = state.descriptor.hidden_supply;
+    resp["meta_info"]        = state.descriptor.meta_info;
+    resp["status"]           = STATUS_OK;
+  }
+
+  void core_rpc_server::invoke(GET_ASSET_LIST& req_resp, rpc_context /*context*/)
+  {
+    auto& req  = req_resp.request;
+    auto& resp = req_resp.response;
+
+    auto& db = m_core.get_blockchain_storage().get_db();
+    const auto all_ids = db.get_all_asset_ids();
+
+    const uint64_t offset = req.offset;
+    const uint64_t count  = req.count;
+
+    nlohmann::json asset_ids = nlohmann::json::array();
+    for (uint64_t i = offset; i < all_ids.size() && i < offset + count; ++i)
+      asset_ids.push_back(tools::type_to_hex(all_ids[i]));
+
+    resp["asset_ids"]    = std::move(asset_ids);
+    resp["total_count"]  = all_ids.size();
+    resp["status"]       = STATUS_OK;
+  }
+
 }  // namespace cryptonote::rpc
