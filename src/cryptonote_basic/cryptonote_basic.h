@@ -92,6 +92,30 @@ namespace cryptonote
     crypto::public_key key;
   };
 
+  // Confidential asset output (HF21+).
+  // Carries a blinded asset ID and a Pedersen amount commitment; the plaintext
+  // amount and asset identity are only recoverable by the recipient.
+  struct tx_out_zarcanum
+  {
+    crypto::public_key stealth_address   = crypto::null_pkey; // one-time stealth address
+    crypto::public_key concealing_point  = crypto::null_pkey; // Q = q*G; receiver uses for key recovery
+    crypto::public_key amount_commitment = crypto::null_pkey; // C = amount*asset_id + mask*G
+    crypto::public_key blinded_asset_id  = crypto::null_pkey; // T = asset_id + r*X
+    uint64_t           encrypted_amount  = 0;                 // amount XOR H_s("enc"||derivation||idx)
+    uint8_t            mix_attr          = 0;
+    uint8_t            version           = 0;
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(stealth_address)
+      FIELD(concealing_point)
+      FIELD(amount_commitment)
+      FIELD(blinded_asset_id)
+      VARINT_FIELD(encrypted_amount)
+      FIELD(mix_attr)
+      FIELD(version)
+    END_SERIALIZE()
+  };
+
 
   /* inputs */
 
@@ -148,7 +172,7 @@ namespace cryptonote
 
   using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key>;
 
-  using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key>;
+  using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key, tx_out_zarcanum>;
 
   //typedef std::pair<uint64_t, txout> out_t;
   struct tx_out
@@ -614,5 +638,6 @@ VARIANT_TAG(cryptonote::txin_to_key, "key", 0x2);
 VARIANT_TAG(cryptonote::txout_to_script, "script", 0x0);
 VARIANT_TAG(cryptonote::txout_to_scripthash, "scripthash", 0x1);
 VARIANT_TAG(cryptonote::txout_to_key, "key", 0x2);
+VARIANT_TAG(cryptonote::tx_out_zarcanum, "zarcanum", 0x3);
 VARIANT_TAG(cryptonote::transaction, "tx", 0xcc);
 VARIANT_TAG(cryptonote::block, "block", 0xbb);

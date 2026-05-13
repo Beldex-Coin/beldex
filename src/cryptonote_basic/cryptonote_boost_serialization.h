@@ -109,6 +109,19 @@ namespace boost
     a & x.hash;
   }
 
+  // HF21: confidential asset output
+  template <class Archive>
+  inline void serialize(Archive &a, cryptonote::tx_out_zarcanum &x, const boost::serialization::version_type ver)
+  {
+    a & x.stealth_address;
+    a & x.concealing_point;
+    a & x.amount_commitment;
+    a & x.blinded_asset_id;
+    a & x.encrypted_amount;
+    a & x.mix_attr;
+    a & x.version;
+  }
+
   template <class Archive>
   inline void serialize(Archive &a, cryptonote::txin_gen &x, const boost::serialization::version_type ver)
   {
