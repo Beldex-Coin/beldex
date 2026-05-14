@@ -6,7 +6,9 @@
 #include <vector>
 
 #include "blockchain_db/blockchain_db.h"
+#include "cryptonote_basic/cryptonote_basic.h"
 #include "cryptonote_basic/tx_extra.h"
+#include "cryptonote_config.h"
 
 namespace cryptonote
 {
@@ -28,6 +30,9 @@ bool rewind_assets_from_transactions(BlockchainDB& db, const std::vector<transac
 bool validate_asset_descriptor_operation(const tx_extra_asset_descriptor_operation& op, std::string& reason);
 bool apply_asset_operation_to_state(const crypto::public_key& asset_id, const tx_extra_asset_descriptor_operation& op, asset_consensus_state& state, std::string& reason);
 bool load_asset_state_from_history(BlockchainDB& db, const crypto::public_key& asset_id, asset_consensus_state& state, std::string& reason);
-bool validate_tx_asset_operations_against_db(BlockchainDB& db, const transaction& tx, std::string& reason);
+// hf_version gates the HF21 fan-out rule (deploy/emit must produce
+// >= MIN_ASSET_EMISSION_OUTPUTS tx_out_zarcanum outputs).
+bool validate_tx_asset_operations_against_db(BlockchainDB& db, const transaction& tx,
+                                              std::string& reason, hf hf_version = hf::none);
 
 } // namespace cryptonote

@@ -1174,6 +1174,7 @@ uint64_t BlockchainLMDB::add_output(const crypto::hash& tx_hash,
     throw0(DB_ERROR(lmdb_error("Failed to get output amount in db transaction: ", result).c_str()));
   else
     ok.amount_index = 0;
+  ok.output_id = m_num_outputs;
   if (is_zarcanum)
   {
     // Store stealth_address as the lookup key; commitment comes from the output itself.

@@ -10,6 +10,7 @@
 
 #include "cryptonote_basic/asset_descriptor_operation_utils.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "cryptonote_config.h"
 #include "serialization/binary_utils.h"
 #include "serialization/string.h"
 
@@ -21,6 +22,16 @@ namespace
 void set_reason(std::string* reason, std::string value)
 {
   if (reason) *reason = std::move(value);
+}
+
+// Count tx_out_zarcanum outputs in a transaction.
+size_t count_zarcanum_outputs(const transaction& tx)
+{
+  size_t n = 0;
+  for (const auto& out : tx.vout)
+    if (std::holds_alternative<tx_out_zarcanum>(out.target))
+      ++n;
+  return n;
 }
 }
 
@@ -291,14 +302,24 @@ bool load_asset_state_from_history(
 bool validate_tx_asset_operations_against_db(
     BlockchainDB& db,
     const transaction& tx,
-    std::string& reason)
+    std::string& reason,
+    hf hf_version)
 {
   size_t op_index = 0;
   tx_extra_asset_descriptor_operation op{};
   std::unordered_map<crypto::public_key, asset_consensus_state> states;
+  bool saw_asset_op = false;
+  crypto::public_key tx_asset_id = crypto::null_pkey;
+
+  // Count zarcanum outputs once — checked per emit/register op below.
+  const size_t zc_out_count = (hf_version >= feature::CONFIDENTIAL_ASSETS)
+                              ? count_zarcanum_outputs(tx)
+                              : 0;
 
   while (get_asset_descriptor_operation_from_tx_extra(tx.extra, op, op_index++))
   {
+    saw_asset_op = true;
+
     if (tx.type != txtype::deploy_new_asset)
     {
       reason = "asset descriptor operation is only allowed in deploy_new_asset transactions";
@@ -312,7 +333,40 @@ bool validate_tx_asset_operations_against_db(
       return false;
     }
 
+    // ── Mandatory fan-out: deploy and emit must create >= MIN_ASSET_EMISSION_OUTPUTS
+    // tx_out_zarcanum outputs so that ring members exist from the first block.
+    // The wallet auto-generates self-sends to reach this minimum.
+    if (hf_version >= feature::CONFIDENTIAL_ASSETS)
+    {
+      const bool is_emit = (op.operation_type == asset_descriptor_operation_type::emit_asset);
+      const bool is_deploy_with_supply =
+          (op.operation_type == asset_descriptor_operation_type::register_asset) &&
+          op.field_is_set(asset_field_descriptor) &&
+          op.descriptor.current_supply > 0;
+
+      if (is_emit || is_deploy_with_supply)
+      {
+        if (zc_out_count < MIN_ASSET_EMISSION_OUTPUTS)
+        {
+          reason = "deploy/emit tx must have at least " +
+                   std::to_string(MIN_ASSET_EMISSION_OUTPUTS) +
+                   " tx_out_zarcanum outputs (got " +
+                   std::to_string(zc_out_count) +
+                   "); wallet must auto-generate self-sends to reach this minimum";
+          return false;
+        }
+      }
+    }
+
     const crypto::public_key asset_id = get_or_calculate_asset_id(op);
+    if (tx_asset_id == crypto::null_pkey)
+      tx_asset_id = asset_id;
+    else if (tx_asset_id != asset_id)
+    {
+      reason = "asset descriptor operations in a single transaction must reference exactly one asset_id";
+      return false;
+    }
+
     auto [it, inserted] = states.try_emplace(asset_id);
     if (inserted && !load_asset_state_from_history(db, asset_id, it->second, reason))
       return false;
@@ -322,6 +376,12 @@ bool validate_tx_asset_operations_against_db(
       reason = "asset state transition rejected: " + op_reason;
       return false;
     }
+  }
+
+  if (tx.type == txtype::deploy_new_asset && !saw_asset_op)
+  {
+    reason = "deploy_new_asset transaction must include at least one asset descriptor operation";
+    return false;
   }
 
   return true;
