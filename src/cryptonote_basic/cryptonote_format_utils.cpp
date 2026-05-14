@@ -45,6 +45,8 @@
 #include "cryptonote_config.h"
 #include "crypto/crypto.h"
 #include "crypto/hash.h"
+#include "crypto/keccak.h"
+#include "ringct/rctOps.h"
 #include "ringct/rctSigs.h"
 #include "cryptonote_basic/verification_context.h"
 #include "cryptonote_core/master_node_voting.h"
@@ -139,6 +141,10 @@ namespace cryptonote
       }
       for (size_t n = 0; n < tx.rct_signatures.outPk.size(); ++n)
       {
+        // tx_out_zarcanum outputs carry their own amount commitment; they do not
+        // contribute to the legacy outPk vector, so skip them here.
+        if (std::holds_alternative<tx_out_zarcanum>(tx.vout[n].target))
+          continue;
         if (!std::holds_alternative<txout_to_key>(tx.vout[n].target))
         {
           LOG_PRINT_L1("Unsupported output type in tx " << get_transaction_hash(tx));
@@ -1012,6 +1018,22 @@ namespace cryptonote
 
     for(const tx_out& out: tx.vout)
     {
+      if (std::holds_alternative<tx_out_zarcanum>(out.target))
+      {
+        // Confidential asset output (HF21+): stealth_address must be a valid key.
+        const auto& zout = var::get<tx_out_zarcanum>(out.target);
+        CHECK_AND_ASSERT_MES(check_key(zout.stealth_address), false,
+          "invalid stealth_address in tx_out_zarcanum, tx id=" << get_transaction_hash(tx));
+        CHECK_AND_ASSERT_MES(check_key(zout.blinded_asset_id), false,
+          "invalid blinded_asset_id in tx_out_zarcanum, tx id=" << get_transaction_hash(tx));
+        CHECK_AND_ASSERT_MES(check_key(zout.amount_commitment), false,
+          "invalid amount_commitment in tx_out_zarcanum, tx id=" << get_transaction_hash(tx));
+        // Plaintext amount must be 0 — the real amount is hidden in the commitment.
+        CHECK_AND_ASSERT_MES(out.amount == 0, false,
+          "non-zero plaintext amount in tx_out_zarcanum, tx id=" << get_transaction_hash(tx));
+        continue;
+      }
+
       CHECK_AND_ASSERT_MES(std::holds_alternative<txout_to_key>(out.target), false, "wrong variant type: "
         << tools::type_name(tools::variant_type(out.target)) << ", expected " << tools::type_name<txout_to_key>()
         << ", in transaction id=" << get_transaction_hash(tx));
@@ -1122,13 +1144,38 @@ namespace cryptonote
     return lookup_acc_outs(acc, tx, tx_pub_key, additional_tx_pub_keys, outs, money_transfered);
   }
   //---------------------------------------------------------------
+  // Check whether a tx_out_zarcanum output belongs to this account by comparing
+  // the expected stealth address derived from the shared secret.
+  bool is_out_to_acc(const account_keys& acc, const tx_out_zarcanum& zout,
+                     const crypto::public_key& tx_pub_key, size_t output_index)
+  {
+    crypto::key_derivation derivation;
+    if (!acc.get_device().generate_key_derivation(tx_pub_key, acc.m_view_secret_key, derivation))
+      return false;
+    crypto::public_key expected;
+    if (!acc.get_device().derive_public_key(derivation, output_index,
+                                            acc.m_account_address.m_spend_public_key, expected))
+      return false;
+    return expected == zout.stealth_address;
+  }
+  //---------------------------------------------------------------
   bool lookup_acc_outs(const account_keys& acc, const transaction& tx, const crypto::public_key& tx_pub_key, const std::vector<crypto::public_key>& additional_tx_pub_keys, std::vector<size_t>& outs, uint64_t& money_transfered)
   {
     CHECK_AND_ASSERT_MES(additional_tx_pub_keys.empty() || additional_tx_pub_keys.size() == tx.vout.size(), false, "wrong number of additional pubkeys" );
     money_transfered = 0;
     size_t i = 0;
-    for(const tx_out& o:  tx.vout)
+    for(const tx_out& o: tx.vout)
     {
+      if (std::holds_alternative<tx_out_zarcanum>(o.target))
+      {
+        // Confidential output: plaintext amount is 0 on-chain; the wallet
+        // decrypts the real amount during scan_output(). Only record the index here.
+        if (is_out_to_acc(acc, var::get<tx_out_zarcanum>(o.target), tx_pub_key, i))
+          outs.push_back(i);
+        // money_transfered is not updated — caller must decrypt via scan_output.
+        i++;
+        continue;
+      }
       CHECK_AND_ASSERT_MES(std::holds_alternative<txout_to_key>(o.target), false, "wrong type id in transaction out" );
       if(is_out_to_acc(acc, var::get<txout_to_key>(o.target), tx_pub_key, additional_tx_pub_keys, i))
       {

@@ -909,8 +909,16 @@ private:
         {
           const transfer_details &td = m_transfers[i];
           const cryptonote::tx_out &out = td.m_tx.vout[td.m_internal_output_index];
-          const cryptonote::txout_to_key &o = var::get<cryptonote::txout_to_key>(out.target);
-          m_pub_keys.emplace(o.key, i);
+          if (std::holds_alternative<cryptonote::tx_out_zarcanum>(out.target))
+          {
+            // Zarcanum outputs are indexed by stealth_address, not a plain pubkey.
+            m_pub_keys.emplace(var::get<cryptonote::tx_out_zarcanum>(out.target).stealth_address, i);
+          }
+          else
+          {
+            const cryptonote::txout_to_key &o = var::get<cryptonote::txout_to_key>(out.target);
+            m_pub_keys.emplace(o.key, i);
+          }
         }
         return;
       }

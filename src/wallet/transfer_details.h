@@ -60,9 +60,18 @@ struct transfer_details
   std::vector<multisig_info> m_multisig_info; // one per other participant
   std::vector<std::pair<uint64_t, crypto::hash>> m_uses;
 
+  // Confidential asset (HF21+). null_pkey = native BDX (txout_to_key).
+  crypto::public_key m_asset_id = crypto::null_pkey;
+  // Amount blinding mask for the asset commitment (needed to build pseudo-out when spending).
+  rct::key m_asset_mask = rct::zero();
+
   bool is_rct() const { return m_rct; }
+  bool is_zarcanum() const { return m_asset_id != crypto::null_pkey; }
   uint64_t amount() const { return m_amount; }
+
   const crypto::public_key &get_public_key() const {
+    if (std::holds_alternative<cryptonote::tx_out_zarcanum>(m_tx.vout[m_internal_output_index].target))
+      return var::get<cryptonote::tx_out_zarcanum>(m_tx.vout[m_internal_output_index].target).stealth_address;
     return var::get<cryptonote::txout_to_key>(m_tx.vout[m_internal_output_index].target).key;
   }
 };
@@ -92,11 +101,13 @@ void serialize_value(Archive& ar, transfer_details& x) {
   field(ar, "m_multisig_k", x.m_multisig_k);
   field(ar, "m_multisig_info", x.m_multisig_info);
   field(ar, "m_uses", x.m_uses);
+  field(ar, "m_asset_id", x.m_asset_id);
+  field(ar, "m_asset_mask", x.m_asset_mask);
 }
 
 }
 
-BOOST_CLASS_VERSION(wallet::transfer_details, 14)
+BOOST_CLASS_VERSION(wallet::transfer_details, 15)
 
 namespace boost::serialization {
 
@@ -130,6 +141,11 @@ void serialize(Archive &a, wallet::transfer_details &x, const unsigned int ver)
     a & x.m_unmined_flash;
   if (ver > 13)
     a & x.m_was_flash;
+  if (ver > 14)
+  {
+    a & x.m_asset_id;
+    a & x.m_asset_mask;
+  }
 
   if constexpr (typename Archive::is_loading())
   {
@@ -141,6 +157,11 @@ void serialize(Archive &a, wallet::transfer_details &x, const unsigned int ver)
       x.m_unmined_flash = false;
     if (ver < 14)
       x.m_was_flash = false;
+    if (ver < 15)
+    {
+      x.m_asset_id   = crypto::null_pkey;
+      x.m_asset_mask = rct::zero();
+    }
   }
 }
 

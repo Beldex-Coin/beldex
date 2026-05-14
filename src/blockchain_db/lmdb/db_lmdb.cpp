@@ -1143,9 +1143,12 @@ uint64_t BlockchainLMDB::add_output(const crypto::hash& tx_hash,
   CURSOR(output_txs)
   CURSOR(output_amounts)
 
-  if (!std::holds_alternative<txout_to_key>(tx_output.target))
-    throw0(DB_ERROR("Wrong output type: expected txout_to_key"));
-  if (tx_output.amount == 0 && !commitment)
+  // Confidential asset outputs (tx_out_zarcanum) always have amount == 0 on-chain
+  // and carry their own commitment; they are stored with stealth_address as pubkey.
+  const bool is_zarcanum = std::holds_alternative<tx_out_zarcanum>(tx_output.target);
+  if (!is_zarcanum && !std::holds_alternative<txout_to_key>(tx_output.target))
+    throw0(DB_ERROR("Wrong output type: expected txout_to_key or tx_out_zarcanum"));
+  if (!is_zarcanum && tx_output.amount == 0 && !commitment)
     throw0(DB_ERROR("RCT output without commitment"));
 
   outtx ot = {m_num_outputs, tx_hash, local_index};
@@ -1171,23 +1174,43 @@ uint64_t BlockchainLMDB::add_output(const crypto::hash& tx_hash,
     throw0(DB_ERROR(lmdb_error("Failed to get output amount in db transaction: ", result).c_str()));
   else
     ok.amount_index = 0;
-  ok.output_id = m_num_outputs;
-  ok.data.pubkey = var::get<txout_to_key>(tx_output.target).key;
-  ok.data.unlock_time = unlock_time;
-  ok.data.height = m_height;
-  if (tx_output.amount == 0)
+  if (is_zarcanum)
   {
-    ok.data.commitment = *commitment;
+    // Store stealth_address as the lookup key; commitment comes from the output itself.
+    const auto& zout = var::get<tx_out_zarcanum>(tx_output.target);
+    ok.data.pubkey = zout.stealth_address;
+    ok.data.unlock_time = unlock_time;
+    ok.data.height = m_height;
+    ok.data.commitment = rct::pk2rct(zout.amount_commitment);
     data.mv_size = sizeof(ok);
   }
   else
   {
-    data.mv_size = sizeof(pre_rct_outkey);
+    ok.data.pubkey = var::get<txout_to_key>(tx_output.target).key;
+    ok.data.unlock_time = unlock_time;
+    ok.data.height = m_height;
+    if (tx_output.amount == 0)
+    {
+      ok.data.commitment = *commitment;
+      data.mv_size = sizeof(ok);
+    }
+    else
+    {
+      data.mv_size = sizeof(pre_rct_outkey);
+    }
   }
   data.mv_data = &ok;
 
   if ((result = mdb_cursor_put(m_cur_output_amounts, &val_amount, &data, MDB_APPENDDUP)))
       throw0(DB_ERROR(lmdb_error("Failed to add output pubkey to db transaction: ", result).c_str()));
+
+  // HF21: for confidential asset outputs, also record in the per-asset index
+  // so the wallet can enumerate all outputs of a specific asset for BGE ring.
+  // The plaintext asset_id is populated by append_assets_from_transactions()
+  // which runs after block acceptance and has access to tx.extra.
+  // Here we only need the global output index to be stored; asset_id is stored
+  // by the caller that knows the tx context (see blockchain.cpp add_block path).
+  // Therefore: add_asset_output() is called from blockchain.cpp, not here.
 
   return ok.amount_index;
 }
