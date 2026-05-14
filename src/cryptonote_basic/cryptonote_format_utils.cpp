@@ -1158,6 +1158,77 @@ namespace cryptonote
       return false;
     return expected == zout.stealth_address;
   }
+
+  // ── HF21 helpers ─────────────────────────────────────────────────────────
+
+  rct::key zarcanum_derivation_to_scalar(const crypto::key_derivation& derivation,
+                                          size_t output_index,
+                                          const char* domain)
+  {
+    // Base scalar from the standard derivation path
+    crypto::ec_scalar base{};
+    crypto::derivation_to_scalar(derivation, output_index, base);
+
+    // Domain-separate by hashing: H(base || domain_string)
+    // This ensures "asset_blind", "amount_mask", "enc_amount" produce
+    // independent, uncorrelated scalars from the same derivation.
+    const size_t domain_len = strlen(domain);
+    std::vector<uint8_t> buf(32 + domain_len);
+    memcpy(buf.data(), base.data, 32);
+    memcpy(buf.data() + 32, domain, domain_len);
+
+    rct::key result;
+    keccak(buf.data(), (int)buf.size(), result.bytes, 32);
+    sc_reduce32(result.bytes);
+    return result;
+  }
+
+  bool decode_zarcanum_output(const account_keys& acc,
+                               const tx_out_zarcanum& zout,
+                               const crypto::key_derivation& derivation,
+                               size_t output_index,
+                               uint64_t& amount_out,
+                               crypto::public_key& asset_id_out,
+                               rct::key& amount_mask_out,
+                               rct::key& asset_blinding_mask_out)
+  {
+    // 1. Verify ownership: stealth_address must match derivation
+    crypto::public_key expected;
+    if (!acc.get_device().derive_public_key(derivation, output_index,
+                                            acc.m_account_address.m_spend_public_key, expected))
+      return false;
+    if (expected != zout.stealth_address)
+      return false;
+
+    // 2. Recover asset blinding mask r and plaintext asset_id
+    //    T = asset_id + r*X  =>  asset_id = T - r*X
+    rct::key r = zarcanum_derivation_to_scalar(derivation, output_index, "asset_blind");
+    rct::key rX = rct::scalarmultX(r);
+    rct::key asset_id_rct;
+    rct::subKeys(asset_id_rct, rct::pk2rct(zout.blinded_asset_id), rX);
+    asset_id_out = rct::rct2pk(asset_id_rct);
+    asset_blinding_mask_out = r;
+
+    // 3. Recover amount mask and decrypt amount
+    //    C = amount*asset_id + mask*G  (we verify this below)
+    amount_mask_out = zarcanum_derivation_to_scalar(derivation, output_index, "amount_mask");
+
+    // 4. Decrypt amount: enc_amount XOR le64(enc_mask)
+    rct::key enc_mask = zarcanum_derivation_to_scalar(derivation, output_index, "enc_amount");
+    uint64_t enc_mask_64;
+    memcpy(&enc_mask_64, enc_mask.bytes, sizeof(uint64_t));
+    amount_out = zout.encrypted_amount ^ enc_mask_64;
+
+    // 5. Verify: recompute amount commitment and compare
+    rct::key expected_C = rct::commitAsset(amount_mask_out, asset_id_rct, amount_out);
+    if (expected_C != rct::pk2rct(zout.amount_commitment))
+    {
+      MWARNING("zarcanum output commitment mismatch — output corrupted or not ours");
+      return false;
+    }
+
+    return true;
+  }
   //---------------------------------------------------------------
   bool lookup_acc_outs(const account_keys& acc, const transaction& tx, const crypto::public_key& tx_pub_key, const std::vector<crypto::public_key>& additional_tx_pub_keys, std::vector<size_t>& outs, uint64_t& money_transfered)
   {

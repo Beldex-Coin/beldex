@@ -176,6 +176,26 @@ namespace cryptonote
   // Overload for confidential asset outputs (HF21+): checks stealth_address match.
   bool is_out_to_acc(const account_keys& acc, const tx_out_zarcanum& zout, const crypto::public_key& tx_pub_key, size_t output_index);
 
+  // HF21: domain-separated scalar derivation for zarcanum output fields.
+  // Produces a deterministic scalar from a shared key_derivation + output_index + domain tag.
+  // domain: "asset_blind" → asset ID blinding scalar r (T = asset_id + r*X)
+  //         "amount_mask" → Pedersen mask          (C = amount*asset_id + mask*G)
+  //         "enc_amount"  → amount encryption mask (enc = amount XOR le64(mask))
+  rct::key zarcanum_derivation_to_scalar(const crypto::key_derivation& derivation,
+                                          size_t output_index,
+                                          const char* domain);
+
+  // HF21: decode a tx_out_zarcanum received by acc.
+  // Returns false if the output does not belong to acc.
+  // On success fills: amount, asset_id, amount_mask, asset_blinding_mask.
+  bool decode_zarcanum_output(const account_keys& acc,
+                               const tx_out_zarcanum& zout,
+                               const crypto::key_derivation& derivation,
+                               size_t output_index,
+                               uint64_t& amount_out,
+                               crypto::public_key& asset_id_out,
+                               rct::key& amount_mask_out,
+                               rct::key& asset_blinding_mask_out);
   struct subaddress_receive_info
   {
     subaddress_index index;

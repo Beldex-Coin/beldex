@@ -865,13 +865,64 @@ namespace cryptonote
       }
 
       tx_out out;
-      out.amount = dst_entr.amount;
-      txout_to_key tk;
-      tk.key = out_eph_public_key;
-      out.target = tk;
+      if (dst_entr.is_zarcanum() && tx_params.hf_version >= feature::CONFIDENTIAL_ASSETS)
+      {
+        LOG_PRINT_L0("Constructing confidential asset output");
+        // ── HF21: confidential asset output ──────────────────────────────────
+        // stealth_address is already out_eph_public_key (derived above)
+        tx_out_zarcanum zout;
+        zout.stealth_address = out_eph_public_key;
+
+        // Derive blinding scalars for this output index
+        crypto::key_derivation derivation{};
+        hwdev.generate_key_derivation(dst_entr.addr.m_view_public_key, tx_key, derivation);
+        LOG_PRINT_L0("Key derivation for output done");
+
+        // Blinded asset ID:  T = asset_id + r*X
+        rct::key r = zarcanum_derivation_to_scalar(derivation, output_index, "asset_blind");
+        rct::key rX = rct::scalarmultX(r);
+        rct::key asset_id_rct = rct::pk2rct(dst_entr.asset_id);
+        rct::key T;
+        rct::addKeys(T, asset_id_rct, rX);
+        zout.blinded_asset_id = rct::rct2pk(T);
+        LOG_PRINT_L0("Blinded asset ID done");
+
+        // Amount commitment:  C = amount * asset_id + mask * G
+        rct::key mask = zarcanum_derivation_to_scalar(derivation, output_index, "amount_mask");
+        zout.amount_commitment = rct::rct2pk(rct::commitAsset(mask, asset_id_rct, dst_entr.amount));
+        LOG_PRINT_L0("Amount commitment done");
+
+        // Encrypted amount
+        rct::key enc_key = zarcanum_derivation_to_scalar(derivation, output_index, "enc_amount");
+        uint64_t enc_mask_64;
+        memcpy(&enc_mask_64, enc_key.bytes, sizeof(uint64_t));
+        zout.encrypted_amount = dst_entr.amount ^ enc_mask_64;
+        LOG_PRINT_L0("Encrypted amount done");
+
+        zout.version  = 0;
+        zout.mix_attr = 0;
+
+        out.amount = 0;   // plaintext amount is always 0 for ZC outputs
+        out.target = zout;
+
+        // Store blinding scalars for ZC_sig (pseudo-output) construction in Phase 7
+        // These are passed back via tx_params or a separate out-param in future;
+        // for now they are local and will be used when we add ZC_sig generation.
+        (void)mask; // used above, will be collected for balance proof in Phase 8
+      }
+      else
+      {
+        // ── Standard BDX output ───────────────────────────────────────────────
+        txout_to_key tk;
+        tk.key = out_eph_public_key;
+        out.amount = dst_entr.amount;
+        out.target = tk;
+      }
+
       tx.vout.push_back(out);
       output_index++;
-      summary_outs_money += dst_entr.amount;
+      if(tx.type != txtype::deploy_new_asset)
+        summary_outs_money += dst_entr.amount;
     }
     CHECK_AND_ASSERT_MES(additional_tx_public_keys.size() == additional_tx_keys.size(), false, "Internal error creating additional public keys");
 
