@@ -186,6 +186,8 @@ private:
     wallet::pay_type type;
     uint64_t amount;
     uint64_t unlock_time;
+    // HF21: null_pkey = native BDX output
+    crypto::public_key asset_id = crypto::null_pkey;
   };
 
   class hashchain
@@ -311,6 +313,9 @@ private:
       uint64_t unlock_time;
       bool error;
       std::optional<cryptonote::subaddress_receive_info> received;
+      // HF21: confidential asset fields (null = native BDX)
+      crypto::public_key asset_id        = crypto::null_pkey;
+      rct::key           asset_mask      = rct::zero();
 
       tx_scan_info_t(): amount(0), money_transfered(0), error(true) {}
     };
@@ -327,8 +332,11 @@ private:
       cryptonote::subaddress_index m_subaddr_index;
       bool m_unmined_flash;
       bool m_was_flash;
+      // HF21: asset ID for confidential asset outputs; null = native BDX
+      crypto::public_key m_asset_id = crypto::null_pkey;
 
       bool is_coinbase() const { return ((m_type == wallet::pay_type::miner) || (m_type == wallet::pay_type::master_node) || (m_type == wallet::pay_type::governance)); }
+      bool is_asset()    const { return m_asset_id != crypto::null_pkey; }
     };
 
     struct address_tx : payment_details
@@ -733,6 +741,9 @@ private:
     // all locked & unlocked balances of all subaddress accounts
     uint64_t balance_all(bool strict) const;
     uint64_t unlocked_balance_all(bool strict, uint64_t *blocks_to_unlock = NULL, uint64_t *time_to_unlock = NULL) const;
+
+    // HF21: per-asset balances — maps asset_id → total amount held in unspent ZC outputs
+    std::unordered_map<crypto::public_key, uint64_t> asset_balances(uint32_t subaddr_index_major, bool strict) const;
     void transfer_selected_rct(std::vector<cryptonote::tx_destination_entry> dsts, const std::vector<size_t>& selected_transfers, size_t fake_outputs_count,
       std::vector<std::vector<tools::wallet2::get_outs_entry>> &outs,
       uint64_t unlock_time, uint64_t fee, const std::vector<uint8_t>& extra, cryptonote::transaction& tx, pending_tx &ptx, const rct::RCTConfig &rct_config, const cryptonote::beldex_construct_tx_params &beldex_tx_params);
@@ -758,7 +769,7 @@ private:
     bool load_tx(const fs::path& signed_filename, std::vector<pending_tx>& ptx, std::function<bool(const signed_tx_set&)> accept_func = NULL);
     bool parse_tx_from_str(std::string_view signed_tx_st, std::vector<pending_tx> &ptx, std::function<bool(const signed_tx_set &)> accept_func);
     std::vector<pending_tx> create_transactions_2(std::vector<cryptonote::tx_destination_entry> dsts, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra_base, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, cryptonote::beldex_construct_tx_params &tx_params, const unique_index_container& subtract_fee_from_outputs = {});     // pass subaddr_indices by value on purpose
-    
+
     // HF21: build a deploy_new_asset or emit_asset transaction.
     // Automatically pads ZC destinations with self-sends to reach
     // MIN_ASSET_EMISSION_OUTPUTS so the blockchain fan-out rule passes.

@@ -87,6 +87,7 @@ struct transfer_view
   uint64_t height;                                           // Height of the first block that confirmed this transfer (0 if not mined yet).
   uint64_t timestamp;                                        // UNIX timestamp for when this transfer was first confirmed in a block (or timestamp submission if not mined yet).
   uint64_t amount;                                           // Amount transferred.
+  std::string asset_id;                                      // Empty = native BDX, otherwise hex-encoded asset id.
   uint64_t fee;                                              // Transaction fee for this transfer.
   std::string note;                                          // Note about this transfer.
   std::list<transfer_destination> destinations;              // Array of transfer destinations.

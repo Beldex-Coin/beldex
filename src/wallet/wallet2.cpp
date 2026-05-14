@@ -1781,6 +1781,66 @@ void wallet2::scan_output(const cryptonote::transaction &tx, bool miner_tx, cons
     }
   }
 
+  // ── HF21: confidential asset output path ─────────────────────────────────
+  if (std::holds_alternative<cryptonote::tx_out_zarcanum>(tx.vout[vout_index].target))
+  {
+    const auto& zout = var::get<cryptonote::tx_out_zarcanum>(tx.vout[vout_index].target);
+
+    uint64_t amount = 0;
+    crypto::public_key asset_id{};
+    rct::key amount_mask{}, asset_blinding_mask{};
+
+    bool decoded = cryptonote::decode_zarcanum_output(
+        m_account.get_keys(), zout,
+        tx_scan_info.received->derivation, vout_index,
+        amount, asset_id, amount_mask, asset_blinding_mask);
+
+    if (!decoded)
+    {
+      MERROR("Failed to decode zarcanum output at index " << vout_index);
+      tx_scan_info.error = true;
+      return;
+    }
+
+    // Zero-value Zarcanum outputs can be created intentionally as deploy/emit
+    // padding placeholders. They are not spendable funds, so skip them quietly.
+    if (amount == 0)
+      return;
+
+    // Key image: I = H_p(stealth_address) * spend_key
+    bool r = cryptonote::generate_key_image_helper_precomp(
+        m_account.get_keys(), zout.stealth_address,
+        tx_scan_info.received->derivation, vout_index,
+        tx_scan_info.received->index,
+        tx_scan_info.in_ephemeral, tx_scan_info.ki,
+        m_account.get_device());
+    THROW_WALLET_EXCEPTION_IF(!r, error::wallet_internal_error,
+        "Failed to generate key image for zarcanum output");
+
+    tx_scan_info.money_transfered = amount;
+    tx_scan_info.mask             = amount_mask;
+    tx_scan_info.asset_id         = asset_id;
+    tx_scan_info.asset_mask       = asset_blinding_mask;
+
+    THROW_WALLET_EXCEPTION_IF(std::find(outs.begin(), outs.end(), vout_index) != outs.end(),
+        error::wallet_internal_error, "Same output cannot be added twice");
+    outs.push_back(vout_index);
+
+    uint64_t unlock_time = tx.get_unlock_time(vout_index);
+    tx_money_got_in_out entry = {};
+    entry.type        = wallet::pay_type::in;
+    entry.index       = tx_scan_info.received->index;
+    entry.amount      = amount;
+    entry.unlock_time = unlock_time;
+    entry.asset_id    = asset_id;
+    tx_money_got_in_outs.push_back(entry);
+
+    tx_scan_info.amount      = amount;
+    tx_scan_info.unlock_time = unlock_time;
+    return;
+  }
+  // ── Standard BDX output path (txout_to_key) ───────────────────────────────
+
   if (m_multisig)
   {
     tx_scan_info.in_ephemeral.pub = var::get<cryptonote::txout_to_key>(tx.vout[vout_index].target).key;
@@ -2119,7 +2179,15 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
             td.m_subaddr_index = tx_scan_info[o].received->index;
             if (should_expand(tx_scan_info[o].received->index))
               expand_subaddresses(tx_scan_info[o].received->index);
-            if (tx.vout[o].amount == 0)
+            if (std::holds_alternative<cryptonote::tx_out_zarcanum>(tx.vout[o].target))
+            {
+              // HF21 confidential asset output
+              td.m_mask       = tx_scan_info[o].mask;
+              td.m_rct        = true;
+              td.m_asset_id   = tx_scan_info[o].asset_id;
+              td.m_asset_mask = tx_scan_info[o].asset_mask;
+            }
+            else if (tx.vout[o].amount == 0)
             {
               td.m_mask = tx_scan_info[o].mask;
               td.m_rct = true;
@@ -2148,7 +2216,10 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
               if (m_multisig_rescan_info && m_multisig_rescan_info->front().size() >= m_transfers.size())
                 update_multisig_rescan_info(*m_multisig_rescan_k, *m_multisig_rescan_info, m_transfers.size() - 1);
             }
-            LOG_PRINT_L0("Received money: " << print_money(td.amount()) << ", with tx: " << txid);
+            if (td.m_asset_id != crypto::null_pkey)
+              LOG_PRINT_L0("Received asset: " << td.amount() << " atomic units, asset_id " << tools::type_to_hex(td.m_asset_id) << ", with tx: " << txid);
+            else
+              LOG_PRINT_L0("Received money: " << print_money(td.amount()) << ", with tx: " << txid);
             if (0 != m_callback)
               m_callback->on_money_received(height, txid, tx, td.m_amount, td.m_subaddr_index, td.m_tx.unlock_time, flash);
           }
@@ -2326,7 +2397,10 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
             THROW_WALLET_EXCEPTION_IF(transfer.get_public_key() != tx_scan_info[o].in_ephemeral.pub, error::wallet_internal_error, "Inconsistent public keys");
             THROW_WALLET_EXCEPTION_IF(transfer.m_spent, error::wallet_internal_error, "Inconsistent spent status");
 
-            LOG_PRINT_L0("Received money: " << print_money(transfer.amount()) << ", with tx: " << txid);
+            if (transfer.m_asset_id != crypto::null_pkey)
+              LOG_PRINT_L0("Received asset: " << transfer.amount() << " atomic units, asset_id " << tools::type_to_hex(transfer.m_asset_id) << ", with tx: " << txid);
+            else
+              LOG_PRINT_L0("Received money: " << print_money(transfer.amount()) << ", with tx: " << txid);
             if (0 != m_callback)
               m_callback->on_money_received(height, txid, tx, transfer.m_amount, transfer.m_subaddr_index, transfer.m_tx.unlock_time, flash);
           }
@@ -2526,6 +2600,7 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
       payment.m_type          = i.type;
       payment.m_unmined_flash = pool && flash;
       payment.m_was_flash     = flash;
+      payment.m_asset_id      = i.asset_id;
       if (pool && !flash) {
         if (emplace_or_replace(m_unconfirmed_payments, payment_id, pool_payment_details{payment, double_spend_seen}))
           all_same = false;
@@ -2852,20 +2927,34 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
     for (size_t k = 0; k < n_vouts; ++k)
     {
       const auto &o = tx.vout[k];
+
+      // Determine the pubkey for ownership check.
+      // txout_to_key  → use .key (BDX)
+      // tx_out_zarcanum → use .stealth_address (HF21 confidential asset)
+      // Other types (txout_to_script etc.) → skip
+      const crypto::public_key *key_ptr = nullptr;
       if (std::holds_alternative<cryptonote::txout_to_key>(o.target))
+        key_ptr = &var::get<cryptonote::txout_to_key>(o.target).key;
+      else if (std::holds_alternative<cryptonote::tx_out_zarcanum>(o.target))
+        key_ptr = &var::get<cryptonote::tx_out_zarcanum>(o.target).stealth_address;
+
+      if (!key_ptr)
+        continue;
+
+      std::vector<crypto::key_derivation> additional_derivations;
+      additional_derivations.reserve(tx_cache_data[txidx].additional.size());
+      for (const auto &iod: tx_cache_data[txidx].additional)
+        additional_derivations.push_back(iod.derivation);
+
+      for (size_t l = 0; l < tx_cache_data[txidx].primary.size(); ++l)
       {
-        std::vector<crypto::key_derivation> additional_derivations;
-        additional_derivations.reserve(tx_cache_data[txidx].additional.size());
-        for (const auto &iod: tx_cache_data[txidx].additional)
-          additional_derivations.push_back(iod.derivation);
-        const auto &key = var::get<txout_to_key>(o.target).key;
-        for (size_t l = 0; l < tx_cache_data[txidx].primary.size(); ++l)
-        {
-          THROW_WALLET_EXCEPTION_IF(tx_cache_data[txidx].primary[l].received.size() != n_vouts,
-              error::wallet_internal_error, "Unexpected received array size");
-          tx_cache_data[txidx].primary[l].received[k] = is_out_to_acc_precomp(m_subaddresses, key, tx_cache_data[txidx].primary[l].derivation, additional_derivations, k, hwdev);
-          additional_derivations.clear();
-        }
+        THROW_WALLET_EXCEPTION_IF(tx_cache_data[txidx].primary[l].received.size() != n_vouts,
+            error::wallet_internal_error, "Unexpected received array size");
+        tx_cache_data[txidx].primary[l].received[k] =
+            is_out_to_acc_precomp(m_subaddresses, *key_ptr,
+                                   tx_cache_data[txidx].primary[l].derivation,
+                                   additional_derivations, k, hwdev);
+        additional_derivations.clear();
       }
     }
   };
@@ -6147,6 +6236,23 @@ uint64_t wallet2::unlocked_balance_all(bool strict, uint64_t *blocks_to_unlock, 
       *time_to_unlock = std::max(*time_to_unlock, local_time_to_unlock);
   }
   return r;
+}
+//----------------------------------------------------------------------------------------------------
+// HF21: returns total unspent balance grouped by asset_id for the given account
+std::unordered_map<crypto::public_key, uint64_t>
+wallet2::asset_balances(uint32_t subaddr_index_major, bool strict) const
+{
+  std::unordered_map<crypto::public_key, uint64_t> result;
+  for (const auto& td : m_transfers)
+  {
+    if (td.m_spent)    continue;
+    if (!td.is_zarcanum()) continue;
+    if (td.m_asset_id == crypto::null_pkey) continue;
+    if (td.m_subaddr_index.major != subaddr_index_major) continue;
+    if (strict && !is_transfer_unlocked(td)) continue;
+    result[td.m_asset_id] += td.m_amount;
+  }
+  return result;
 }
 //----------------------------------------------------------------------------------------------------
 void wallet2::get_transfers(wallet2::transfer_container& incoming_transfers) const

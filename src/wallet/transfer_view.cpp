@@ -8,6 +8,7 @@ KV_SERIALIZE_MAP_CODE_BEGIN(transfer_view)
   KV_SERIALIZE(height);
   KV_SERIALIZE(timestamp);
   KV_SERIALIZE(amount);
+  KV_SERIALIZE_OPT(asset_id, std::string{})
   KV_SERIALIZE(fee);
   KV_SERIALIZE(note);
   KV_SERIALIZE(destinations);
