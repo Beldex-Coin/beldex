@@ -758,6 +758,18 @@ private:
     bool load_tx(const fs::path& signed_filename, std::vector<pending_tx>& ptx, std::function<bool(const signed_tx_set&)> accept_func = NULL);
     bool parse_tx_from_str(std::string_view signed_tx_st, std::vector<pending_tx> &ptx, std::function<bool(const signed_tx_set &)> accept_func);
     std::vector<pending_tx> create_transactions_2(std::vector<cryptonote::tx_destination_entry> dsts, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra_base, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, cryptonote::beldex_construct_tx_params &tx_params, const unique_index_container& subtract_fee_from_outputs = {});     // pass subaddr_indices by value on purpose
+    
+    // HF21: build a deploy_new_asset or emit_asset transaction.
+    // Automatically pads ZC destinations with self-sends to reach
+    // MIN_ASSET_EMISSION_OUTPUTS so the blockchain fan-out rule passes.
+    std::vector<pending_tx> create_asset_deploy_tx(
+        std::vector<cryptonote::tx_destination_entry> dsts,
+        const crypto::public_key& asset_id,
+        const size_t fake_outs_count,
+        uint32_t priority,
+        const std::vector<uint8_t>& extra,
+        uint32_t subaddr_account,
+        std::set<uint32_t> subaddr_indices);
 
     std::vector<pending_tx> create_transactions_all(uint64_t below, const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, cryptonote::txtype tx_type = cryptonote::txtype::standard);
     std::vector<pending_tx> create_transactions_single(const crypto::key_image &ki, const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, cryptonote::txtype tx_type = cryptonote::txtype::standard);

@@ -117,6 +117,17 @@ namespace tools::wallet_rpc {
       KV_MAP_SERIALIZABLE
     };
 
+    // HF21: per-asset balance entry
+    struct asset_balance_entry
+    {
+      std::string asset_id;           // Hex-encoded asset pubkey
+      std::string ticker;             // Asset ticker symbol (e.g. "TKN")
+      uint64_t    balance;            // Total balance (atomic units of the asset)
+      uint64_t    unlocked_balance;   // Spendable balance
+
+      KV_MAP_SERIALIZABLE
+    };
+
     struct response
     {
       uint64_t   balance;                              // The total balance (atomic units) of the currently opened wallet.
@@ -125,6 +136,8 @@ namespace tools::wallet_rpc {
       std::vector<per_subaddress_info> per_subaddress; // Balance information for each subaddress in an account.
       uint64_t blocks_to_unlock;                       // The number of blocks remaining for the balance to unlock
       uint64_t   time_to_unlock;                       // Timestamp of expected unlock
+      // HF21: per-asset balances (empty for wallets with no confidential asset outputs)
+      std::vector<asset_balance_entry> asset_balances;
 
       KV_MAP_SERIALIZABLE
     };
@@ -2585,7 +2598,34 @@ This command is only required if the open wallet is one of the owners of a BNS r
       KV_MAP_SERIALIZABLE
     };
   };
-  
+
+  // HF21: Deploy a new confidential asset on-chain.
+  struct DEPLOY_NEW_ASSET : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("deploy_new_asset"); }
+    static constexpr const char* description =
+        "Deploy a new confidential asset. Pass the path to a JSON descriptor file containing: "
+        "ticker, full_name, total_max_supply, current_supply, decimal_point, hidden_supply, meta_info.";
+
+    struct request
+    {
+      std::string json_filename;   // Path to the asset JSON descriptor file
+      uint32_t    account_index  = 0;
+      uint32_t    priority       = 0;
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      std::string asset_id;        // Hex-encoded asset public key (derived from descriptor)
+      std::string tx_hash;         // Transaction hash of the deploy tx
+      std::string ticker;          // Confirmed ticker from descriptor
+
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
   /// List of all supported rpc command structs to allow compile-time enumeration of all supported
   /// RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   /// a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2690,7 +2730,8 @@ This command is only required if the open wallet is one of the owners of a BNS r
     BNS_ADD_KNOWN_NAMES,
     BNS_DECRYPT_VALUE,
     BNS_ENCRYPT_VALUE,
-    COIN_BURN
+    COIN_BURN,
+    DEPLOY_NEW_ASSET
   >;
 
 }

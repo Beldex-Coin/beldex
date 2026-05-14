@@ -10910,6 +10910,67 @@ bool wallet2::light_wallet_key_image_is_ours(const crypto::key_image& key_image,
 // This system allows for sending (almost) the entire balance, since it does
 // not generate spurious change in all txes, thus decreasing the instantaneous
 // usable balance.
+// ── HF21: create_asset_deploy_tx ─────────────────────────────────────────────
+// Build a deploy_new_asset or emit_asset transaction.
+// Pads ZC destinations with self-sends to own subaddress[0] to reach
+// MIN_ASSET_EMISSION_OUTPUTS, satisfying the blockchain fan-out rule and
+// immediately creating ring members for future spends of the new asset.
+std::vector<wallet2::pending_tx> wallet2::create_asset_deploy_tx(
+    std::vector<cryptonote::tx_destination_entry> dsts,
+    const crypto::public_key& asset_id,
+    const size_t fake_outs_count,
+    uint32_t priority,
+    const std::vector<uint8_t>& extra,
+    uint32_t subaddr_account,
+    std::set<uint32_t> subaddr_indices)
+{
+  // Count how many ZC outputs are in the caller-supplied destinations.
+  size_t zc_count = 0;
+  for (const auto& d : dsts)
+    if (d.is_zarcanum()) ++zc_count;
+
+  // Pad with zero-value self-sends until we reach the minimum.
+  // Each dummy output goes to our own primary address so the wallet
+  // receives and tracks them as legitimate ring-member candidates.
+  if (zc_count < cryptonote::MIN_ASSET_EMISSION_OUTPUTS)
+  {
+    const cryptonote::account_public_address self_addr =
+        m_account.get_keys().m_account_address;
+    const size_t needed = cryptonote::MIN_ASSET_EMISSION_OUTPUTS - zc_count;
+
+    for (size_t i = 0; i < needed; ++i)
+    {
+      cryptonote::tx_destination_entry dummy;
+      dummy.addr         = self_addr;
+      dummy.amount       = 0;       // dust output — just a ring member placeholder
+      dummy.is_subaddress = false;
+      dummy.asset_id     = asset_id;
+      dsts.push_back(dummy);
+    }
+
+    MINFO("create_asset_deploy_tx: added " << needed
+          << " self-send outputs to reach MIN_ASSET_EMISSION_OUTPUTS ("
+          << cryptonote::MIN_ASSET_EMISSION_OUTPUTS << ")");
+  }
+
+  for(auto dest: dsts)
+  {
+    MINFO("create_asset_deploy_tx: amount " << dest.amount << ", is_subaddress " << dest.is_subaddress << ", asset_id " << dest.asset_id);
+  }
+
+  auto hf_ver = get_hard_fork_version();
+  THROW_WALLET_EXCEPTION_IF(!hf_ver, error::wallet_internal_error,
+      "Failed to get hard fork version from daemon");
+  beldex_construct_tx_params tx_params = wallet2::construct_params(
+      *hf_ver, txtype::deploy_new_asset, priority);
+
+  // return create_transactions_2(dsts, fake_outs_count, 0 /*unlock_time*/,
+  //                              priority, extra, subaddr_account,
+  //                              subaddr_indices, tx_params);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryptonote::tx_destination_entry> dsts, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra_base, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, beldex_construct_tx_params &tx_params, const unique_index_container& subtract_fee_from_outputs)
 {
   //ensure device is let in NONE mode in any case

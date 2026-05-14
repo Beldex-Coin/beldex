@@ -48,6 +48,8 @@
 #include <iostream>
 #include <sstream>
 #include <fstream>
+#include <limits>
+#include <unordered_map>
 #include <ctype.h>
 #include <string_view>
 #include <regex>
@@ -61,6 +63,7 @@
 #include "common/util.h"
 #include "common/signal_handler.h"
 #include "common/base58.h"
+#include "common/file.h"
 #include "common/scoped_message_writer.h"
 #include "common/beldex_integration_test_hooks.h"
 #include "cryptonote_protocol/cryptonote_protocol_handler.h"
@@ -68,6 +71,7 @@
 #include "cryptonote_core/master_node_list.h"
 #include "cryptonote_core/beldex_name_system.h"
 #include "simplewallet.h"
+#include "cryptonote_basic/asset_descriptor_operation_utils.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "rpc/core_rpc_server_commands_defs.h"
 #include "crypto/crypto.h"  // for crypto::secret_key definition
@@ -127,6 +131,243 @@ using sw = cryptonote::simple_wallet;
 
 namespace
 {
+  // ── Asset deployment helpers ──────────────────────────────────────────────
+
+  bool validate_asset_ticker(const std::string& ticker)
+  {
+    static const std::regex asset_ticker_regexp{R"([A-Za-z0-9]{1,14})"};
+    return std::regex_match(ticker, asset_ticker_regexp);
+  }
+
+  bool validate_asset_full_name(const std::string& full_name)
+  {
+    static const std::regex asset_full_name_regexp{R"([A-Za-z0-9.,:!?\-() ]{0,400})"};
+    return std::regex_match(full_name, asset_full_name_regexp);
+  }
+
+  bool validate_asset_descriptor_for_deploy(const cryptonote::asset_descriptor_base& descriptor, std::string& error)
+  {
+    if (!validate_asset_ticker(descriptor.ticker))
+    { error = sw::tr("ticker is invalid; expected 1-14 alphanumeric characters"); return false; }
+    if (!validate_asset_full_name(descriptor.full_name))
+    { error = sw::tr("full_name contains unsupported characters"); return false; }
+    if (descriptor.decimal_point > 18)
+    { error = sw::tr("decimal_point must be <= 18"); return false; }
+    if (descriptor.current_supply > descriptor.total_max_supply)
+    { error = sw::tr("current_supply cannot exceed total_max_supply"); return false; }
+    return true;
+  }
+
+  bool load_asset_descriptor_from_json_file(const fs::path& filename,
+                                             cryptonote::asset_descriptor_base& descriptor,
+                                             std::string& error)
+  {
+    std::string data;
+    if (!tools::slurp_file(filename, data))
+    { error = sw::tr("Failed to read asset specification file"); return false; }
+
+    rapidjson::Document json;
+    if (json.Parse(data.c_str()).HasParseError())
+    { error = sw::tr("Asset specification is not valid JSON"); return false; }
+    if (!json.IsObject())
+    { error = sw::tr("Asset specification root must be a JSON object"); return false; }
+
+    auto assign_string = [&](const char* f, std::string& t) -> bool {
+      if (!json.HasMember(f)) return true;
+      if (!json[f].IsString()) { error = std::string{f} + " must be a string"; return false; }
+      t = json[f].GetString(); return true;
+    };
+    auto assign_uint64 = [&](const char* f, uint64_t& t) -> bool {
+      if (!json.HasMember(f)) return true;
+      if (!json[f].IsUint64()) { error = std::string{f} + " must be an unsigned integer"; return false; }
+      t = json[f].GetUint64(); return true;
+    };
+    auto assign_uint8 = [&](const char* f, uint8_t& t) -> bool {
+      if (!json.HasMember(f)) return true;
+      if (!json[f].IsUint()) { error = std::string{f} + " must be an unsigned integer"; return false; }
+      unsigned p = json[f].GetUint();
+      if (p > std::numeric_limits<uint8_t>::max()) { error = std::string{f} + " is out of range"; return false; }
+      t = static_cast<uint8_t>(p); return true;
+    };
+    auto assign_bool = [&](const char* f, bool& t) -> bool {
+      if (!json.HasMember(f)) return true;
+      if (!json[f].IsBool()) { error = std::string{f} + " must be a boolean"; return false; }
+      t = json[f].GetBool(); return true;
+    };
+
+    if (!assign_uint8("version",          descriptor.version)         ||
+        !assign_uint64("total_max_supply", descriptor.total_max_supply)||
+        !assign_uint64("current_supply",   descriptor.current_supply)  ||
+        !assign_uint8("decimal_point",     descriptor.decimal_point)   ||
+        !assign_string("ticker",           descriptor.ticker)          ||
+        !assign_string("full_name",        descriptor.full_name)       ||
+        !assign_string("meta_info",        descriptor.meta_info)       ||
+        !assign_bool("hidden_supply",      descriptor.hidden_supply))
+      return false;
+
+    if (json.HasMember("owner"))
+    {
+      const auto& owner = json["owner"];
+      if (!owner.IsString() || !tools::hex_to_type(owner.GetString(), descriptor.owner))
+      { error = sw::tr("owner must be a hex-encoded public key"); return false; }
+    }
+    return validate_asset_descriptor_for_deploy(descriptor, error);
+  }
+
+  std::string print_asset_amount(uint64_t amount, uint8_t decimal_point, bool strip_zeros = true)
+  {
+    std::string s = std::to_string(amount);
+    if (s.size() < decimal_point + 1)
+      s.insert(0, decimal_point + 1 - s.size(), '0');
+
+    if (decimal_point > 0)
+      s.insert(s.size() - decimal_point, ".");
+
+    if (strip_zeros && decimal_point > 0)
+    {
+      while (!s.empty() && s.back() == '0')
+        s.pop_back();
+      if (!s.empty() && s.back() == '.')
+        s.pop_back();
+    }
+
+    return s;
+  }
+
+  struct asset_display_info
+  {
+    uint8_t decimal_point = 0;
+    std::string ticker;
+  };
+
+  std::mutex asset_display_cache_mutex;
+  std::unordered_map<crypto::public_key, std::optional<asset_display_info>> asset_display_cache;
+
+  std::optional<asset_display_info> get_asset_display_info(tools::wallet2& wallet, const crypto::public_key& asset_id)
+  {
+    {
+      std::lock_guard lock{asset_display_cache_mutex};
+      auto it = asset_display_cache.find(asset_id);
+      if (it != asset_display_cache.end())
+        return it->second;
+    }
+
+    std::optional<asset_display_info> result;
+    try
+    {
+      const std::string asset_hex = tools::type_to_hex(asset_id);
+      const auto res = wallet.json_rpc("get_asset_info", {{"asset_id", asset_hex}});
+
+      if (!res.contains("decimal_point") || !res["decimal_point"].is_number_unsigned())
+      {
+        std::lock_guard lock{asset_display_cache_mutex};
+        asset_display_cache[asset_id] = std::nullopt;
+        return std::nullopt;
+      }
+
+      asset_display_info info{};
+      info.decimal_point = static_cast<uint8_t>(res["decimal_point"].get<unsigned>());
+      if (res.contains("ticker") && res["ticker"].is_string())
+        info.ticker = res["ticker"].get<std::string>();
+      result = std::move(info);
+    }
+    catch (const std::exception&)
+    {
+      result = std::nullopt;
+    }
+
+    {
+      std::lock_guard lock{asset_display_cache_mutex};
+      asset_display_cache[asset_id] = result;
+    }
+    return result;
+  }
+
+  struct received_asset_info
+  {
+    crypto::public_key asset_id = crypto::null_pkey;
+    uint8_t decimal_point = 0;
+    std::string ticker;
+  };
+
+  std::optional<received_asset_info> find_received_asset_info(
+      tools::wallet2& wallet,
+      const crypto::hash& txid,
+      const std::optional<cryptonote::subaddress_index>& subaddr_index,
+      uint64_t amount,
+      const std::optional<uint64_t>& unlock_time)
+  {
+    for (size_t i = 0; i < wallet.get_num_transfer_details(); ++i)
+    {
+      const auto& td = wallet.get_transfer_details(i);
+      if (td.m_txid != txid) continue;
+      if (subaddr_index && td.m_subaddr_index != *subaddr_index) continue;
+      if (td.m_amount != amount) continue;
+      if (unlock_time && td.m_tx.unlock_time != *unlock_time) continue;
+      if (td.m_asset_id == crypto::null_pkey) continue;
+
+      received_asset_info result{};
+      result.asset_id = td.m_asset_id;
+      if (const auto asset_info = get_asset_display_info(wallet, td.m_asset_id))
+      {
+        result.decimal_point = asset_info->decimal_point;
+        result.ticker = asset_info->ticker;
+      }
+      return result;
+    }
+
+    return std::nullopt;
+  }
+
+  std::string format_received_amount(
+      tools::wallet2& wallet,
+      const crypto::hash& txid,
+      const std::optional<cryptonote::subaddress_index>& subaddr_index,
+      uint64_t amount,
+      const std::optional<uint64_t>& unlock_time,
+      bool include_asset_id = false)
+  {
+    if (const auto asset_info = find_received_asset_info(wallet, txid, subaddr_index, amount, unlock_time))
+    {
+      std::string result = print_asset_amount(amount, asset_info->decimal_point);
+      if (!asset_info->ticker.empty())
+        result += " " + asset_info->ticker;
+      if (include_asset_id)
+        result += " [" + tools::type_to_hex(asset_info->asset_id) + "]";
+      return result;
+    }
+
+    return print_money(amount);
+  }
+
+  std::string format_amount_with_asset_id(
+      tools::wallet2& wallet,
+      uint64_t amount,
+      const std::string& asset_id_hex,
+      bool include_asset_id = false)
+  {
+    if (asset_id_hex.empty())
+      return print_money(amount);
+
+    crypto::public_key asset_id{};
+    if (!tools::hex_to_type(asset_id_hex, asset_id))
+      return std::to_string(amount) + " [" + asset_id_hex + "]";
+
+    if (const auto asset_info = get_asset_display_info(wallet, asset_id))
+    {
+      std::string result = print_asset_amount(amount, asset_info->decimal_point);
+      if (!asset_info->ticker.empty())
+        result += " " + asset_info->ticker;
+      if (include_asset_id)
+        result += " [" + asset_id_hex + "]";
+      return result;
+    }
+
+    return std::to_string(amount) + (include_asset_id ? " [" + asset_id_hex + "]" : "");
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+
   const auto arg_wallet_file = wallet_args::arg_wallet_file();
   const command_line::arg_descriptor<std::string> arg_generate_new_wallet = {"generate-new-wallet", sw::tr("Generate new wallet and save it to <arg>"), ""};
   const command_line::arg_descriptor<std::string> arg_generate_from_device = {"generate-from-device", sw::tr("Generate new wallet from device and save it to <arg>"), ""};
@@ -266,6 +507,8 @@ namespace
   const char* USAGE_BNS_LOOKUP("bns_lookup <name> [<name> ...]");
     
   const char* USAGE_COIN_BURN("coin_burn [index=<N1>[,<N2>,...]] [<priority>] <burn=amount | txid>");
+  const char* USAGE_DEPLOY_NEW_ASSET("deploy_new_asset [index=<N1>[,<N2>,...]] [<priority>] <json_filename>");
+
 
 
 #if defined (BELDEX_ENABLE_INTEGRATION_TEST_HOOKS)
@@ -3172,6 +3415,12 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
                            [this](const auto& x) { return coin_burn(x); },
                            tr(USAGE_COIN_BURN),
                            tr(tools::wallet_rpc::COIN_BURN::description));
+  // HF21: confidential asset commands
+  m_cmd_binder.set_handler("deploy_new_asset",
+                           [this](const auto& x) { return deploy_new_asset(x); },
+                           tr(USAGE_DEPLOY_NEW_ASSET),
+                           tr("Deploy a new confidential asset. Provide a JSON file with: ticker, full_name, total_max_supply, current_supply, decimal_point, hidden_supply, meta_info."));
+
 }
 
 simple_wallet::~simple_wallet()
@@ -7536,6 +7785,120 @@ bool simple_wallet::coin_burn(std::vector<std::string> args)
       return false;
   }
   catch (const std::exception &e)
+  {
+    handle_transfer_exception(std::current_exception(), m_wallet->is_trusted_daemon());
+    return true;
+  }
+  catch (...)
+  {
+    LOG_ERROR("unknown error");
+    fail_msg_writer() << tr("unknown error");
+    return true;
+  }
+
+  return true;
+}
+//----------------------------------------------------------------------------------------------------
+bool simple_wallet::deploy_new_asset(const std::vector<std::string>& args_)
+{
+  if (!try_connect_to_daemon())
+    return false;
+
+  uint32_t priority = 0;
+  std::set<uint32_t> subaddr_indices;
+  std::vector<std::string> args = args_;
+  if (!parse_subaddr_indices_and_priority(*m_wallet, args, subaddr_indices, priority, m_current_subaddress_account))
+    return false;
+
+  if (args.size() != 1)
+  {
+    PRINT_USAGE(USAGE_DEPLOY_NEW_ASSET);
+    return false;
+  }
+
+  SCOPED_WALLET_UNLOCK();
+
+  try
+  {
+    cryptonote::asset_descriptor_base descriptor{};
+    std::string error;
+    if (!load_asset_descriptor_from_json_file(fs::u8path(args[0]), descriptor, error))
+    {
+      fail_msg_writer() << error << ": " << args[0];
+      return false;
+    }
+
+    // Default owner to this wallet's spend public key if not specified in JSON
+    if (descriptor.owner == crypto::null_pkey)
+      descriptor.owner = m_wallet->get_account().get_keys().m_account_address.m_spend_public_key;
+    else if (descriptor.owner != m_wallet->get_account().get_keys().m_account_address.m_spend_public_key)
+    {
+      fail_msg_writer() << tr("Asset owner must be this wallet's spend key");
+      return false;
+    }
+
+    // Build asset descriptor operation for tx.extra
+    cryptonote::tx_extra_asset_descriptor_operation ado{};
+    ado.operation_type = cryptonote::asset_descriptor_operation_type::register_asset;
+    ado.fields         = static_cast<uint8_t>(cryptonote::asset_field_descriptor |
+                                               cryptonote::asset_field_asset_id_salt);
+    ado.descriptor     = descriptor;
+    ado.asset_id_salt  = crypto::rand<uint32_t>();
+
+    std::vector<uint8_t> extra;
+    if (!cryptonote::add_asset_descriptor_operation_to_tx_extra(extra, ado))
+    {
+      fail_msg_writer() << tr("Failed to encode asset descriptor into tx extra");
+      return false;
+    }
+
+    const crypto::public_key asset_id = cryptonote::get_or_calculate_asset_id(ado);
+
+    success_msg_writer(true) << tr("New asset deployment details:\n")
+                              << tr("  Asset ID: ") << tools::type_to_hex(asset_id) << "\n"
+                              << tr("  Ticker:   ") << descriptor.ticker << "\n"
+                              << tr("  Full name:") << descriptor.full_name << "\n"
+                              << tr("  Initial supply: ") << descriptor.current_supply << "\n"
+                              << tr("  Max supply:     ") << descriptor.total_max_supply;
+
+    // Constructing destinations
+    std::vector<cryptonote::tx_destination_entry> dsts;
+    
+    cryptonote::tx_destination_entry de;
+    de.addr = m_wallet->get_subaddress({m_current_subaddress_account, 0});
+    de.amount = descriptor.current_supply;
+    de.asset_id = asset_id;
+    de.is_subaddress = (m_current_subaddress_account != 0);
+
+    dsts.push_back(de);
+
+    // Use create_asset_deploy_tx which auto-pads to MIN_ASSET_EMISSION_OUTPUTS
+    auto ptx_vector = m_wallet->create_asset_deploy_tx(
+        dsts, asset_id, cryptonote::TX_OUTPUT_DECOYS, priority, extra,
+        m_current_subaddress_account, subaddr_indices);
+
+    if (ptx_vector.empty())
+    {
+      fail_msg_writer() << tr("No outputs found or daemon not ready");
+      return false;
+    }
+
+    cryptonote::address_parse_info self_info{};
+    self_info.address      = m_wallet->get_subaddress({m_current_subaddress_account, 0});
+    self_info.is_subaddress = m_current_subaddress_account != 0;
+
+    if (!confirm_and_send_tx({self_info}, ptx_vector, priority == tools::tx_priority_flash))
+      return false;
+
+    success_msg_writer(true)
+        << "New asset deployment submitted\n"
+        << "  Asset ID:     " << tools::type_to_hex(asset_id) << "\n"
+        << "  Ticker:       " << descriptor.ticker << "\n"
+        << "  Full name:    " << descriptor.full_name << "\n"
+        << "  Initial mint: " << descriptor.current_supply << "\n"
+        << "  Max supply:   " << descriptor.total_max_supply;
+  }
+  catch (const std::exception& e)
   {
     handle_transfer_exception(std::current_exception(), m_wallet->is_trusted_daemon());
     return true;

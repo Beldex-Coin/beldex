@@ -29,13 +29,17 @@
 //
 // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 #include <fmt/core.h>
+#include <algorithm>
 #include <boost/asio/ip/address.hpp>
 #include <boost/algorithm/string.hpp>
+#include <cctype>
 #include <cstdint>
 #include "cryptonote_basic/cryptonote_basic_impl.h"
 #include <chrono>
 #include <exception>
+#include <limits>
 #include <oxenc/base64.h>
+#include <rapidjson/document.h>
 
 #include "wallet_rpc_server_error_codes.h"
 #include "wallet_rpc_server.h"
@@ -44,7 +48,10 @@
 #include "common/i18n.h"
 #include "common/signal_handler.h"
 #include "cryptonote_config.h"
+#include "cryptonote_basic/asset_descriptor_operation_utils.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "common/file.h"
+#include "common/fs.h"
 #include "cryptonote_basic/account.h"
 #include "multisig/multisig.h"
 #include "epee/string_tools.h"
@@ -74,6 +81,140 @@ namespace
   const command_line::arg_descriptor<bool> arg_prompt_for_password = {"prompt-for-password", "Prompts for password when not provided", false};
 
   constexpr const char default_rpc_username[] = "beldex";
+
+  bool validate_asset_descriptor_for_deploy(const cryptonote::asset_descriptor_base& descriptor, std::string& error)
+  {
+    auto ticker_ok = [](std::string_view ticker) {
+      return !ticker.empty() && ticker.size() <= 14 &&
+             std::all_of(ticker.begin(), ticker.end(), [](unsigned char c) { return std::isalnum(c); });
+    };
+    auto full_name_ok = [](std::string_view name) {
+      return !name.empty() &&
+             std::all_of(name.begin(), name.end(), [](unsigned char c) {
+               return std::isalnum(c) || c == ' ' || c == '_' || c == '-' || c == '.';
+             });
+    };
+
+    if (!ticker_ok(descriptor.ticker))
+    {
+      error = "ticker is invalid; expected 1-14 alphanumeric characters";
+      return false;
+    }
+    if (!full_name_ok(descriptor.full_name))
+    {
+      error = "full_name contains unsupported characters";
+      return false;
+    }
+    if (descriptor.decimal_point > 18)
+    {
+      error = "decimal_point must be <= 18";
+      return false;
+    }
+    if (descriptor.current_supply > descriptor.total_max_supply)
+    {
+      error = "current_supply cannot exceed total_max_supply";
+      return false;
+    }
+    return true;
+  }
+
+  bool load_asset_descriptor_from_json_file(
+      const fs::path& filename,
+      cryptonote::asset_descriptor_base& descriptor,
+      std::string& error)
+  {
+    std::string data;
+    if (!tools::slurp_file(filename, data))
+    {
+      error = "Failed to read asset specification file";
+      return false;
+    }
+
+    rapidjson::Document json;
+    if (json.Parse(data.c_str()).HasParseError())
+    {
+      error = "Asset specification is not valid JSON";
+      return false;
+    }
+    if (!json.IsObject())
+    {
+      error = "Asset specification root must be a JSON object";
+      return false;
+    }
+
+    auto assign_string = [&](const char* field, std::string& target) -> bool {
+      if (!json.HasMember(field))
+        return true;
+      if (!json[field].IsString())
+      {
+        error = std::string{field} + " must be a string";
+        return false;
+      }
+      target = json[field].GetString();
+      return true;
+    };
+    auto assign_uint64 = [&](const char* field, uint64_t& target) -> bool {
+      if (!json.HasMember(field))
+        return true;
+      if (!json[field].IsUint64())
+      {
+        error = std::string{field} + " must be an unsigned integer";
+        return false;
+      }
+      target = json[field].GetUint64();
+      return true;
+    };
+    auto assign_uint8 = [&](const char* field, uint8_t& target) -> bool {
+      if (!json.HasMember(field))
+        return true;
+      if (!json[field].IsUint())
+      {
+        error = std::string{field} + " must be an unsigned integer";
+        return false;
+      }
+      unsigned value = json[field].GetUint();
+      if (value > std::numeric_limits<uint8_t>::max())
+      {
+        error = std::string{field} + " is out of range";
+        return false;
+      }
+      target = static_cast<uint8_t>(value);
+      return true;
+    };
+    auto assign_bool = [&](const char* field, bool& target) -> bool {
+      if (!json.HasMember(field))
+        return true;
+      if (!json[field].IsBool())
+      {
+        error = std::string{field} + " must be a boolean";
+        return false;
+      }
+      target = json[field].GetBool();
+      return true;
+    };
+
+    if (!assign_uint8("version", descriptor.version) ||
+        !assign_uint64("total_max_supply", descriptor.total_max_supply) ||
+        !assign_uint64("current_supply", descriptor.current_supply) ||
+        !assign_uint8("decimal_point", descriptor.decimal_point) ||
+        !assign_string("ticker", descriptor.ticker) ||
+        !assign_string("full_name", descriptor.full_name) ||
+        !assign_string("meta_info", descriptor.meta_info) ||
+        !assign_bool("hidden_supply", descriptor.hidden_supply))
+      return false;
+
+    if (json.HasMember("owner"))
+    {
+      const auto& owner = json["owner"];
+      if (!owner.IsString() || !tools::hex_to_type(owner.GetString(), descriptor.owner))
+      {
+        error = "owner must be a hex-encoded public key";
+        return false;
+      }
+    }
+
+    return validate_asset_descriptor_for_deploy(descriptor, error);
+  }
 
   std::optional<tools::password_container> password_prompter(const char *prompt, bool verify)
   {
@@ -641,6 +782,33 @@ namespace tools
       }
       std::vector<wallet::transfer_details> transfers;
       m_wallet->get_transfers(transfers);
+
+      // HF21: aggregate per-asset balances from ZC transfer details
+      {
+        std::map<crypto::public_key, uint64_t> asset_total, asset_unlocked;
+        const uint64_t blockchain_height = m_wallet->get_blockchain_current_height();
+        for (const auto& td : transfers)
+        {
+          if (!td.is_zarcanum() || td.m_spent) continue;
+          const uint64_t unlock_time = td.m_tx.unlock_time;
+          const bool unlocked = (unlock_time == 0) ||
+              (unlock_time < cryptonote::MAX_BLOCK_NUMBER
+                  ? blockchain_height >= unlock_time
+                  : (uint64_t)std::time(nullptr) >= unlock_time);
+          asset_total[td.m_asset_id] += td.m_amount;
+          if (unlocked) asset_unlocked[td.m_asset_id] += td.m_amount;
+        }
+        for (const auto& [asset_id, total] : asset_total)
+        {
+          GET_BALANCE::asset_balance_entry entry{};
+          entry.asset_id         = tools::type_to_hex(asset_id);
+          entry.ticker           = "";  // populated by daemon RPC get_asset_info if needed
+          entry.balance          = total;
+          entry.unlocked_balance = asset_unlocked.count(asset_id) ? asset_unlocked.at(asset_id) : 0;
+          res.asset_balances.emplace_back(std::move(entry));
+        }
+      }
+
       for (const auto& p : balance_per_subaddress_per_account)
       {
         uint32_t account_index = p.first;
@@ -3645,6 +3813,60 @@ namespace {
   void wallet_rpc_server::stop()
   {
     m_stop = true;
+  }
+
+  // HF21: deploy a new confidential asset
+  DEPLOY_NEW_ASSET::response wallet_rpc_server::invoke(DEPLOY_NEW_ASSET::request&& req)
+  {
+    require_open();
+    DEPLOY_NEW_ASSET::response res{};
+
+    if (req.json_filename.empty())
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "json_filename is required"};
+
+    cryptonote::asset_descriptor_base descriptor{};
+    std::string error;
+    if (!load_asset_descriptor_from_json_file(fs::u8path(req.json_filename), descriptor, error))
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, error + ": " + req.json_filename};
+
+    const auto owner = m_wallet->get_account().get_keys().m_account_address.m_spend_public_key;
+    if (descriptor.owner == crypto::null_pkey)
+      descriptor.owner = owner;
+    else if (descriptor.owner != owner)
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Asset owner must be this wallet's spend key"};
+
+    if (!m_wallet->get_hard_fork_version())
+      throw wallet_rpc_error{error_code::HF_QUERY_FAILED, tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED};
+
+    cryptonote::tx_extra_asset_descriptor_operation ado{};
+    ado.operation_type = cryptonote::asset_descriptor_operation_type::register_asset;
+    ado.fields         = static_cast<uint8_t>(cryptonote::asset_field_descriptor |
+                                               cryptonote::asset_field_asset_id_salt);
+    ado.descriptor     = descriptor;
+    ado.asset_id_salt  = crypto::rand<uint32_t>();
+
+    std::vector<uint8_t> extra;
+    if (!cryptonote::add_asset_descriptor_operation_to_tx_extra(extra, ado))
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to encode asset descriptor into tx extra"};
+
+    const crypto::public_key asset_id = cryptonote::get_or_calculate_asset_id(ado);
+
+    std::set<uint32_t> subaddr_indices;
+    auto ptx_vector = m_wallet->create_asset_deploy_tx(
+        {}, asset_id, cryptonote::TX_OUTPUT_DECOYS, req.priority, extra,
+        req.account_index, subaddr_indices);
+
+    if (ptx_vector.empty())
+      throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "No outputs found or daemon not ready"};
+    if (ptx_vector.size() != 1)
+      throw wallet_rpc_error{error_code::TX_TOO_LARGE, "Transaction would be too large. Try a simpler asset deployment."};
+
+    m_wallet->commit_tx(ptx_vector.front());
+
+    res.asset_id = tools::type_to_hex(asset_id);
+    res.tx_hash  = tools::type_to_hex(cryptonote::get_transaction_hash(ptx_vector.front().tx));
+    res.ticker   = descriptor.ticker;
+    return res;
   }
 
 }
