@@ -63,6 +63,8 @@ RUN set -ex \
     && cd libsodium \
     && test `git rev-parse HEAD` = ${SODIUM_HASH} || exit 1 \
     && ./autogen.sh \
+    && cp $(find /usr/share -name config.guess | head -n 1) build-aux/config.guess \
+    && cp $(find /usr/share -name config.sub | head -n 1) build-aux/config.sub \
     && chmod +x build-aux/config.sub build-aux/config.guess \
     && ./configure --enable-static --disable-shared --prefix=/usr \
     && make -j$(nproc) \
