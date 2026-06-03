@@ -172,6 +172,11 @@ public:
   std::unordered_map<crypto::public_key, master_nodes::proof_info> get_all_master_node_proofs() const override { return {}; }
   void set_master_node_proof(const crypto::public_key &pubkey, const master_nodes::proof_info &proof) override { }
   bool remove_master_node_proof(const crypto::public_key &pubkey) override { return false; }
+  void set_asset_history(const crypto::asset_id &asset_id, const std::string &data) override { }
+  bool get_asset_history(const crypto::asset_id &asset_id, std::string &data) const override { return false; }
+  bool remove_asset_history(const crypto::asset_id &asset_id) override { return false; }
+  bool asset_exists(const crypto::asset_id &asset_id) const override { return false; }
+  std::vector<crypto::asset_id> get_all_asset_ids() const override { return {}; }
 
   virtual void add_alt_block(const crypto::hash &blkid, const cryptonote::alt_block_data_t &data, const cryptonote::blobdata &blob, const cryptonote::blobdata *checkpoint) override {}
   virtual bool get_alt_block(const crypto::hash &blkid, alt_block_data_t *data, cryptonote::blobdata *blob, cryptonote::blobdata *checkpoint) const override { return false; }

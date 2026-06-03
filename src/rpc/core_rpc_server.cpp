@@ -3740,7 +3740,7 @@ namespace cryptonote::rpc {
     if (req.asset_id.size() != 64 || !oxenc::is_hex(req.asset_id))
       throw rpc_error{ERROR_WRONG_PARAM, "asset_id must be a 64-character hex string"};
 
-    crypto::public_key asset_id{};
+    crypto::asset_id asset_id{};
     if (!tools::hex_to_type(req.asset_id, asset_id))
       throw rpc_error{ERROR_WRONG_PARAM, "Failed to parse asset_id"};
 

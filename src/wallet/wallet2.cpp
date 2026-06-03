@@ -1787,7 +1787,7 @@ void wallet2::scan_output(const cryptonote::transaction &tx, bool miner_tx, cons
     const auto& zout = var::get<cryptonote::tx_out_zarcanum>(tx.vout[vout_index].target);
 
     uint64_t amount = 0;
-    crypto::public_key asset_id{};
+    crypto::asset_id asset_id{};
     rct::key amount_mask{}, asset_blinding_mask{};
 
     bool decoded = cryptonote::decode_zarcanum_output(
@@ -2216,7 +2216,7 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
               if (m_multisig_rescan_info && m_multisig_rescan_info->front().size() >= m_transfers.size())
                 update_multisig_rescan_info(*m_multisig_rescan_k, *m_multisig_rescan_info, m_transfers.size() - 1);
             }
-            if (td.m_asset_id != crypto::null_pkey)
+            if (td.m_asset_id != crypto::null_aid)
               LOG_PRINT_L0("Received asset: " << td.amount() << " atomic units, asset_id " << tools::type_to_hex(td.m_asset_id) << ", with tx: " << txid);
             else
               LOG_PRINT_L0("Received money: " << print_money(td.amount()) << ", with tx: " << txid);
@@ -2397,7 +2397,7 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
             THROW_WALLET_EXCEPTION_IF(transfer.get_public_key() != tx_scan_info[o].in_ephemeral.pub, error::wallet_internal_error, "Inconsistent public keys");
             THROW_WALLET_EXCEPTION_IF(transfer.m_spent, error::wallet_internal_error, "Inconsistent spent status");
 
-            if (transfer.m_asset_id != crypto::null_pkey)
+            if (transfer.m_asset_id != crypto::null_aid)
               LOG_PRINT_L0("Received asset: " << transfer.amount() << " atomic units, asset_id " << tools::type_to_hex(transfer.m_asset_id) << ", with tx: " << txid);
             else
               LOG_PRINT_L0("Received money: " << print_money(transfer.amount()) << ", with tx: " << txid);
@@ -6239,15 +6239,15 @@ uint64_t wallet2::unlocked_balance_all(bool strict, uint64_t *blocks_to_unlock, 
 }
 //----------------------------------------------------------------------------------------------------
 // HF21: returns total unspent balance grouped by asset_id for the given account
-std::unordered_map<crypto::public_key, uint64_t>
+std::unordered_map<crypto::asset_id, uint64_t>
 wallet2::asset_balances(uint32_t subaddr_index_major, bool strict) const
 {
-  std::unordered_map<crypto::public_key, uint64_t> result;
+  std::unordered_map<crypto::asset_id, uint64_t> result;
   for (const auto& td : m_transfers)
   {
     if (td.m_spent)    continue;
     if (!td.is_zarcanum()) continue;
-    if (td.m_asset_id == crypto::null_pkey) continue;
+    if (td.m_asset_id == crypto::null_aid) continue;
     if (td.m_subaddr_index.major != subaddr_index_major) continue;
     if (strict && !is_transfer_unlocked(td)) continue;
     result[td.m_asset_id] += td.m_amount;
@@ -11026,7 +11026,7 @@ bool wallet2::light_wallet_key_image_is_ours(const crypto::key_image& key_image,
 // immediately creating ring members for future spends of the new asset.
 std::vector<wallet2::pending_tx> wallet2::create_asset_deploy_tx(
     std::vector<cryptonote::tx_destination_entry> dsts,
-    const crypto::public_key& asset_id,
+    const crypto::asset_id& asset_id,
     const size_t fake_outs_count,
     uint32_t priority,
     const std::vector<uint8_t>& extra,
@@ -11087,8 +11087,6 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   hw::device &hwdev = m_account.get_device();
   std::unique_lock hwdev_lock{hwdev};
   hw::mode_resetter rst{hwdev};
-
-
 
   bool const is_bns_tx = (tx_params.tx_type == txtype::beldex_name_system);
     LOG_PRINT_L0("is_bns_tx:" << is_bns_tx);
@@ -11332,6 +11330,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
 
   // gather all dust and non-dust outputs belonging to specified subaddresses
   size_t num_nondust_outputs = 0;
+  size_t num_asset_outputs = 0;
   size_t num_dust_outputs = 0;
   for (size_t i = 0; i < m_transfers.size(); ++i)
   {
@@ -11589,6 +11588,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
       needed_fee = estimate_fee(tx.selected_transfers.size(), fake_outs_count, num_outputs, extra.size(), clsag, bulletproof_plus, base_fee, fee_percent, fixed_fee, fee_quantization_mask);
 
       uint64_t inputs = 0, outputs = 0;
+      // handle for the asset and normal transaction
       for (size_t idx: tx.selected_transfers) inputs += m_transfers[idx].amount();
       for (const auto &o: tx.dsts) outputs += o.amount;
 
@@ -11607,6 +11607,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
       LOG_PRINT_L2("Trying to create a tx now, with " << tx.dsts.size() << " outputs and " <<
         tx.selected_transfers.size() << " inputs");
       auto tx_dsts = tx.get_adjusted_dsts(needed_fee);
+      // 1st time
       transfer_selected_rct(tx_dsts, tx.selected_transfers, fake_outs_count, outs, unlock_time, needed_fee, extra,
           test_tx, test_ptx, rct_config, tx_params);
       auto txBlob = t_serializable_object_to_blob(test_ptx.tx);
@@ -11664,6 +11665,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
         size_t fee_tries;
         for (fee_tries = 0; fee_tries < 10 && needed_fee > test_ptx.fee; ++fee_tries) {
           tx_dsts = tx.get_adjusted_dsts(needed_fee);
+          // 2nd time
           transfer_selected_rct(tx_dsts, tx.selected_transfers, fake_outs_count, outs, unlock_time, needed_fee, extra,
               test_tx, test_ptx, rct_config, tx_params);
           txBlob = t_serializable_object_to_blob(test_ptx.tx);
@@ -11734,6 +11736,7 @@ skip_tx:
     const auto tx_dsts = tx.get_adjusted_dsts(tx.needed_fee);
     cryptonote::transaction test_tx;
     pending_tx test_ptx;
+    // 3rd time
     transfer_selected_rct(  tx_dsts,                    /* NOMOD std::vector<cryptonote::tx_destination_entry> dsts,*/
                             tx.selected_transfers,      /* const std::list<size_t> selected_transfers */
                             fake_outs_count,            /* CONST size_t fake_outputs_count, */

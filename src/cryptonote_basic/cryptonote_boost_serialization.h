@@ -58,6 +58,11 @@ namespace boost
     a & reinterpret_cast<char (&)[sizeof(crypto::public_key)]>(x);
   }
   template <class Archive>
+  inline void serialize(Archive &a, crypto::asset_id &x, const boost::serialization::version_type ver)
+  {
+    a & reinterpret_cast<char (&)[sizeof(crypto::asset_id)]>(x);
+  }
+  template <class Archive>
   inline void serialize(Archive &a, crypto::secret_key &x, const boost::serialization::version_type ver)
   {
     a & reinterpret_cast<char (&)[sizeof(crypto::secret_key)]>(x);

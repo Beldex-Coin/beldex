@@ -1188,7 +1188,7 @@ namespace cryptonote
                                const crypto::key_derivation& derivation,
                                size_t output_index,
                                uint64_t& amount_out,
-                               crypto::public_key& asset_id_out,
+                               crypto::asset_id& asset_id_out,
                                rct::key& amount_mask_out,
                                rct::key& asset_blinding_mask_out)
   {
@@ -1206,7 +1206,7 @@ namespace cryptonote
     rct::key rX = rct::scalarmultX(r);
     rct::key asset_id_rct;
     rct::subKeys(asset_id_rct, rct::pk2rct(zout.blinded_asset_id), rX);
-    asset_id_out = rct::rct2pk(asset_id_rct);
+    asset_id_out = reinterpret_cast<const crypto::asset_id&>(rct::rct2pk(asset_id_rct));
     asset_blinding_mask_out = r;
 
     // 3. Recover amount mask and decrypt amount

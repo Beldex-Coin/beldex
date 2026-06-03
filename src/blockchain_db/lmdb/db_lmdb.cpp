@@ -6365,7 +6365,7 @@ bool BlockchainLMDB::remove_master_node_proof(const crypto::public_key& pubkey)
   return true;
 }
 
-void BlockchainLMDB::set_asset_history(const crypto::public_key& asset_id, const std::string& data)
+void BlockchainLMDB::set_asset_history(const crypto::asset_id& asset_id, const std::string& data)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
@@ -6383,7 +6383,7 @@ void BlockchainLMDB::set_asset_history(const crypto::public_key& asset_id, const
   TXN_BLOCK_POSTFIX_SUCCESS();
 }
 
-bool BlockchainLMDB::get_asset_history(const crypto::public_key& asset_id, std::string& data) const
+bool BlockchainLMDB::get_asset_history(const crypto::asset_id& asset_id, std::string& data) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
@@ -6410,7 +6410,7 @@ bool BlockchainLMDB::get_asset_history(const crypto::public_key& asset_id, std::
   return true;
 }
 
-bool BlockchainLMDB::remove_asset_history(const crypto::public_key& asset_id)
+bool BlockchainLMDB::remove_asset_history(const crypto::asset_id& asset_id)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
@@ -6434,7 +6434,7 @@ bool BlockchainLMDB::remove_asset_history(const crypto::public_key& asset_id)
   return true;
 }
 
-bool BlockchainLMDB::asset_exists(const crypto::public_key& asset_id) const
+bool BlockchainLMDB::asset_exists(const crypto::asset_id& asset_id) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
@@ -6453,7 +6453,7 @@ bool BlockchainLMDB::asset_exists(const crypto::public_key& asset_id) const
   return true;
 }
 
-std::vector<crypto::public_key> BlockchainLMDB::get_all_asset_ids() const
+std::vector<crypto::asset_id> BlockchainLMDB::get_all_asset_ids() const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
@@ -6461,7 +6461,7 @@ std::vector<crypto::public_key> BlockchainLMDB::get_all_asset_ids() const
   TXN_PREFIX_RDONLY();
   RCURSOR(asset_histories)
 
-  std::vector<crypto::public_key> result;
+  std::vector<crypto::asset_id> result;
   MDB_val key{}, value{};
   MDB_cursor_op op = MDB_FIRST;
   while (true)
@@ -6473,10 +6473,10 @@ std::vector<crypto::public_key> BlockchainLMDB::get_all_asset_ids() const
       break;
     if (get_result != MDB_SUCCESS)
       throw0(DB_ERROR(lmdb_error("Failed to enumerate assets: ", get_result)));
-    if (key.mv_size != sizeof(crypto::public_key))
+    if (key.mv_size != sizeof(crypto::asset_id))
       throw0(DB_ERROR("Invalid key size in assets table"));
 
-    result.push_back(*static_cast<const crypto::public_key*>(key.mv_data));
+    result.push_back(*static_cast<const crypto::asset_id*>(key.mv_data));
   }
 
   return result;

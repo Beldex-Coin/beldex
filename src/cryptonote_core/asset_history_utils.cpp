@@ -35,7 +35,7 @@ size_t count_zarcanum_outputs(const transaction& tx)
 }
 }
 
-bool load_asset_history(BlockchainDB& db, const crypto::public_key& asset_id, asset_history_t& history)
+bool load_asset_history(BlockchainDB& db, const crypto::asset_id& asset_id, asset_history_t& history)
 {
   history.clear();
 
@@ -47,7 +47,7 @@ bool load_asset_history(BlockchainDB& db, const crypto::public_key& asset_id, as
   return true;
 }
 
-void store_asset_history(BlockchainDB& db, const crypto::public_key& asset_id, const asset_history_t& history)
+void store_asset_history(BlockchainDB& db, const crypto::asset_id& asset_id, const asset_history_t& history)
 {
   auto copy = history;
   db.set_asset_history(asset_id, serialization::dump_binary(copy));
@@ -55,7 +55,7 @@ void store_asset_history(BlockchainDB& db, const crypto::public_key& asset_id, c
 
 bool append_assets_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason)
 {
-  std::unordered_map<crypto::public_key, asset_history_t> cache;
+  std::unordered_map<crypto::asset_id, asset_history_t> cache;
 
   for (const auto& tx : txs)
   {
@@ -63,8 +63,8 @@ bool append_assets_from_transactions(BlockchainDB& db, const std::vector<transac
     tx_extra_asset_descriptor_operation ado{};
     while (get_asset_descriptor_operation_from_tx_extra(tx.extra, ado, skip++))
     {
-      const crypto::public_key asset_id = get_or_calculate_asset_id(ado);
-      if (asset_id == crypto::null_pkey)
+      const crypto::asset_id asset_id = get_or_calculate_asset_id(ado);
+      if (asset_id == crypto::null_aid)
       {
         set_reason(reason, "failed to derive asset id while appending history");
         return false;
@@ -117,7 +117,7 @@ bool validate_asset_descriptor_operation(const tx_extra_asset_descriptor_operati
     return false;
   }
 
-  if (op.field_is_set(asset_field_asset_id) && op.asset_id == crypto::null_pkey)
+  if (op.field_is_set(asset_field_asset_id) && op.asset_id == crypto::null_aid)
   {
     reason = "asset descriptor operation has null asset_id with asset_id field set";
     return false;
@@ -161,7 +161,7 @@ bool validate_asset_descriptor_operation(const tx_extra_asset_descriptor_operati
       return false;
   }
 
-  if (get_or_calculate_asset_id(op) == crypto::null_pkey)
+  if (get_or_calculate_asset_id(op) == crypto::null_aid)
   {
     reason = "unable to derive non-null asset_id from operation";
     return false;
@@ -171,7 +171,7 @@ bool validate_asset_descriptor_operation(const tx_extra_asset_descriptor_operati
 }
 
 bool apply_asset_operation_to_state(
-    const crypto::public_key& asset_id,
+    const crypto::asset_id& asset_id,
     const tx_extra_asset_descriptor_operation& op,
     asset_consensus_state& state,
     std::string& reason)
@@ -273,7 +273,7 @@ bool apply_asset_operation_to_state(
 
 bool load_asset_state_from_history(
     BlockchainDB& db,
-    const crypto::public_key& asset_id,
+    const crypto::asset_id& asset_id,
     asset_consensus_state& state,
     std::string& reason)
 {
@@ -307,9 +307,9 @@ bool validate_tx_asset_operations_against_db(
 {
   size_t op_index = 0;
   tx_extra_asset_descriptor_operation op{};
-  std::unordered_map<crypto::public_key, asset_consensus_state> states;
+  std::unordered_map<crypto::asset_id, asset_consensus_state> states;
   bool saw_asset_op = false;
-  crypto::public_key tx_asset_id = crypto::null_pkey;
+  crypto::asset_id tx_asset_id = crypto::null_aid;
 
   // Count zarcanum outputs once — checked per emit/register op below.
   const size_t zc_out_count = (hf_version >= feature::CONFIDENTIAL_ASSETS)
@@ -358,8 +358,8 @@ bool validate_tx_asset_operations_against_db(
       }
     }
 
-    const crypto::public_key asset_id = get_or_calculate_asset_id(op);
-    if (tx_asset_id == crypto::null_pkey)
+    const crypto::asset_id asset_id = get_or_calculate_asset_id(op);
+    if (tx_asset_id == crypto::null_aid)
       tx_asset_id = asset_id;
     else if (tx_asset_id != asset_id)
     {
@@ -389,17 +389,17 @@ bool validate_tx_asset_operations_against_db(
 
 bool rewind_assets_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason)
 {
-  std::unordered_map<crypto::public_key, asset_history_t> cache;
+  std::unordered_map<crypto::asset_id, asset_history_t> cache;
 
   for (auto tx_it = txs.rbegin(); tx_it != txs.rend(); ++tx_it)
   {
-    std::vector<std::pair<crypto::public_key, tx_extra_asset_descriptor_operation>> tx_ops;
+    std::vector<std::pair<crypto::asset_id, tx_extra_asset_descriptor_operation>> tx_ops;
     size_t skip = 0;
     tx_extra_asset_descriptor_operation ado{};
     while (get_asset_descriptor_operation_from_tx_extra(tx_it->extra, ado, skip++))
     {
-      const crypto::public_key asset_id = get_or_calculate_asset_id(ado);
-      if (asset_id == crypto::null_pkey)
+      const crypto::asset_id asset_id = get_or_calculate_asset_id(ado);
+      if (asset_id == crypto::null_aid)
       {
         set_reason(reason, "failed to derive asset id while rewinding history");
         return false;

@@ -186,8 +186,8 @@ private:
     wallet::pay_type type;
     uint64_t amount;
     uint64_t unlock_time;
-    // HF21: null_pkey = native BDX output
-    crypto::public_key asset_id = crypto::null_pkey;
+    // HF21: null_aid = native BDX output
+    crypto::asset_id asset_id = crypto::null_aid;
   };
 
   class hashchain
@@ -314,7 +314,7 @@ private:
       bool error;
       std::optional<cryptonote::subaddress_receive_info> received;
       // HF21: confidential asset fields (null = native BDX)
-      crypto::public_key asset_id        = crypto::null_pkey;
+      crypto::asset_id  asset_id         = crypto::null_aid;
       rct::key           asset_mask      = rct::zero();
 
       tx_scan_info_t(): amount(0), money_transfered(0), error(true) {}
@@ -333,10 +333,10 @@ private:
       bool m_unmined_flash;
       bool m_was_flash;
       // HF21: asset ID for confidential asset outputs; null = native BDX
-      crypto::public_key m_asset_id = crypto::null_pkey;
+      crypto::asset_id m_asset_id = crypto::null_aid;
 
       bool is_coinbase() const { return ((m_type == wallet::pay_type::miner) || (m_type == wallet::pay_type::master_node) || (m_type == wallet::pay_type::governance)); }
-      bool is_asset()    const { return m_asset_id != crypto::null_pkey; }
+      bool is_asset()    const { return m_asset_id != crypto::null_aid; }
     };
 
     struct address_tx : payment_details
@@ -743,7 +743,7 @@ private:
     uint64_t unlocked_balance_all(bool strict, uint64_t *blocks_to_unlock = NULL, uint64_t *time_to_unlock = NULL) const;
 
     // HF21: per-asset balances — maps asset_id → total amount held in unspent ZC outputs
-    std::unordered_map<crypto::public_key, uint64_t> asset_balances(uint32_t subaddr_index_major, bool strict) const;
+    std::unordered_map<crypto::asset_id, uint64_t> asset_balances(uint32_t subaddr_index_major, bool strict) const;
     void transfer_selected_rct(std::vector<cryptonote::tx_destination_entry> dsts, const std::vector<size_t>& selected_transfers, size_t fake_outputs_count,
       std::vector<std::vector<tools::wallet2::get_outs_entry>> &outs,
       uint64_t unlock_time, uint64_t fee, const std::vector<uint8_t>& extra, cryptonote::transaction& tx, pending_tx &ptx, const rct::RCTConfig &rct_config, const cryptonote::beldex_construct_tx_params &beldex_tx_params);
@@ -775,7 +775,7 @@ private:
     // MIN_ASSET_EMISSION_OUTPUTS so the blockchain fan-out rule passes.
     std::vector<pending_tx> create_asset_deploy_tx(
         std::vector<cryptonote::tx_destination_entry> dsts,
-        const crypto::public_key& asset_id,
+        const crypto::asset_id& asset_id,
         const size_t fake_outs_count,
         uint32_t priority,
         const std::vector<uint8_t>& extra,

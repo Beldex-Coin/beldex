@@ -5,13 +5,13 @@
 
 namespace cryptonote
 {
-  crypto::public_key get_or_calculate_asset_id(const tx_extra_asset_descriptor_operation& ado)
+  crypto::asset_id get_or_calculate_asset_id(const tx_extra_asset_descriptor_operation& ado)
   {
-    if (ado.field_is_set(asset_field_asset_id) && ado.asset_id != crypto::null_pkey)
+    if (ado.field_is_set(asset_field_asset_id) && ado.asset_id != crypto::null_aid)
       return ado.asset_id;
 
     if (!ado.field_is_set(asset_field_descriptor))
-      return crypto::null_pkey;
+      return crypto::null_aid;
 
     std::string seed = serialization::dump_binary(const_cast<asset_descriptor_base&>(ado.descriptor));
     if (ado.field_is_set(asset_field_asset_id_salt))
@@ -25,8 +25,8 @@ namespace cryptonote
 
     crypto::public_key derived_public = crypto::null_pkey;
     if (!crypto::secret_key_to_public_key(derived_secret, derived_public))
-      return crypto::null_pkey;
+      return crypto::null_aid;
 
-    return derived_public;
+    return reinterpret_cast<const crypto::asset_id&>(derived_public);
   }
 }

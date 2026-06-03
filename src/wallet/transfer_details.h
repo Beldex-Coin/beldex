@@ -60,13 +60,13 @@ struct transfer_details
   std::vector<multisig_info> m_multisig_info; // one per other participant
   std::vector<std::pair<uint64_t, crypto::hash>> m_uses;
 
-  // Confidential asset (HF21+). null_pkey = native BDX (txout_to_key).
-  crypto::public_key m_asset_id = crypto::null_pkey;
+  // Confidential asset (HF21+). null_aid = native BDX (txout_to_key).
+  crypto::asset_id m_asset_id = crypto::null_aid;
   // Amount blinding mask for the asset commitment (needed to build pseudo-out when spending).
   rct::key m_asset_mask = rct::zero();
 
   bool is_rct() const { return m_rct; }
-  bool is_zarcanum() const { return m_asset_id != crypto::null_pkey; }
+  bool is_zarcanum() const { return m_asset_id != crypto::null_aid; }
   uint64_t amount() const { return m_amount; }
 
   const crypto::public_key &get_public_key() const {
@@ -159,7 +159,7 @@ void serialize(Archive &a, wallet::transfer_details &x, const unsigned int ver)
       x.m_was_flash = false;
     if (ver < 15)
     {
-      x.m_asset_id   = crypto::null_pkey;
+      x.m_asset_id   = crypto::null_aid;
       x.m_asset_mask = rct::zero();
     }
   }

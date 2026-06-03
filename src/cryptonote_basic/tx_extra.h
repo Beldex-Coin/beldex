@@ -600,7 +600,7 @@ namespace cryptonote
     asset_descriptor_operation_type operation_type = asset_descriptor_operation_type::undefined;
     uint8_t fields = asset_field_none;
     crypto::public_key amount_commitment = crypto::null_pkey;
-    crypto::public_key asset_id = crypto::null_pkey;
+    crypto::asset_id asset_id = crypto::null_aid;
     asset_descriptor_base descriptor{};
     uint64_t amount = 0;
     uint32_t asset_id_salt = 0;

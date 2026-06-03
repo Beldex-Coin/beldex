@@ -444,11 +444,11 @@ private:
   void set_master_node_proof(const crypto::public_key& pubkey, const master_nodes::proof_info& proof) override;
   std::unordered_map<crypto::public_key, master_nodes::proof_info> get_all_master_node_proofs() const override;
   bool remove_master_node_proof(const crypto::public_key& pubkey) override;
-  void set_asset_history(const crypto::public_key &asset_id, const std::string &data) override;
-  bool get_asset_history(const crypto::public_key &asset_id, std::string &data) const override;
-  bool remove_asset_history(const crypto::public_key& asset_id) override;
-  bool asset_exists(const crypto::public_key &asset_id) const override;
-  std::vector<crypto::public_key> get_all_asset_ids() const override;
+  void set_asset_history(const crypto::asset_id &asset_id, const std::string &data) override;
+  bool get_asset_history(const crypto::asset_id &asset_id, std::string &data) const override;
+  bool remove_asset_history(const crypto::asset_id& asset_id) override;
+  bool asset_exists(const crypto::asset_id &asset_id) const override;
+  std::vector<crypto::asset_id> get_all_asset_ids() const override;
 
 private:
   template <typename T,

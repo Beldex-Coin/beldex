@@ -171,13 +171,13 @@ namespace cryptonote
     bool is_subaddress;
     bool is_integrated;
     // Confidential asset (HF21+). null_pkey = native BDX output (txout_to_key).
-    crypto::public_key asset_id = crypto::null_pkey;
+    crypto::asset_id asset_id = crypto::null_aid;
 
     tx_destination_entry() : amount(0), addr{}, is_subaddress(false), is_integrated(false) { }
     tx_destination_entry(uint64_t a, const account_public_address &ad, bool is_subaddress) : amount(a), addr(ad), is_subaddress(is_subaddress), is_integrated(false) { }
     tx_destination_entry(const std::string &o, uint64_t a, const account_public_address &ad, bool is_subaddress) : original(o), amount(a), addr(ad), is_subaddress(is_subaddress), is_integrated(false) { }
 
-    bool is_zarcanum() const { return asset_id != crypto::null_pkey; }
+    bool is_zarcanum() const { return asset_id != crypto::null_aid; }
 
     bool operator==(const tx_destination_entry& other) const
     {

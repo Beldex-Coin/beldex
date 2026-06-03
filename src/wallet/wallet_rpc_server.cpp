@@ -785,7 +785,7 @@ namespace tools
 
       // HF21: aggregate per-asset balances from ZC transfer details
       {
-        std::map<crypto::public_key, uint64_t> asset_total, asset_unlocked;
+        std::map<crypto::asset_id, uint64_t> asset_total, asset_unlocked;
         const uint64_t blockchain_height = m_wallet->get_blockchain_current_height();
         for (const auto& td : transfers)
         {
@@ -3849,7 +3849,7 @@ namespace {
     if (!cryptonote::add_asset_descriptor_operation_to_tx_extra(extra, ado))
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to encode asset descriptor into tx extra"};
 
-    const crypto::public_key asset_id = cryptonote::get_or_calculate_asset_id(ado);
+    const crypto::asset_id asset_id = cryptonote::get_or_calculate_asset_id(ado);
 
     std::set<uint32_t> subaddr_indices;
     auto ptx_vector = m_wallet->create_asset_deploy_tx(

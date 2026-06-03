@@ -4367,7 +4367,7 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
   size_t cumulative_block_weight = coinbase_weight;
 
   std::vector<std::pair<transaction, blobdata>> txs;
-  std::unordered_map<crypto::public_key, asset_consensus_state> pending_asset_states;
+  std::unordered_map<crypto::asset_id, asset_consensus_state> pending_asset_states;
   key_images_container keys;
 
   uint64_t fee_summary = 0;
@@ -4497,7 +4497,7 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
           return false;
         }
 
-        crypto::public_key const asset_id = cryptonote::get_or_calculate_asset_id(op);
+        crypto::asset_id const asset_id = cryptonote::get_or_calculate_asset_id(op);
 
         auto [state_it, inserted] = pending_asset_states.try_emplace(asset_id);
         if (inserted)
@@ -4679,20 +4679,20 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
         {
           tx_extra_asset_descriptor_operation ado{};
           size_t skip = 0;
-          crypto::public_key asset_id = crypto::null_pkey;
+          crypto::asset_id asset_id = crypto::null_aid;
           while (get_asset_descriptor_operation_from_tx_extra(tx.extra, ado, skip++))
           {
-            const crypto::public_key op_asset_id = get_or_calculate_asset_id(ado);
-            if (op_asset_id == crypto::null_pkey)
+            const crypto::asset_id op_asset_id = get_or_calculate_asset_id(ado);
+            if (op_asset_id == crypto::null_aid)
               continue;
 
-            if (asset_id == crypto::null_pkey)
+            if (asset_id == crypto::null_aid)
               asset_id = op_asset_id;
             else if (asset_id != op_asset_id)
               throw std::runtime_error{"tx contains outputs for multiple asset ids"};
           }
 
-          if (asset_id == crypto::null_pkey)
+          if (asset_id == crypto::null_aid)
             continue;
 
           for (size_t out_idx = 0; out_idx < tx.vout.size(); ++out_idx)

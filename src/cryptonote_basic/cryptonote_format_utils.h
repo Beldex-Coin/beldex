@@ -193,7 +193,7 @@ namespace cryptonote
                                const crypto::key_derivation& derivation,
                                size_t output_index,
                                uint64_t& amount_out,
-                               crypto::public_key& asset_id_out,
+                               crypto::asset_id& asset_id_out,
                                rct::key& amount_mask_out,
                                rct::key& asset_blinding_mask_out);
   struct subaddress_receive_info
