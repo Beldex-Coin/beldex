@@ -298,11 +298,11 @@ bool bind_container(sql_compiled_statement& s, const Container& c)
 /// Retrieve a type from an executed statement.
 
 // Small (<=32 bits) integers
-template <typename T, std::enable_if_t<std::is_integral_v<T> && (sizeof(T) <= 32), int> = 0>
+template <typename T, std::enable_if_t<std::is_integral_v<T> && (sizeof(T) <= 4), int> = 0>
 T get(sql_compiled_statement& s, int index) { return static_cast<T>(sqlite3_column_int(s.statement, index)); }
 
 // Big (>32 bits) integers
-template <typename T, std::enable_if_t<std::is_integral_v<T> && (sizeof(T) > 32), int> = 0>
+template <typename T, std::enable_if_t<std::is_integral_v<T> && (sizeof(T) > 4), int> = 0>
 T get(sql_compiled_statement& s, int index) { return static_cast<T>(sqlite3_column_int64(s.statement, index)); }
 
 // Floats/doubles
@@ -1581,10 +1581,10 @@ mapping_value mapping_value::make_encrypted(std::string_view name, const crypto:
   return result;
 }
 
-mapping_value mapping_value::make_decrypted(std::string_view name, const crypto::hash* name_hash) const
+mapping_value mapping_value::make_decrypted(std::string_view name, mapping_type type, const crypto::hash* name_hash) const
 {
   mapping_value result{*this};
-  result.encrypt(name, name_hash);
+  result.decrypt(name, type, name_hash);
   assert(!result.encrypted);
   return result;
 }
