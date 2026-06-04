@@ -83,7 +83,7 @@ namespace crypto {
 
   struct key_image: ec_point {};
 
-  struct asset_id : public_key {};
+  struct asset_id : ec_point {};
 
   struct signature {
     ec_scalar c, r;

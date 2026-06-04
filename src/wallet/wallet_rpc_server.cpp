@@ -3868,6 +3868,67 @@ namespace {
     res.ticker   = descriptor.ticker;
     return res;
   }
+  GET_OWNED_ASSETS::response wallet_rpc_server::invoke(GET_OWNED_ASSETS::request&& req)
+  {
+    require_open();
+    GET_OWNED_ASSETS::response res{};
+
+    nlohmann::json list_res;
+    try {
+      nlohmann::json list_req = nlohmann::json::object();
+      list_req["count"] = 1000000;
+      list_req["offset"] = 0;
+      list_res = m_wallet->json_rpc("get_asset_list", list_req);
+    } catch (const std::exception& e) {
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to fetch asset list from daemon: " + std::string(e.what())};
+    }
+
+    std::string my_owner = tools::type_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+
+    if (list_res.contains("asset_ids") && list_res["asset_ids"].is_array()) {
+      for (const auto& asset_id_val : list_res["asset_ids"]) {
+        std::string asset_id_hex = asset_id_val.get<std::string>();
+        
+        nlohmann::json info_res;
+        try {
+          nlohmann::json info_req = nlohmann::json::object();
+          info_req["asset_id"] = asset_id_hex;
+          info_res = m_wallet->json_rpc("get_asset_info", info_req);
+        } catch (const std::exception&) {
+          continue;
+        }
+
+        const std::string owner_hex = info_res.value("owner", "");
+        if (owner_hex != my_owner)
+          continue;
+
+        std::string meta_info = info_res.value("meta_info", "");
+        std::string full_name = info_res.value("full_name", "");
+        const auto it_supply = info_res.find("current_supply");
+        const auto it_ticker = info_res.find("ticker");
+        const auto it_decimal = info_res.find("decimal_point");
+        const auto it_max_supply = info_res.find("total_max_supply");
+        
+        if (it_supply == info_res.end() || it_ticker == info_res.end() || it_decimal == info_res.end() || it_max_supply == info_res.end())
+          continue;
+
+        if (it_max_supply.value() == 0)
+          continue;
+
+        res.assets.push_back({
+          asset_id_hex,
+          full_name,
+          it_ticker->get<std::string>(),
+          it_max_supply->get<uint64_t>(),
+          it_supply->get<uint64_t>(),
+          (uint8_t)it_decimal->get<uint64_t>(),
+          meta_info
+        });
+      }
+    }
+
+    return res;
+  }
 
 }
 

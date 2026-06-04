@@ -529,7 +529,9 @@ namespace
   const char* USAGE_BNS_LOOKUP("bns_lookup <name> [<name> ...]");
     
   const char* USAGE_COIN_BURN("coin_burn [index=<N1>[,<N2>,...]] [<priority>] <burn=amount | txid>");
+
   const char* USAGE_DEPLOY_NEW_ASSET("deploy_new_asset [index=<N1>[,<N2>,...]] [<priority>] <json_filename>");
+  const char* USAGE_ASSETS_BY_OWNER("assets_by_owner");
 
 
 #if defined (BELDEX_ENABLE_INTEGRATION_TEST_HOOKS)
@@ -3442,6 +3444,11 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
                            [this](const auto& x) { return deploy_new_asset(x); },
                            tr(USAGE_DEPLOY_NEW_ASSET),
                            tr("Deploy a new confidential asset. Provide a JSON file with: ticker, full_name, total_max_supply, current_supply, decimal_point, hidden_supply, meta_info."));
+
+  m_cmd_binder.set_handler("assets_by_owner",
+                           [this](const auto& x) { return assets_by_owner(x); },
+                           tr(USAGE_ASSETS_BY_OWNER),
+                           tr("List all deployed assets belonging to this wallet."));
 }
 
 simple_wallet::~simple_wallet()
@@ -7854,6 +7861,52 @@ bool simple_wallet::coin_burn(std::vector<std::string> args)
     LOG_ERROR("unknown error");
     fail_msg_writer() << tr("unknown error");
     return true;
+  }
+
+  return true;
+}
+//----------------------------------------------------------------------------------------------------
+bool simple_wallet::assets_by_owner(const std::vector<std::string>& args_)
+{
+  nlohmann::json list_res;
+  try {
+    nlohmann::json list_req = nlohmann::json::object();
+    list_req["offset"] = 0;
+    list_req["count"] = 1000000;
+    list_res = m_wallet->json_rpc("get_asset_list", list_req);
+  } catch (const std::exception& e) {
+    fail_msg_writer() << "Failed to fetch asset list from daemon: " << e.what();
+    return true;
+  }
+
+  std::string my_owner = tools::type_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+
+  if (list_res.contains("asset_ids")) {
+    for (const auto& asset_id_val : list_res["asset_ids"]) {
+      std::string asset_id_hex = asset_id_val.get<std::string>();
+      
+      nlohmann::json info_res;
+      try {
+        nlohmann::json info_req = nlohmann::json::object();
+        info_req["asset_id"] = asset_id_hex;
+        info_res = m_wallet->json_rpc("get_asset_info", info_req);
+      } catch (const std::exception&) {
+        continue;
+      }
+
+      if (info_res.contains("owner") && info_res["owner"].get<std::string>() == my_owner) {
+        nlohmann::json out = {
+          {"Asset ID", info_res.value("asset_id", "")},
+          {"ticker", info_res.value("ticker", "")},
+          {"full_name", info_res.value("full_name", "")},
+          {"total_max_supply", info_res.value("total_max_supply", (uint64_t)0)},
+          {"current_supply", info_res.value("current_supply", (uint64_t)0)},
+          {"decimal_point", info_res.value("decimal_point", 0)},
+          {"meta_info", info_res.value("meta_info", "")}
+        };
+        success_msg_writer() << out.dump(2);
+      }
+    }
   }
 
   return true;

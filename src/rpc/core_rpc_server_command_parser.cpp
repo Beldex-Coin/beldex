@@ -404,8 +404,8 @@ namespace cryptonote::rpc {
 
   void parse_request(GET_ASSET_LIST& asset_list, rpc_input in) {
     get_values(in,
-        "offset", asset_list.request.offset,
-        "count", asset_list.request.count);
+        "count", asset_list.request.count,
+        "offset", asset_list.request.offset);
   }
 
   void parse_request(GET_QUORUM_STATE& qs, rpc_input in) {

@@ -882,7 +882,7 @@ namespace cryptonote
         // Blinded asset ID:  T = asset_id + r*X
         rct::key r = zarcanum_derivation_to_scalar(derivation, output_index, "asset_blind");
         rct::key rX = rct::scalarmultX(r);
-        rct::key asset_id_rct = rct::pk2rct(dst_entr.asset_id);
+        const rct::key& asset_id_rct = rct::aid2rct(dst_entr.asset_id);
         rct::key T;
         rct::addKeys(T, asset_id_rct, rX);
         zout.blinded_asset_id = rct::rct2pk(T);

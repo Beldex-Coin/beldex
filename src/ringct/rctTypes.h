@@ -617,10 +617,12 @@ namespace rct {
     xmr_amount b2d(bits amountb);
 
     inline const rct::key &pk2rct(const crypto::public_key &pk) { return (const rct::key&)pk; }
+    inline const rct::key &aid2rct(const crypto::asset_id &aid) { return (const rct::key&)aid; }
     inline const rct::key &sk2rct(const crypto::secret_key &sk) { return (const rct::key&)sk; }
     inline const rct::key &ki2rct(const crypto::key_image &ki) { return (const rct::key&)ki; }
     inline const rct::key &hash2rct(const crypto::hash &h) { return (const rct::key&)h; }
     inline const crypto::public_key &rct2pk(const rct::key &k) { return (const crypto::public_key&)k; }
+    inline const crypto::asset_id &rct2aid(const rct::key &k) { return (const crypto::asset_id&)k; }
     inline const crypto::secret_key &rct2sk(const rct::key &k) { return (const crypto::secret_key&)k; }
     inline const crypto::key_image &rct2ki(const rct::key &k) { return (const crypto::key_image&)k; }
     inline const crypto::hash &rct2hash(const rct::key &k) { return (const crypto::hash&)k; }

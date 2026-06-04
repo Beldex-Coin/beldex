@@ -2626,6 +2626,35 @@ This command is only required if the open wallet is one of the owners of a BNS r
     };
   };
 
+  BELDEX_RPC_DOC_INTROSPECT
+  // HF21: Get a list of assets created by the wallet
+  struct GET_OWNED_ASSETS : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("get_owned_assets"); }
+
+    struct request {
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct asset_info {
+      std::string asset_id;        // Hex-encoded asset public key
+      std::string full_name;       // Asset full name
+      std::string ticker;          // Asset ticker symbol
+      uint64_t max_supply;
+      uint64_t current_supply;
+      uint8_t  decimal_point;
+      std::string meta_info;
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response {
+      std::vector<asset_info> assets;
+
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
   /// List of all supported rpc command structs to allow compile-time enumeration of all supported
   /// RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   /// a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2731,7 +2760,8 @@ This command is only required if the open wallet is one of the owners of a BNS r
     BNS_DECRYPT_VALUE,
     BNS_ENCRYPT_VALUE,
     COIN_BURN,
-    DEPLOY_NEW_ASSET
+    DEPLOY_NEW_ASSET,
+    GET_OWNED_ASSETS
   >;
 
 }

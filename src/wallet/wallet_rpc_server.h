@@ -170,7 +170,7 @@ namespace tools
     wallet_rpc::COIN_BURN::response                       invoke(wallet_rpc::COIN_BURN::request&& req);
     wallet_rpc::QUERY_KEY::response                       invoke(wallet_rpc::QUERY_KEY::request&& req);
     wallet_rpc::DEPLOY_NEW_ASSET::response                invoke(wallet_rpc::DEPLOY_NEW_ASSET::request&& req);
-
+    wallet_rpc::GET_OWNED_ASSETS::response               invoke(wallet_rpc::GET_OWNED_ASSETS::request&& req);
   private:
 
       /// Handles a POST request to /json_rpc.
