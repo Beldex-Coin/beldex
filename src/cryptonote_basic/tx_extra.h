@@ -330,6 +330,13 @@ namespace cryptonote
       FIELD(m_portions)
       FIELD(m_expiration_timestamp)
       FIELD(m_master_node_signature)
+      if (Archive::is_deserializer)
+      {
+        if (m_public_spend_keys.size() != m_public_view_keys.size())
+          throw std::invalid_argument{"tx_extra_master_node_register: spend/view key count mismatch"};
+        if (m_public_spend_keys.size() != m_portions.size())
+          throw std::invalid_argument{"tx_extra_master_node_register: spend/portions count mismatch"};
+      }
     END_SERIALIZE()
   };
 
