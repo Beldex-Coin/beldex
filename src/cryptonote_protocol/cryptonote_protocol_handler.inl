@@ -190,6 +190,7 @@ namespace cryptonote
       if (!r.heights.empty())
       {
         MLOG_P2P_MESSAGE("-->>NOTIFY_REQUEST_BLOCK_FLASHES: requesting flash tx lists for " << r.heights.size() << " blocks");
+        context.m_requested_flash_heights.insert(r.heights.begin(), r.heights.end());
         post_notify<NOTIFY_REQUEST_BLOCK_FLASHES>(r, context);
         MLOG_PEER_STATE("requesting block flashes");
       }
@@ -1217,6 +1218,15 @@ namespace cryptonote
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_RESPONSE_GET_BLOCKS (" << arg.blocks.size() << " blocks)");
     MLOG_PEER_STATE("received blocks");
+
+    if (context.m_state != cryptonote_connection_context::state_synchronizing
+        || !context.m_last_request_time
+        || context.m_requested_objects.empty())
+    {
+      LOG_ERROR_CCONTEXT("Received NOTIFY_RESPONSE_GET_BLOCKS without a pending block request, dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
 
     auto request_time = *context.m_last_request_time;
     context.m_last_request_time.reset();
@@ -2427,6 +2437,15 @@ skip:
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_RESPONSE_CHAIN_ENTRY: m_block_ids.size()=" << arg.m_block_ids.size()
       << ", m_start_height=" << arg.start_height << ", m_total_height=" << arg.total_height);
+
+    if (context.m_state != cryptonote_connection_context::state_synchronizing
+        || !context.m_last_request_time
+        || !context.m_requested_objects.empty())
+    {
+      LOG_ERROR_CCONTEXT("Received NOTIFY_RESPONSE_CHAIN_ENTRY without a pending chain-entry request, dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
     MLOG_PEER_STATE("received chain");
 
     context.m_last_request_time.reset();
@@ -2500,6 +2519,14 @@ skip:
   int t_cryptonote_protocol_handler<t_core>::handle_request_block_flashes(int command, NOTIFY_REQUEST_BLOCK_FLASHES::request& arg, cryptonote_connection_context& context)
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_REQUEST_BLOCK_FLASHES: heights.size()=" << arg.heights.size());
+
+    if (arg.heights.size() > CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT)
+    {
+      LOG_ERROR_CCONTEXT("Too many heights (" << arg.heights.size() << ") in NOTIFY_REQUEST_BLOCK_FLASHES, dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
+
     NOTIFY_RESPONSE_BLOCK_FLASHES::request r;
 
     r.txs = m_core.get_pool().get_mined_flashes({arg.heights.begin(), arg.heights.end()});
@@ -2513,6 +2540,14 @@ skip:
   int t_cryptonote_protocol_handler<t_core>::handle_response_block_flashes(int command, NOTIFY_RESPONSE_BLOCK_FLASHES::request& arg, cryptonote_connection_context& context)
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_RESPONSE_BLOCK_FLASHES: txs.size()=" << arg.txs.size());
+
+    if (context.m_requested_flash_heights.empty())
+    {
+      LOG_ERROR_CCONTEXT("Received NOTIFY_RESPONSE_BLOCK_FLASHES without a pending request, dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
+    context.m_requested_flash_heights.clear();
 
     m_core.get_pool().keep_missing_flashes(arg.txs);
     if (arg.txs.empty())
