@@ -756,6 +756,11 @@ namespace cryptonote
     const auto it = stc_it ? *stc_it : find_tx_in_sorted_container(txid);
     if (it == m_txs_by_fee_and_receive_time.end())
     {
+      if (!stc_it)
+      {
+        MWARNING("remove_tx: tx " << txid << " not in sorted container, treating as already-removed");
+        return true;
+      }
       MERROR("Failed to find tx in txpool sorted list");
       return false;
     }
@@ -1449,6 +1454,7 @@ namespace cryptonote
     auto locks = tools::unique_locks(m_transactions_lock, m_blockchain);
 
     bool ret = false;
+    std::unordered_set<crypto::hash> seen;
     for(const auto& in: tx.vin)
     {
       CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, true);//should never fail
@@ -1458,7 +1464,9 @@ namespace cryptonote
         if (!conflicting)
           return true;
         ret = true;
-        conflicting->insert(conflicting->end(), it->second.begin(), it->second.end());
+        for (const auto &h : it->second)
+          if (seen.insert(h).second)
+            conflicting->push_back(h);
       }
     }
     return ret;
