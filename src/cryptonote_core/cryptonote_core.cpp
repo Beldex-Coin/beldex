@@ -1991,7 +1991,16 @@ namespace cryptonote
   bool core::handle_btencoded_uptime_proof(const NOTIFY_BTENCODED_UPTIME_PROOF::request &req, bool &my_uptime_proof_confirmation)
   {
     crypto::x25519_public_key pkey = {};
-    auto proof = std::make_unique<uptime_proof::Proof>(req.proof);
+    std::unique_ptr<uptime_proof::Proof> proof;
+    try
+    {
+      proof = std::make_unique<uptime_proof::Proof>(req.proof);
+    }
+    catch (const std::exception &e)
+    {
+      MWARNING("Failed to parse uptime proof: " << e.what());
+      return false;
+    }
     proof->sig = tools::make_from_guts<crypto::signature>(req.sig);
     proof->sig_ed25519 = tools::make_from_guts<crypto::ed25519_signature>(req.ed_sig);
     auto pubkey = proof->pubkey;
