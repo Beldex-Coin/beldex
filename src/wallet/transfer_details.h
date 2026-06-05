@@ -69,6 +69,8 @@ struct transfer_details
   bool is_zarcanum() const { return m_asset_id != crypto::null_aid; }
   uint64_t amount() const { return m_amount; }
 
+  const crypto::asset_id &get_asset_id() const { return m_asset_id; }
+
   const crypto::public_key &get_public_key() const {
     if (std::holds_alternative<cryptonote::tx_out_zarcanum>(m_tx.vout[m_internal_output_index].target))
       return var::get<cryptonote::tx_out_zarcanum>(m_tx.vout[m_internal_output_index].target).stealth_address;

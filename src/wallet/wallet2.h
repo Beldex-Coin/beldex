@@ -738,6 +738,8 @@ private:
     // locked & unlocked balance per subaddress of given or current subaddress account
     std::map<uint32_t, uint64_t> balance_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
     std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> unlocked_balance_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
+    std::map<uint32_t, std::unordered_map<crypto::asset_id, uint64_t>> asset_balances_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
+    std::map<uint32_t, std::unordered_map<crypto::asset_id, uint64_t>> unlocked_asset_balances_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
     // all locked & unlocked balances of all subaddress accounts
     uint64_t balance_all(bool strict) const;
     uint64_t unlocked_balance_all(bool strict, uint64_t *blocks_to_unlock = NULL, uint64_t *time_to_unlock = NULL) const;
@@ -1539,6 +1541,7 @@ private:
     cryptonote::byte_and_output_fees get_dynamic_base_fee_estimate() const;
     float get_output_relatedness(const transfer_details &td0, const transfer_details &td1) const;
     std::vector<size_t> pick_preferred_rct_inputs(uint64_t needed_money, uint32_t subaddr_account, const std::set<uint32_t> &subaddr_indices) const;
+    std::unordered_map<crypto::asset_id, std::vector<size_t>> pick_preferred_rct_inputs_for_asset(const std::unordered_map<crypto::asset_id, uint64_t> &asset_amounts, uint32_t subaddr_account, const std::set<uint32_t> &subaddr_indices) const;
     void set_spent(size_t idx, uint64_t height);
     void set_unspent(size_t idx);
     bool is_spent(const transfer_details &td, bool strict = true) const;
