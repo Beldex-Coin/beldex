@@ -169,8 +169,28 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Confidential-asset/ZC input scaffold. This variant is introduced so tx construction and
+  // verification code can progressively adopt CA-specific signing/proof logic without changing
+  // legacy txin_to_key semantics.
+  struct txin_zc_input
+  {
+    std::vector<uint64_t> key_offsets;
+    crypto::key_image k_image;
+    crypto::public_key asset_id = crypto::null_pkey;
+    crypto::public_key amount_commitment = crypto::null_pkey;
+    crypto::public_key blinded_asset_id = crypto::null_pkey;
 
-  using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key>;
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(key_offsets)
+      FIELD(k_image)
+      FIELD(asset_id)
+      FIELD(amount_commitment)
+      FIELD(blinded_asset_id)
+    END_SERIALIZE()
+  };
+
+
+  using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key, txin_zc_input>;
 
   using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key, tx_out_zarcanum>;
 
@@ -268,6 +288,12 @@ namespace cryptonote
     std::vector<std::vector<crypto::signature>> signatures; //count signatures  always the same as inputs count
     rct::rctSig rct_signatures;
 
+    // Confidential asset proofs (HF21+). Empty for non-asset transactions.
+    // Contains: zc_asset_surjection_proof, zc_balance_proof,
+    //           asset_operation_proof, asset_operation_ownership_proof,
+    //           ZC_sig (one per ZC input being spent).
+    std::vector<rct::asset_proof_v> asset_proofs;
+
     // hash cache
     mutable crypto::hash hash;
     mutable size_t blob_size;
@@ -362,8 +388,22 @@ namespace cryptonote
           {
             ar.tag("rctsig_prunable");
             auto obj = ar.begin_object();
-            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, vin.size(), vout.size(),
-                vin.size() > 0 && std::holds_alternative<txin_to_key>(vin[0]) ? var::get<txin_to_key>(vin[0]).key_offsets.size() - 1 : 0);
+            size_t mixin = 0;
+            if (!vin.empty())
+            {
+              if (std::holds_alternative<txin_to_key>(vin[0]))
+                mixin = var::get<txin_to_key>(vin[0]).key_offsets.size() - 1;
+              else if (std::holds_alternative<txin_zc_input>(vin[0]))
+                mixin = var::get<txin_zc_input>(vin[0]).key_offsets.size() - 1;
+            }
+            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, vin.size(), vout.size(), mixin);
+          }
+
+          // HF21: confidential asset proofs (present only when has_zarcanum_outputs())
+          if (!asset_proofs.empty() || has_zarcanum_outputs())
+          {
+            ar.tag("asset_proofs");
+            serialization::value(ar, asset_proofs);
           }
         }
       }
@@ -643,6 +683,7 @@ VARIANT_TAG(cryptonote::txin_gen, "gen", 0xff);
 VARIANT_TAG(cryptonote::txin_to_script, "script", 0x0);
 VARIANT_TAG(cryptonote::txin_to_scripthash, "scripthash", 0x1);
 VARIANT_TAG(cryptonote::txin_to_key, "key", 0x2);
+VARIANT_TAG(cryptonote::txin_zc_input, "zc_input", 0x3);
 VARIANT_TAG(cryptonote::txout_to_script, "script", 0x0);
 VARIANT_TAG(cryptonote::txout_to_scripthash, "scripthash", 0x1);
 VARIANT_TAG(cryptonote::txout_to_key, "key", 0x2);

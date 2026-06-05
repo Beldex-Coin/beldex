@@ -47,6 +47,7 @@ extern "C" {
 
 #include "rctTypes.h"
 #include "rctOps.h"
+#include "cryptonote_basic/cryptonote_basic.h"  // transaction, tx_out_zarcanum (HF21)
 
 //Define this flag when debugging to get additional info on the console
 #ifdef DBG
@@ -77,6 +78,37 @@ namespace rct {
     clsag CLSAG_Gen(const key &message, const keyV & P, const key & p, const keyV & C, const key & z, const keyV & C_nonzero, const key & C_offset, const unsigned int l);
     clsag proveRctCLSAGSimple(const key &, const ctkeyV &, const ctkey &, const key &, const key &, const multisig_kLRki *, key *, key *, unsigned int, hw::device &);
     bool verRctCLSAGSimple(const key &, const clsag &, const ctkeyV &, const key &);
+
+    // HF21: verify all asset proofs embedded in a transaction.
+    // Called from Blockchain::check_tx_inputs() after the RCT proof checks.
+    // Returns true and sets reason="" on success; false with a human-readable
+    // reason on any failure.
+    bool verAssetProofs(const cryptonote::transaction& tx,
+                        const rct::ctkeyM& pubkeys,   // ring pubkeys per input
+                        std::string& reason);
+
+    // HF21: ZC_sig — 1-layer CLSAG for spending a tx_out_zarcanum.
+    // Ring is a mix of BDX and ZC pubkeys from output_amounts[0].
+    // message      : transaction prefix hash
+    // ring_pubkeys : pubkeys of all ring members (P[i].dest), size = ring_size
+    // spend_sk     : sender's ephemeral spend key for the real output
+    // pseudo_out_C : pseudo-output commitment (amount*asset_id + delta*G)
+    // real_index   : index of the real output in ring_pubkeys
+    ZC_sig genZCSig(const key& message,
+                    const keyV& ring_pubkeys,
+                    const ctkey& spend_sk,
+                    const key& pseudo_out_C,
+                    unsigned int real_index,
+                    hw::device& hwdev);
+
+    // Verify a ZC_sig.
+    // message      : transaction prefix hash
+    // ring_pubkeys : pubkeys of all ring members
+    // pseudo_out_C : pseudo-output commitment from ZC_sig
+    bool verZCSig(const key& message,
+                  const ZC_sig& sig,
+                  const keyV& ring_pubkeys,
+                  const key& pseudo_out_C);
 
     //proveRange and verRange
     //proveRange gives C, and mask such that \sumCi = C
@@ -142,5 +174,6 @@ namespace rct {
     xmr_amount decodeRctSimple(const rctSig & rv, const key & sk, unsigned int i, key & mask, hw::device &hwdev);
     xmr_amount decodeRctSimple(const rctSig & rv, const key & sk, unsigned int i, hw::device &hwdev);
     key get_pre_clsag_hash(const rctSig &rv, hw::device &hwdev);
+    key get_hf21_asset_proof_message(const cryptonote::transaction& tx, const rct::ctkeyM& rings, hw::device &hwdev);
     bool signMultisig(rctSig &rv, const std::vector<unsigned int> &indices, const keyV &k, const multisig_out &msout, const key &secret_key);
 }

@@ -39,6 +39,7 @@
 #include "cryptonote_basic/miner.h"
 #include "cryptonote_basic/tx_extra.h"
 #include "crypto/crypto.h"
+#include "crypto/asset_proofs.h"
 #include "crypto/hash.h"
 #include "ringct/rctSigs.h"
 #include "multisig/multisig.h"

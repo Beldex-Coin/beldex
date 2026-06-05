@@ -278,6 +278,8 @@ namespace rct {
     size_t n_bulletproof_plus_amounts(const std::vector<BulletproofPlus> &proofs);
     size_t n_bulletproof_plus_max_amounts(const std::vector<BulletproofPlus> &proofs);
 
+    // HF21 proof wrapper types are defined below (after asset_proofs.h include)
+
     template <typename Archive, typename T>
     auto start_array(Archive& ar, std::string_view tag, std::vector<T>& v, size_t size) {
       ar.tag(tag);
@@ -669,3 +671,78 @@ VARIANT_TAG(rct::multisig_kLRki, "rct_multisig_kLR", 0x9d);
 VARIANT_TAG(rct::multisig_out, "rct_multisig_out", 0x9e);
 VARIANT_TAG(rct::clsag, "rct_clsag", 0x9f);
 VARIANT_TAG(rct::BulletproofPlus, "rct_bulletproof_plus", 0xa0);
+
+// HF21: asset proof primitives — included after rct namespace so rct::key is defined
+#include "crypto/asset_proofs.h"
+
+// Re-open rct namespace to define proof wrapper structs that depend on
+// both rct::key (defined above) and crypto::*_proof_s (defined in asset_proofs.h).
+namespace rct {
+
+    // ── Confidential asset proof wrappers (HF21+) ────────────────────────────
+    // Embedded in transaction::asset_proofs.
+
+    struct zc_asset_surjection_proof
+    {
+      std::vector<crypto::BGE_proof_s> bge_proofs; // one per ZC output
+      BEGIN_SERIALIZE_OBJECT() FIELD(bge_proofs) END_SERIALIZE()
+    };
+
+    struct zc_balance_proof
+    {
+      key P{};
+      crypto::linear_composition_proof_s lcp;
+      BEGIN_SERIALIZE_OBJECT() FIELD(P) FIELD(lcp) END_SERIALIZE()
+    };
+
+    struct asset_operation_proof
+    {
+      // flags: bit 0 = composition_proof present, bit 1 = g_proof present
+      uint8_t flags = 0;
+      crypto::linear_composition_proof_s composition_proof{};
+      crypto::schnorr_sig_s              g_proof{};
+
+      bool has_composition_proof() const { return flags & 1; }
+      bool has_g_proof()           const { return flags & 2; }
+
+      BEGIN_SERIALIZE_OBJECT()
+        FIELD(flags)
+        if (has_composition_proof()) FIELD(composition_proof)
+        if (has_g_proof())           FIELD(g_proof)
+      END_SERIALIZE()
+    };
+
+    struct asset_operation_ownership_proof
+    {
+      crypto::schnorr_sig_s sig;
+      BEGIN_SERIALIZE_OBJECT() FIELD(sig) END_SERIALIZE()
+    };
+
+    struct ZC_sig
+    {
+      crypto::key_image key_image;
+      clsag             clsag_sig;
+      key               pseudo_out_commitment;
+      BEGIN_SERIALIZE_OBJECT()
+        FIELD(key_image)
+        FIELD(clsag_sig)
+        FIELD(pseudo_out_commitment)
+      END_SERIALIZE()
+    };
+
+    using asset_proof_v = std::variant<
+      zc_asset_surjection_proof,
+      zc_balance_proof,
+      asset_operation_proof,
+      asset_operation_ownership_proof,
+      ZC_sig
+    >;
+
+} // namespace rct (continued)
+
+// Variant tag registration for binary serialization of asset_proof_v
+VARIANT_TAG(rct::zc_asset_surjection_proof,       "zc_surjection", 0xb0);
+VARIANT_TAG(rct::zc_balance_proof,                "zc_balance",    0xb1);
+VARIANT_TAG(rct::asset_operation_proof,           "asset_op_proof",0xb2);
+VARIANT_TAG(rct::asset_operation_ownership_proof, "asset_owner",   0xb3);
+VARIANT_TAG(rct::ZC_sig,                          "zc_sig",        0xb4);
