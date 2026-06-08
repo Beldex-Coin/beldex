@@ -77,6 +77,7 @@
 #include "common/perf_timer.h"
 #include "common/hex.h"
 #include "ringct/rctSigs.h"
+#include "crypto/asset_proofs.h"
 #include "ringdb.h"
 #include "device/device_cold.hpp"
 #ifdef DEVICE_TREZOR_READY
@@ -10154,7 +10155,7 @@ void wallet2::transfer_selected_rct(std::vector<cryptonote::tx_destination_entry
 
   // calculate total amount being sent to all destinations
   // throw if total amount overflows uint64_t
-  if(!(tx_params.tx_type == txtype::deploy_new_asset))
+  if(!(tx_params.tx_type == txtype::deploy_new_asset || tx_params.tx_type == txtype::emit_asset))
   {
     for(auto& dt: dsts)
     {
@@ -11291,7 +11292,26 @@ std::vector<wallet2::pending_tx> wallet2::create_asset_deploy_tx(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+std::vector<wallet2::pending_tx> wallet2::create_asset_emit_tx(
+    std::vector<cryptonote::tx_destination_entry> dsts,
+    const crypto::asset_id& asset_id,
+    const size_t fake_outs_count,
+    uint32_t priority,
+    const std::vector<uint8_t>& extra,
+    uint32_t subaddr_account,
+    std::set<uint32_t> subaddr_indices)
+{
+  auto hf_ver = get_hard_fork_version();
+  THROW_WALLET_EXCEPTION_IF(!hf_ver, error::wallet_internal_error,
+      "Failed to get hard fork version from daemon");
+  beldex_construct_tx_params tx_params = wallet2::construct_params(
+      *hf_ver, txtype::emit_asset, priority);
 
+  return create_transactions_2(dsts, fake_outs_count, 0 /*unlock_time*/,
+                               priority, extra, subaddr_account,
+                               subaddr_indices, tx_params);
+}
+// ─────────────────────────────────────────────────────────────────────────────
 std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryptonote::tx_destination_entry> dsts, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra_base, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, beldex_construct_tx_params &tx_params, const unique_index_container& subtract_fee_from_outputs)
 {
   //ensure device is let in NONE mode in any case
@@ -11324,6 +11344,12 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
     LOG_PRINT_L0("is_asset_register_tx:" << is_asset_register_tx);
   if (is_asset_register_tx)  {
     THROW_WALLET_EXCEPTION_IF(dsts.size() != cryptonote::MIN_ASSET_EMISSION_OUTPUTS, error::wallet_internal_error, "Asset register txs must have exactly " + std::to_string(cryptonote::MIN_ASSET_EMISSION_OUTPUTS) + " destinations set, has: " + std::to_string(dsts.size()));
+  }
+
+  bool const is_asset_emit_tx = (tx_params.tx_type == txtype::emit_asset);
+  LOG_PRINT_L0("is_asset_emit_tx:" << is_asset_emit_tx);
+  if (is_asset_emit_tx)  {
+    THROW_WALLET_EXCEPTION_IF(dsts.size() == 0, error::wallet_internal_error, "Asset emit txs must have at least 1 destinations set, has: " + std::to_string(dsts.size()));
   }
 
   if(m_light_wallet) {
@@ -11481,7 +11507,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   // throw if total amount overflows uint64_t
   needed_money = 0;
 
-  if(is_asset_register_tx)
+  if(is_asset_register_tx || is_asset_emit_tx)
   {
     for(auto& dt: dsts)
     {
@@ -11514,7 +11540,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   }
   // need money should be zero for the is_asset_register_tx
   // throw if attempting a transaction with no money
-  THROW_WALLET_EXCEPTION_IF((needed_money == 0 && token_needed_money.empty()) && !(is_bns_tx || is_burn_tx|| is_asset_register_tx), error::zero_destination);
+  THROW_WALLET_EXCEPTION_IF((needed_money == 0 && token_needed_money.empty()) && !(is_bns_tx || is_burn_tx|| is_asset_register_tx || is_asset_emit_tx), error::zero_destination);
 
   std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> unlocked_balance_per_subaddr = unlocked_balance_per_subaddress(subaddr_account, false);
   std::map<uint32_t, uint64_t> balance_per_subaddr = balance_per_subaddress(subaddr_account, false);
@@ -11569,7 +11595,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
     
     // For deploy_new_asset we mint the asset in this transaction, so only the native
     // balance used to pay fees needs to exist in the wallet.
-    if (!is_asset_register_tx)
+    if (!is_asset_register_tx && !is_asset_emit_tx)
     {
       for (const auto& [asset_id, required_amount] : token_needed_money)
       {
@@ -11705,7 +11731,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   needed_fee = 0;
   std::vector<std::vector<tools::wallet2::get_outs_entry>> outs;
 
-  if (is_asset_register_tx)
+  if (is_asset_register_tx || is_asset_emit_tx)
   {
     txes.back().dsts = dsts;
     txes.back().dsts_are_fee_subtractable.assign(dsts.size(), false);
@@ -11730,7 +11756,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
     LOG_PRINT_L1("needed_money for rct tx: " << needed_money);
     total_needed_money = needed_money + (subtract_fee_from_outputs.size() ? 0 : estimated_fee);
     preferred_inputs = pick_preferred_rct_inputs(total_needed_money, subaddr_account, subaddr_indices);
-    if (!is_asset_register_tx)
+    if (!is_asset_register_tx && !is_asset_emit_tx)
       preferred_asset_inputs = pick_preferred_rct_inputs_for_asset(token_needed_money, subaddr_account, subaddr_indices);
     if (!preferred_inputs.empty())
     {
@@ -11988,7 +12014,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
       bool insufficient_inputs = false;
       for (const auto& [asset_id, amount_out] : outputs_by_asset)
       {
-        if (is_asset_register_tx && asset_id != crypto::null_aid)
+        if ((is_asset_register_tx || is_asset_emit_tx) && asset_id != crypto::null_aid)
           continue;
         if (inputs_by_asset[asset_id] < amount_out)
         {

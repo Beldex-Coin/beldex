@@ -3942,6 +3942,55 @@ namespace {
     return res;
   }
 
+  // HF21: Emit additional tokens for an existing confidential asset
+  EMIT_ASSET::response wallet_rpc_server::invoke(EMIT_ASSET::request&& req)
+  {
+    require_open();
+    EMIT_ASSET::response res{};
+    crypto::asset_id asset_id;
+    if (!tools::hex_to_type(req.asset_id, asset_id))
+      throw wallet_rpc_error{error_code::BAD_HEX, "Failed to parse asset_id"};
+    cryptonote::account_public_address dest_addr = m_wallet->get_account().get_keys().m_account_address;
+    bool is_subaddress = false;
+    std::vector<cryptonote::tx_destination_entry> dsts;
+    cryptonote::tx_destination_entry dst;
+    dst.amount = req.amount;
+    dst.addr = dest_addr;
+    dst.is_subaddress = is_subaddress;
+    dst.asset_id = asset_id;
+    dsts.push_back(dst);
+
+    // Create the ADO for emission
+    cryptonote::tx_extra_asset_descriptor_operation ado{};
+    ado.operation_type = cryptonote::asset_descriptor_operation_type::emit_asset;
+    ado.fields         = static_cast<uint8_t>(cryptonote::asset_field_asset_id | cryptonote::asset_field_amount);
+    ado.asset_id       = asset_id;
+    ado.amount         = req.amount;
+    std::vector<uint8_t> extra;
+    if (!cryptonote::add_asset_descriptor_operation_to_tx_extra(extra, ado))
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to encode asset descriptor into tx extra"};
+    auto ptx_vector = m_wallet->create_asset_emit_tx(
+        dsts, asset_id, cryptonote::TX_OUTPUT_DECOYS, req.priority, extra,
+        req.account_index, req.subaddr_indices);
+    if (ptx_vector.empty())
+      throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "No outputs found or daemon not ready"};
+    if (ptx_vector.size() != 1)
+      throw wallet_rpc_error{error_code::TX_TOO_LARGE, "Transaction would be too large."};
+    if (!req.do_not_relay)
+      m_wallet->commit_tx(ptx_vector.front());
+    res.tx_hash = tools::type_to_hex(cryptonote::get_transaction_hash(ptx_vector.front().tx));
+    if (req.get_tx_key)
+      res.tx_key = tools::type_to_hex(ptx_vector.front().tx_key);
+    if (req.get_tx_hex)
+      res.tx_blob = oxenc::to_hex(cryptonote::tx_to_blob(ptx_vector.front().tx));
+    if (req.get_tx_metadata)
+    {
+      std::string metadata = m_wallet->dump_tx_to_str(ptx_vector);
+      res.tx_metadata = oxenc::to_hex(metadata);
+    }
+    res.fee = ptx_vector.front().fee;
+    return res;
+  }
 }
 
 int main(int argc, char **argv)

@@ -13,6 +13,7 @@
 #include "cryptonote_config.h"
 #include "serialization/binary_utils.h"
 #include "serialization/string.h"
+#include "crypto/asset_proofs.h"
 
 namespace cryptonote
 {
@@ -320,9 +321,9 @@ bool validate_tx_asset_operations_against_db(
   {
     saw_asset_op = true;
 
-    if (tx.type != txtype::deploy_new_asset)
+    if (tx.type != txtype::deploy_new_asset && tx.type != txtype::emit_asset)
     {
-      reason = "asset descriptor operation is only allowed in deploy_new_asset transactions";
+      reason = "asset descriptor operation is only allowed in deploy_new_asset or emit_asset transactions";
       return false;
     }
 
@@ -338,17 +339,16 @@ bool validate_tx_asset_operations_against_db(
     // The wallet auto-generates self-sends to reach this minimum.
     if (hf_version >= feature::CONFIDENTIAL_ASSETS)
     {
-      const bool is_emit = (op.operation_type == asset_descriptor_operation_type::emit_asset);
       const bool is_deploy_with_supply =
           (op.operation_type == asset_descriptor_operation_type::register_asset) &&
           op.field_is_set(asset_field_descriptor) &&
           op.descriptor.current_supply > 0;
 
-      if (is_emit || is_deploy_with_supply)
+      if (is_deploy_with_supply)
       {
         if (zc_out_count < MIN_ASSET_EMISSION_OUTPUTS)
         {
-          reason = "deploy/emit tx must have at least " +
+          reason = "deploy tx must have at least " +
                    std::to_string(MIN_ASSET_EMISSION_OUTPUTS) +
                    " tx_out_zarcanum outputs (got " +
                    std::to_string(zc_out_count) +
@@ -370,6 +370,37 @@ bool validate_tx_asset_operations_against_db(
     auto [it, inserted] = states.try_emplace(asset_id);
     if (inserted && !load_asset_state_from_history(db, asset_id, it->second, reason))
       return false;
+    
+      // ── Ownership verification for emission ──────────────────────────────────
+    if (op.operation_type == asset_descriptor_operation_type::emit_asset)
+    {
+      if (!it->second.exists)
+      {
+        reason = "emit_asset attempted for unknown asset";
+        return false;
+      }
+
+      bool ownership_verified = false;
+      for (const auto& proof : tx.asset_proofs)
+      {
+        if (const auto* p = std::get_if<rct::asset_operation_ownership_proof>(&proof))
+        {
+          crypto::hash prefix_hash;
+          get_transaction_prefix_hash(tx, prefix_hash);
+          if (crypto::verify_schnorr_sig(rct::hash2rct(prefix_hash), rct::pk2rct(it->second.descriptor.owner), p->sig))
+          {
+            ownership_verified = true;
+            break;
+          }
+        }
+      }
+
+      if (!ownership_verified)
+      {
+        reason = "missing or invalid asset ownership proof for emission";
+        return false;
+      }
+    }
 
     if (!apply_asset_operation_to_state(asset_id, op, it->second, op_reason))
     {
@@ -378,9 +409,9 @@ bool validate_tx_asset_operations_against_db(
     }
   }
 
-  if (tx.type == txtype::deploy_new_asset && !saw_asset_op)
+  if ((tx.type == txtype::deploy_new_asset || tx.type == txtype::emit_asset) && !saw_asset_op)
   {
-    reason = "deploy_new_asset transaction must include at least one asset descriptor operation";
+    reason = "deploy/emit transaction must include at least one asset descriptor operation";
     return false;
   }
 

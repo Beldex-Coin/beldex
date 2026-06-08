@@ -2651,7 +2651,37 @@ This command is only required if the open wallet is one of the owners of a BNS r
 
     struct response {
       std::vector<asset_info> assets;
+      KV_MAP_SERIALIZABLE
+    };
+  };
 
+  // HF21: Emit additional tokens for an existing confidential asset.
+  struct EMIT_ASSET : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("emit_asset"); }
+
+    struct request
+    {
+      std::string asset_id;        // Hex-encoded asset ID
+      uint64_t amount;             // Amount to mint (in atomic units)
+      uint32_t priority;           // Transaction priority
+      uint32_t account_index;      // (Optional) Index of the account to pay for the transaction fees. (defaults to 0)
+      std::set<uint32_t> subaddr_indices; // (Optional) List of subaddresses to pay for the transaction fees.
+      bool do_not_relay;           // (Optional) If true, the newly created transaction will not be relayed to the network.
+      bool get_tx_hex;             // (Optional) Return the transaction as hex string.
+      bool get_tx_metadata;        // (Optional) Return transaction metadata.
+      bool get_tx_key;             // (Optional) Return the transaction key.
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      std::string tx_hash;
+      std::string tx_key;
+      uint64_t fee;
+      std::string tx_blob;
+      std::string tx_metadata;
       KV_MAP_SERIALIZABLE
     };
   };
@@ -2762,7 +2792,8 @@ This command is only required if the open wallet is one of the owners of a BNS r
     BNS_ENCRYPT_VALUE,
     COIN_BURN,
     DEPLOY_NEW_ASSET,
-    GET_OWNED_ASSETS
+    GET_OWNED_ASSETS,
+    EMIT_ASSET
   >;
 
 }

@@ -20,6 +20,7 @@ enum class txversion : uint16_t {
     beldex_name_system,
     coin_burn,
     deploy_new_asset,
+    emit_asset,
     _count
   };
 
