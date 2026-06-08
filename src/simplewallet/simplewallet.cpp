@@ -7872,6 +7872,18 @@ bool simple_wallet::coin_burn(std::vector<std::string> args)
   return true;
 }
 //----------------------------------------------------------------------------------------------------
+bool simple_wallet::get_asset_info(const std::string& asset_id_hex, nlohmann::json& info_res)
+{
+  try {
+    nlohmann::json info_req = nlohmann::json::object();
+    info_req["asset_id"] = asset_id_hex;
+    info_res = m_wallet->json_rpc("get_asset_info", info_req);
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+//----------------------------------------------------------------------------------------------------
 bool simple_wallet::assets_by_owner(const std::vector<std::string>& args_)
 {
   if (args_.size() > 1)
@@ -7913,11 +7925,8 @@ bool simple_wallet::assets_by_owner(const std::vector<std::string>& args_)
       std::string asset_id_hex = asset_id_val.get<std::string>();
       
       nlohmann::json info_res;
-      try {
-        nlohmann::json info_req = nlohmann::json::object();
-        info_req["asset_id"] = asset_id_hex;
-        info_res = m_wallet->json_rpc("get_asset_info", info_req);
-      } catch (const std::exception&) {
+      if (!get_asset_info(asset_id_hex, info_res)) {
+        fail_msg_writer() << tr("Failed to fetch asset info from daemon for asset: ") << asset_id_hex;
         continue;
       }
 
@@ -8074,6 +8083,18 @@ bool simple_wallet::emit_asset(const std::vector<std::string>& args_)
   if (!tools::hex_to_type(args[0], asset_id))
   {
     fail_msg_writer() << tr("Failed to parse asset_id");
+    return false;
+  }
+
+  nlohmann::json info_res;
+  if (!get_asset_info(args[0], info_res)) {
+    fail_msg_writer() << tr("Failed to fetch asset info from daemon.");
+    return false;
+  }
+
+  std::string requested_owner = tools::type_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+  if (!info_res.contains("owner") || info_res["owner"].get<std::string>() != requested_owner) {
+    fail_msg_writer() << tr("This wallet does not own the asset: ") << args[0];
     return false;
   }
 

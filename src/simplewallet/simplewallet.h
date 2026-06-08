@@ -192,6 +192,7 @@ namespace cryptonote
 
     bool coin_burn(std::vector<std::string> args);
     bool deploy_new_asset(const std::vector<std::string>& args);  // HF21
+    bool get_asset_info(const std::string& asset_id_hex, nlohmann::json& info_res);
     bool assets_by_owner(const std::vector<std::string>& args);
     bool emit_asset(const std::vector<std::string>& args);        // HF21
 
