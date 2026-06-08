@@ -531,7 +531,7 @@ namespace
   const char* USAGE_COIN_BURN("coin_burn [index=<N1>[,<N2>,...]] [<priority>] <burn=amount | txid>");
 
   const char* USAGE_DEPLOY_NEW_ASSET("deploy_new_asset [index=<N1>[,<N2>,...]] [<priority>] <json_filename>");
-  const char* USAGE_ASSETS_BY_OWNER("assets_by_owner");
+  const char* USAGE_ASSETS_BY_OWNER("assets_by_owner [<owner_address_or_spend_public_key>]");
 
 
 #if defined (BELDEX_ENABLE_INTEGRATION_TEST_HOOKS)
@@ -3448,7 +3448,7 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
   m_cmd_binder.set_handler("assets_by_owner",
                            [this](const auto& x) { return assets_by_owner(x); },
                            tr(USAGE_ASSETS_BY_OWNER),
-                           tr("List all deployed assets belonging to this wallet."));
+                           tr("List all deployed assets belonging to this wallet or the specified owner."));
 }
 
 simple_wallet::~simple_wallet()
@@ -7868,6 +7868,12 @@ bool simple_wallet::coin_burn(std::vector<std::string> args)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::assets_by_owner(const std::vector<std::string>& args_)
 {
+  if (args_.size() > 1)
+  {
+    PRINT_USAGE(USAGE_ASSETS_BY_OWNER);
+    return true;
+  }
+
   nlohmann::json list_res;
   try {
     nlohmann::json list_req = nlohmann::json::object();
@@ -7879,7 +7885,22 @@ bool simple_wallet::assets_by_owner(const std::vector<std::string>& args_)
     return true;
   }
 
-  std::string my_owner = tools::type_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+  std::string requested_owner = tools::type_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+  if (!args_.empty())
+  {
+    cryptonote::address_parse_info owner_info{};
+    crypto::public_key owner_spend_key{};
+
+    if (get_account_address_from_str(owner_info, m_wallet->nettype(), args_[0]))
+      requested_owner = tools::type_to_hex(owner_info.address.m_spend_public_key);
+    else if (tools::hex_to_type(args_[0], owner_spend_key))
+      requested_owner = tools::type_to_hex(owner_spend_key);
+    else
+    {
+      fail_msg_writer() << tr("Invalid owner address or spend public key");
+      return true;
+    }
+  }
 
   if (list_res.contains("asset_ids")) {
     for (const auto& asset_id_val : list_res["asset_ids"]) {
@@ -7894,7 +7915,7 @@ bool simple_wallet::assets_by_owner(const std::vector<std::string>& args_)
         continue;
       }
 
-      if (info_res.contains("owner") && info_res["owner"].get<std::string>() == my_owner) {
+      if (info_res.contains("owner") && info_res["owner"].get<std::string>() == requested_owner) {
         nlohmann::json out = {
           {"Asset ID", info_res.value("asset_id", "")},
           {"ticker", info_res.value("ticker", "")},

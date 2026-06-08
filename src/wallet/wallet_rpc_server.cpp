@@ -3883,7 +3883,19 @@ namespace {
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to fetch asset list from daemon: " + std::string(e.what())};
     }
 
-    std::string my_owner = tools::type_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+    std::string requested_owner = tools::type_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+    if (!req.owner.empty())
+    {
+      cryptonote::address_parse_info owner_info{};
+      crypto::public_key owner_spend_key{};
+
+      if (get_account_address_from_str(owner_info, m_wallet->nettype(), req.owner))
+        requested_owner = tools::type_to_hex(owner_info.address.m_spend_public_key);
+      else if (tools::hex_to_type(req.owner, owner_spend_key))
+        requested_owner = tools::type_to_hex(owner_spend_key);
+      else
+        throw wallet_rpc_error{error_code::WRONG_ADDRESS, "Invalid owner address or spend public key"};
+    }
 
     if (list_res.contains("asset_ids") && list_res["asset_ids"].is_array()) {
       for (const auto& asset_id_val : list_res["asset_ids"]) {
@@ -3899,7 +3911,7 @@ namespace {
         }
 
         const std::string owner_hex = info_res.value("owner", "");
-        if (owner_hex != my_owner)
+        if (owner_hex != requested_owner)
           continue;
 
         std::string meta_info = info_res.value("meta_info", "");

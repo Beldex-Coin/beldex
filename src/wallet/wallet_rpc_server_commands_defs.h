@@ -2633,6 +2633,7 @@ This command is only required if the open wallet is one of the owners of a BNS r
     static constexpr auto names() { return NAMES("get_owned_assets"); }
 
     struct request {
+      std::string owner;          // Optional wallet address or spend public key hex to filter by owner
       KV_MAP_SERIALIZABLE
     };
 
