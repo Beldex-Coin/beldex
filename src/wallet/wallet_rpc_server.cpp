@@ -110,9 +110,19 @@ namespace
       error = "decimal_point must be <= 18";
       return false;
     }
+    if (descriptor.total_max_supply == 0)
+    {
+      error = "total_max_supply must be greater than 0";
+      return false;
+    }
     if (descriptor.current_supply > descriptor.total_max_supply)
     {
       error = "current_supply cannot exceed total_max_supply";
+      return false;
+    }
+    if (descriptor.meta_info.length() > 4096)
+    {
+      error = "meta_info cannot exceed 4096 characters";
       return false;
     }
     return true;
@@ -3821,23 +3831,32 @@ namespace {
     require_open();
     DEPLOY_NEW_ASSET::response res{};
 
+    // 1. Validate request
     if (req.json_filename.empty())
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "json_filename is required"};
 
+    // 2. Load descriptor from JSON file
     cryptonote::asset_descriptor_base descriptor{};
     std::string error;
     if (!load_asset_descriptor_from_json_file(fs::u8path(req.json_filename), descriptor, error))
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, error + ": " + req.json_filename};
 
+    // 3. Validate descriptor
+    if (!validate_asset_descriptor_for_deploy(descriptor, error))
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Invalid descriptor: " + error};
+
+    // 4. Set owner to wallet's spend key if not provided
     const auto owner = m_wallet->get_account().get_keys().m_account_address.m_spend_public_key;
     if (descriptor.owner == crypto::null_pkey)
       descriptor.owner = owner;
     else if (descriptor.owner != owner)
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Asset owner must be this wallet's spend key"};
 
+    // 5. Verify hard fork version
     if (!m_wallet->get_hard_fork_version())
       throw wallet_rpc_error{error_code::HF_QUERY_FAILED, tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED};
 
+    // 6. Create ADO (Asset Descriptor Operation)
     cryptonote::tx_extra_asset_descriptor_operation ado{};
     ado.operation_type = cryptonote::asset_descriptor_operation_type::register_asset;
     ado.fields         = static_cast<uint8_t>(cryptonote::asset_field_descriptor |
@@ -3845,15 +3864,30 @@ namespace {
     ado.descriptor     = descriptor;
     ado.asset_id_salt  = crypto::rand<uint32_t>();
 
+    // 7. Encode ADO into tx extra
     std::vector<uint8_t> extra;
     if (!cryptonote::add_asset_descriptor_operation_to_tx_extra(extra, ado))
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to encode asset descriptor into tx extra"};
 
+    // 8. Calculate asset ID
     const crypto::asset_id asset_id = cryptonote::get_or_calculate_asset_id(ado);
 
-    std::set<uint32_t> subaddr_indices;
+    // 9. Create destination with initial supply
+    std::vector<cryptonote::tx_destination_entry> dsts;
+    if (descriptor.current_supply > 0)
+    {
+      cryptonote::tx_destination_entry dest;
+      dest.addr = m_wallet->get_account().get_keys().m_account_address;
+      dest.amount = descriptor.current_supply;
+      dest.asset_id = asset_id;
+      dest.is_subaddress = false;
+      dsts.push_back(dest);
+    }
+
+    // 10. Create transaction
+    std::set<uint32_t> subaddr_indices = req.subaddr_indices;
     auto ptx_vector = m_wallet->create_asset_deploy_tx(
-        {}, asset_id, cryptonote::TX_OUTPUT_DECOYS, req.priority, extra,
+        dsts, asset_id, cryptonote::TX_OUTPUT_DECOYS, req.priority, extra,
         req.account_index, subaddr_indices);
 
     if (ptx_vector.empty())
@@ -3861,11 +3895,23 @@ namespace {
     if (ptx_vector.size() != 1)
       throw wallet_rpc_error{error_code::TX_TOO_LARGE, "Transaction would be too large. Try a simpler asset deployment."};
 
-    m_wallet->commit_tx(ptx_vector.front());
+    // 11. Relay or mark as pending
+    if (!req.do_not_relay)
+      m_wallet->commit_tx(ptx_vector.front());
 
+    // 12. Build response
     res.asset_id = tools::type_to_hex(asset_id);
-    res.tx_hash  = tools::type_to_hex(cryptonote::get_transaction_hash(ptx_vector.front().tx));
-    res.ticker   = descriptor.ticker;
+    res.tx_hash = tools::type_to_hex(cryptonote::get_transaction_hash(ptx_vector.front().tx));
+    res.ticker = descriptor.ticker;
+    res.full_name = descriptor.full_name;
+    res.tx_fee = ptx_vector.front().fee;
+
+    if (req.get_tx_key)
+      res.tx_key = tools::type_to_hex(ptx_vector.front().tx_key);
+
+    if (req.get_tx_hex)
+      res.tx_hex = oxenc::to_hex(cryptonote::tx_to_blob(ptx_vector.front().tx));
+
     return res;
   }
   GET_OWNED_ASSETS::response wallet_rpc_server::invoke(GET_OWNED_ASSETS::request&& req)

@@ -8006,20 +8006,22 @@ bool simple_wallet::deploy_new_asset(const std::vector<std::string>& args_)
     success_msg_writer(true) << tr("New asset deployment details:\n")
                               << tr("  Asset ID: ") << tools::type_to_hex(asset_id) << "\n"
                               << tr("  Ticker:   ") << descriptor.ticker << "\n"
-                              << tr("  Full name:") << descriptor.full_name << "\n"
-                              << tr("  Initial supply: ") << descriptor.current_supply << "\n"
-                              << tr("  Max supply:     ") << descriptor.total_max_supply;
+                              << tr("  Full name: ") << descriptor.full_name << "\n"
+                              << tr("  Decimal Points: ") << (int)descriptor.decimal_point << "\n"
+                              << tr("  Initial supply: ") << print_asset_amount(descriptor.current_supply, descriptor.decimal_point) << "\n"
+                              << tr("  Max supply: ") << print_asset_amount(descriptor.total_max_supply, descriptor.decimal_point);
 
-    // Constructing destinations
+    // Create destination with initial supply - will be minted immediately to wallet
     std::vector<cryptonote::tx_destination_entry> dsts;
-    
-    cryptonote::tx_destination_entry de;
-    de.addr = m_wallet->get_subaddress({m_current_subaddress_account, 0});
-    de.amount = descriptor.current_supply;
-    de.asset_id = asset_id;
-    de.is_subaddress = (m_current_subaddress_account != 0);
-
-    dsts.push_back(de);
+    if (descriptor.current_supply > 0)
+    {
+      cryptonote::tx_destination_entry dest;
+      dest.addr = m_wallet->get_subaddress({m_current_subaddress_account, 0});
+      dest.amount = descriptor.current_supply;
+      dest.asset_id = asset_id;
+      dest.is_subaddress = (m_current_subaddress_account != 0);
+      dsts.push_back(dest);
+    }
 
     // Use create_asset_deploy_tx which auto-pads to MIN_ASSET_EMISSION_OUTPUTS
     auto ptx_vector = m_wallet->create_asset_deploy_tx(
@@ -8033,19 +8035,22 @@ bool simple_wallet::deploy_new_asset(const std::vector<std::string>& args_)
     }
 
     cryptonote::address_parse_info self_info{};
-    self_info.address      = m_wallet->get_subaddress({m_current_subaddress_account, 0});
-    self_info.is_subaddress = m_current_subaddress_account != 0;
+    self_info.address = m_wallet->get_subaddress({m_current_subaddress_account, 0});
+    self_info.is_subaddress = (m_current_subaddress_account != 0);
 
     if (!confirm_and_send_tx({self_info}, ptx_vector, priority == tools::tx_priority_flash))
       return false;
 
     success_msg_writer(true)
-        << "New asset deployment submitted\n"
+        << "Asset deployment submitted successfully\n"
         << "  Asset ID:     " << tools::type_to_hex(asset_id) << "\n"
         << "  Ticker:       " << descriptor.ticker << "\n"
-        << "  Full name:    " << descriptor.full_name << "\n"
-        << "  Initial mint: " << descriptor.current_supply << "\n"
-        << "  Max supply:   " << descriptor.total_max_supply;
+        << "  Full Name:    " << descriptor.full_name << "\n"
+        << "  Decimal Point: " << (int)descriptor.decimal_point << "\n"
+        << "  Initial Supply: " << print_asset_amount(descriptor.current_supply, descriptor.decimal_point) << "\n"
+        << "  Max Supply: " << print_asset_amount(descriptor.total_max_supply, descriptor.decimal_point) << "\n"
+        << "  TX Hash: " << get_transaction_hash(ptx_vector.front().tx) << "\n"
+        << "  TX Fee: " << print_money(ptx_vector.front().fee);
   }
   catch (const std::exception& e)
   {

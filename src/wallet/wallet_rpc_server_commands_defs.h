@@ -2609,18 +2609,26 @@ This command is only required if the open wallet is one of the owners of a BNS r
 
     struct request
     {
-      std::string json_filename;   // Path to the asset JSON descriptor file
-      uint32_t    account_index  = 0;
-      uint32_t    priority       = 0;
+      std::string json_filename;              // Path to the asset JSON descriptor file
+      uint32_t account_index = 0;             // Account to use for fees
+      uint32_t priority = 0;                  // Transaction priority
+      std::set<uint32_t> subaddr_indices;     // (Optional) Subaddresses to use for fees
+      bool get_tx_hex = false;                // (Optional) Return TX as hex
+      bool get_tx_key = false;                // (Optional) Return TX key
+      bool do_not_relay = false;              // (Optional) Don't broadcast to network
 
       KV_MAP_SERIALIZABLE
     };
 
     struct response
     {
-      std::string asset_id;        // Hex-encoded asset public key (derived from descriptor)
-      std::string tx_hash;         // Transaction hash of the deploy tx
-      std::string ticker;          // Confirmed ticker from descriptor
+      std::string asset_id;       // Hex-encoded calculated asset ID
+      std::string tx_hash;        // Transaction hash of the deploy tx
+      std::string tx_key;         // Transaction key (if requested)
+      std::string tx_hex;         // Transaction hex blob (if requested)
+      std::string ticker;         // Confirmed ticker from descriptor
+      std::string full_name;      // Full name from descriptor
+      uint64_t tx_fee = 0;        // Fee paid in this transaction
 
       KV_MAP_SERIALIZABLE
     };
