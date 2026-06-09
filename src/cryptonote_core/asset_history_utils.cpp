@@ -251,10 +251,6 @@ bool apply_asset_operation_to_state(
         return reject("update_asset missing descriptor");
 
       const auto& d = op.descriptor;
-      if (d.ticker.empty())
-        return reject("updated asset ticker must not be empty");
-      if (d.full_name.empty())
-        return reject("updated asset full_name must not be empty");
       if (d.owner == crypto::null_pkey)
         return reject("updated asset owner must not be null");
 
@@ -262,6 +258,16 @@ bool apply_asset_operation_to_state(
         return reject("update_asset cannot modify total_max_supply");
       if (d.current_supply != state.current_supply)
         return reject("update_asset cannot modify current_supply");
+      if (d.ticker != state.descriptor.ticker)
+        return reject("update_asset cannot modify ticker");
+      if (d.full_name != state.descriptor.full_name)
+        return reject("update_asset cannot modify full_name");
+      if (d.owner != state.descriptor.owner)
+        return reject("update_asset cannot modify owner");
+      if (d.decimal_point != state.descriptor.decimal_point)
+        return reject("update_asset cannot modify decimal_point");
+      if (d.hidden_supply != state.descriptor.hidden_supply)
+        return reject("update_asset cannot modify hidden_supply");
 
       state.descriptor = d;
       return true;
@@ -321,9 +327,9 @@ bool validate_tx_asset_operations_against_db(
   {
     saw_asset_op = true;
 
-    if (tx.type != txtype::deploy_new_asset && tx.type != txtype::emit_asset)
+    if (tx.type != txtype::deploy_new_asset && tx.type != txtype::emit_asset && tx.type != txtype::update_asset)
     {
-      reason = "asset descriptor operation is only allowed in deploy_new_asset or emit_asset transactions";
+      reason = "asset descriptor operation is only allowed in deploy_new_asset, emit_asset or update_asset transactions";
       return false;
     }
 
@@ -372,11 +378,11 @@ bool validate_tx_asset_operations_against_db(
       return false;
     
       // ── Ownership verification for emission ──────────────────────────────────
-    if (op.operation_type == asset_descriptor_operation_type::emit_asset)
+    if (op.operation_type == asset_descriptor_operation_type::emit_asset || op.operation_type == asset_descriptor_operation_type::update_asset)
     {
       if (!it->second.exists)
       {
-        reason = "emit_asset attempted for unknown asset";
+        reason = "emit_asset/update_asset attempted for unknown asset";
         return false;
       }
 
@@ -397,7 +403,7 @@ bool validate_tx_asset_operations_against_db(
 
       if (!ownership_verified)
       {
-        reason = "missing or invalid asset ownership proof for emission";
+        reason = "missing or invalid asset ownership proof for emission/update";
         return false;
       }
     }
@@ -409,9 +415,9 @@ bool validate_tx_asset_operations_against_db(
     }
   }
 
-  if ((tx.type == txtype::deploy_new_asset || tx.type == txtype::emit_asset) && !saw_asset_op)
+  if ((tx.type == txtype::deploy_new_asset || tx.type == txtype::emit_asset || tx.type == txtype::update_asset) && !saw_asset_op)
   {
-    reason = "deploy/emit transaction must include at least one asset descriptor operation";
+    reason = "deploy/emit/update transaction must include at least one asset descriptor operation";
     return false;
   }
 

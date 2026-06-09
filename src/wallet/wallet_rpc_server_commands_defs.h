@@ -2694,6 +2694,37 @@ This command is only required if the open wallet is one of the owners of a BNS r
     };
   };
 
+  // HF21: Update an existing confidential asset metadata.
+  struct UPDATE_ASSET : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("update_asset"); }
+
+    struct request
+    {
+      std::string asset_id;        // Hex-encoded asset ID
+      std::string json_filename;   // Path to the asset JSON descriptor file containing metadata to update
+      uint32_t priority;           // Transaction priority
+      uint32_t account_index;      // (Optional) Index of the account to pay for the transaction fees. (defaults to 0)
+      std::set<uint32_t> subaddr_indices; // (Optional) List of subaddresses to pay for the transaction fees.
+      bool do_not_relay;           // (Optional) If true, the newly created transaction will not be relayed to the network.
+      bool get_tx_hex;             // (Optional) Return the transaction as hex string.
+      bool get_tx_metadata;        // (Optional) Return transaction metadata.
+      bool get_tx_key;             // (Optional) Return the transaction key.
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      std::string tx_hash;
+      std::string tx_key;
+      uint64_t fee;
+      std::string tx_blob;
+      std::string tx_metadata;
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
   /// List of all supported rpc command structs to allow compile-time enumeration of all supported
   /// RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   /// a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2801,7 +2832,8 @@ This command is only required if the open wallet is one of the owners of a BNS r
     COIN_BURN,
     DEPLOY_NEW_ASSET,
     GET_OWNED_ASSETS,
-    EMIT_ASSET
+    EMIT_ASSET,
+    UPDATE_ASSET
   >;
 
 }

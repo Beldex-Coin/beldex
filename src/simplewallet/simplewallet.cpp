@@ -533,6 +533,7 @@ namespace
   const char* USAGE_DEPLOY_NEW_ASSET("deploy_new_asset [index=<N1>[,<N2>,...]] [<priority>] <json_filename>");
   const char* USAGE_ASSETS_BY_OWNER("assets_by_owner [<owner_address_or_spend_public_key>]");
   const char* USAGE_EMIT_ASSET("emit_asset [index=<N1>[,<N2>,...]] [<priority>] <asset_id> <amount>");
+  const char* USAGE_UPDATE_ASSET("update_asset [index=<N1>[,<N2>,...]] [<priority>] <asset_id> <descriptor_json_file>");
 
 
 #if defined (BELDEX_ENABLE_INTEGRATION_TEST_HOOKS)
@@ -3455,6 +3456,11 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
                            [this](const auto& x) { return emit_asset(x); },
                            tr(USAGE_EMIT_ASSET),
                            tr("Emit an deployed asset by sending a transfer with the asset's ID and the amount to emit encoded in the transaction extra. The optional index= and <priority> parameters work as in the `transfer' command."));
+
+  m_cmd_binder.set_handler("update_asset",
+                           [this](const auto& x) { return update_asset(x); },
+                           tr(USAGE_UPDATE_ASSET),
+                           tr("Update an deployed asset's meta info. Provide the asset ID and a file containing the new meta info. The optional index= and <priority> parameters work as in the `transfer' command."));
 }
 
 simple_wallet::~simple_wallet()
@@ -8158,6 +8164,116 @@ bool simple_wallet::emit_asset(const std::vector<std::string>& args_)
         << "  Asset ID: " << tools::type_to_hex(asset_id) << "\n"
         << "  Amount:   " << cryptonote::print_money(amount) << " (atomic units)\n"
         << "  To:       " << m_wallet->get_subaddress_as_str({m_current_subaddress_account, 0});
+  }
+  catch (const std::exception& e)
+  {
+    handle_transfer_exception(std::current_exception(), m_wallet->is_trusted_daemon());
+    return true;
+  }
+  catch (...)
+  {
+    LOG_ERROR("unknown error");
+    fail_msg_writer() << tr("unknown error");
+    return true;
+  }
+
+  return true;
+}
+//----------------------------------------------------------------------------------------------------
+bool simple_wallet::update_asset(const std::vector<std::string>& args_)
+{
+  if (!try_connect_to_daemon())
+    return false;
+
+  uint32_t priority = 0;
+  std::set<uint32_t> subaddr_indices;
+  std::vector<std::string> args = args_;
+  if (!parse_subaddr_indices_and_priority(*m_wallet, args, subaddr_indices, priority, m_current_subaddress_account))
+    return false;
+
+  if (args.size() != 2)
+  {
+    PRINT_USAGE(USAGE_UPDATE_ASSET);
+    return false;
+  }
+
+  crypto::asset_id asset_id;
+  if (!tools::hex_to_type(args[0], asset_id))
+  {
+    fail_msg_writer() << tr("Failed to parse asset_id");
+    return false;
+  }
+
+  nlohmann::json info_res;
+  if (!get_asset_info(args[0], info_res)) {
+    fail_msg_writer() << tr("Failed to fetch asset info from daemon.");
+    return false;
+  }
+
+  std::string requested_owner = tools::type_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+  if (!info_res.contains("owner") || info_res["owner"].get<std::string>() != requested_owner) {
+    fail_msg_writer() << tr("This wallet does not own the asset: ") << args[0];
+    return false;
+  }
+
+  cryptonote::asset_descriptor_base adb{};
+  adb.version = info_res.value("version", 1);
+  adb.total_max_supply = info_res.value("total_max_supply", (uint64_t)0);
+  adb.current_supply = info_res.value("current_supply", (uint64_t)0);
+  adb.decimal_point = info_res.value("decimal_point", 0);
+  adb.ticker = info_res.value("ticker", "");
+  adb.full_name = info_res.value("full_name", "");
+  adb.meta_info = info_res.value("meta_info", "");
+  tools::hex_to_type(info_res.value("owner", ""), adb.owner);
+  adb.hidden_supply = info_res.value("hidden_supply", false);
+
+  std::string error;
+  if (!load_asset_descriptor_from_json_file(fs::u8path(args[1]), adb, error))
+  {
+    fail_msg_writer() << error << ": " << args[1];
+    return false;
+  }
+
+  SCOPED_WALLET_UNLOCK();
+
+  try
+  {
+    cryptonote::tx_extra_asset_descriptor_operation ado{};
+    ado.operation_type = cryptonote::asset_descriptor_operation_type::update_asset;
+    ado.fields         = static_cast<uint8_t>(cryptonote::asset_field_descriptor |
+                                               cryptonote::asset_field_asset_id);
+    ado.descriptor     = adb;
+    ado.asset_id       = asset_id;
+
+    std::vector<uint8_t> extra;
+    if (!cryptonote::add_asset_descriptor_operation_to_tx_extra(extra, ado))
+    {
+      fail_msg_writer() << tr("Failed to encode asset descriptor into tx extra");
+      return false;
+    }
+
+    auto ptx_vector = m_wallet->create_asset_update_tx(
+        asset_id, cryptonote::TX_OUTPUT_DECOYS, priority, extra,
+        m_current_subaddress_account, subaddr_indices);
+
+    if (ptx_vector.empty())
+    {
+      fail_msg_writer() << tr("No outputs found or daemon not ready");
+      return false;
+    }
+
+    cryptonote::address_parse_info self_info{};
+    self_info.address      = m_wallet->get_subaddress({m_current_subaddress_account, 0});
+    self_info.is_subaddress = m_current_subaddress_account != 0;
+
+    if (!confirm_and_send_tx({self_info}, ptx_vector, priority == tools::tx_priority_flash))
+      return false;
+
+    success_msg_writer(true)
+        << "Asset metainfo successfully updated\n"
+        << "  Asset ID:     " << tools::type_to_hex(asset_id) << "\n"
+        << "  Ticker:       " << adb.ticker << "\n"
+        << "  Full name:    " << adb.full_name;
   }
   catch (const std::exception& e)
   {

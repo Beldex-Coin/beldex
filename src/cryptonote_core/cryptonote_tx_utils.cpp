@@ -1124,47 +1124,50 @@ namespace cryptonote
           crypto::hash tx_prefix_hash;
           get_transaction_prefix_hash(tx, tx_prefix_hash, hwdev);
 
-          // ── HF21: asset ownership proof and balance proof for emit_asset ────────
-          if (tx_params.tx_type == txtype::emit_asset)
+          // ── HF21: asset ownership proof and balance proof for emit_asset/update_asset ────────
+          if (tx_params.tx_type == txtype::emit_asset || tx_params.tx_type == txtype::update_asset)
           {
-            // 1. Generate ZC balance proof
-            rct::key sum_masks = rct::zero();
-            uint64_t sum_amounts = 0;
-
-            for (size_t out_idx = 0; out_idx < destinations.size(); ++out_idx)
+            if (tx_params.tx_type == txtype::emit_asset)
             {
-              const auto& dst_entr = destinations[out_idx];
-              if (!dst_entr.is_zarcanum())
-                continue;
+              // 1. Generate ZC balance proof
+              rct::key sum_masks = rct::zero();
+              uint64_t sum_amounts = 0;
 
-              crypto::key_derivation derivation{};
-              const crypto::secret_key& sec_key = (need_additional_txkeys && out_idx < additional_tx_keys.size()) ? additional_tx_keys[out_idx] : tx_key;
-
-              if (!hwdev.generate_key_derivation(dst_entr.addr.m_view_public_key, sec_key, derivation))
+              for (size_t out_idx = 0; out_idx < destinations.size(); ++out_idx)
               {
-                LOG_ERROR("Failed to generate key derivation for balance proof");
-                return false;
+                const auto& dst_entr = destinations[out_idx];
+                if (!dst_entr.is_zarcanum())
+                  continue;
+
+                crypto::key_derivation derivation{};
+                const crypto::secret_key& sec_key = (need_additional_txkeys && out_idx < additional_tx_keys.size()) ? additional_tx_keys[out_idx] : tx_key;
+
+                if (!hwdev.generate_key_derivation(dst_entr.addr.m_view_public_key, sec_key, derivation))
+                {
+                  LOG_ERROR("Failed to generate key derivation for balance proof");
+                  return false;
+                }
+
+                rct::key mask = cryptonote::zarcanum_derivation_to_scalar(derivation, out_idx, "amount_mask");
+                sc_add(sum_masks.bytes, sum_masks.bytes, mask.bytes);
+                sum_amounts += dst_entr.amount;
               }
 
-              rct::key mask = cryptonote::zarcanum_derivation_to_scalar(derivation, out_idx, "amount_mask");
-              sc_add(sum_masks.bytes, sum_masks.bytes, mask.bytes);
-              sum_amounts += dst_entr.amount;
-            }
+              rct::key P = rct::zero();
+              rct::key sum_masks_G = rct::scalarmultBase(sum_masks);
+              rct::key sum_amounts_X = rct::scalarmultX(rct::d2h(sum_amounts));
+              rct::addKeys(P, sum_masks_G, sum_amounts_X);
 
-            rct::key P = rct::zero();
-            rct::key sum_masks_G = rct::scalarmultBase(sum_masks);
-            rct::key sum_amounts_X = rct::scalarmultX(rct::d2h(sum_amounts));
-            rct::addKeys(P, sum_masks_G, sum_amounts_X);
-
-            rct::zc_balance_proof balance_proof{};
-            balance_proof.P = P;
-            if (!crypto::generate_linear_composition_proof(rct::hash2rct(tx_prefix_hash), P, sum_masks, rct::d2h(sum_amounts), balance_proof.lcp))
-            {
-              LOG_ERROR("Failed to generate linear composition proof for balance");
-              return false;
+              rct::zc_balance_proof balance_proof{};
+              balance_proof.P = P;
+              if (!crypto::generate_linear_composition_proof(rct::hash2rct(tx_prefix_hash), P, sum_masks, rct::d2h(sum_amounts), balance_proof.lcp))
+              {
+                LOG_ERROR("Failed to generate linear composition proof for balance");
+                return false;
+              }
+              tx.asset_proofs.push_back(std::move(balance_proof));
+              MINFO("Attached ZC balance proof for emit_asset tx");
             }
-            tx.asset_proofs.push_back(std::move(balance_proof));
-            MINFO("Attached ZC balance proof for emit_asset tx");
 
             // 2. Generate asset ownership proof
             rct::asset_operation_ownership_proof ownership_proof{};
@@ -1174,7 +1177,7 @@ namespace cryptonote
               return false;
             }
             tx.asset_proofs.push_back(std::move(ownership_proof));
-            MINFO("Attached ownership proof for emit_asset tx: " << get_transaction_hash(tx));
+            MINFO("Attached ownership proof for emit_asset/update_asset tx: " << get_transaction_hash(tx));
           }
 
           rct::ctkeyV outSk;

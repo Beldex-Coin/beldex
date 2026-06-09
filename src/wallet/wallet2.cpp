@@ -10159,7 +10159,7 @@ void wallet2::transfer_selected_rct(std::vector<cryptonote::tx_destination_entry
   {
     for(auto& dt: dsts)
     {
-      THROW_WALLET_EXCEPTION_IF(0 == dt.amount && tx_params.tx_type != txtype::beldex_name_system && tx_params.tx_type != txtype::coin_burn, error::zero_destination);
+      THROW_WALLET_EXCEPTION_IF(0 == dt.amount && tx_params.tx_type != txtype::beldex_name_system && tx_params.tx_type != txtype::coin_burn && tx_params.tx_type != txtype::update_asset, error::zero_destination);
       if(!dt.is_zarcanum())
       {
         needed_money += dt.amount;
@@ -11312,6 +11312,26 @@ std::vector<wallet2::pending_tx> wallet2::create_asset_emit_tx(
                                subaddr_indices, tx_params);
 }
 // ─────────────────────────────────────────────────────────────────────────────
+std::vector<wallet2::pending_tx> wallet2::create_asset_update_tx(
+    const crypto::asset_id& asset_id,
+    const size_t fake_outs_count,
+    uint32_t priority,
+    const std::vector<uint8_t>& extra,
+    uint32_t subaddr_account,
+    std::set<uint32_t> subaddr_indices)
+{
+  auto hf_ver = get_hard_fork_version();
+  THROW_WALLET_EXCEPTION_IF(!hf_ver, error::wallet_internal_error,
+      "Failed to get hard fork version from daemon");
+  beldex_construct_tx_params tx_params = wallet2::construct_params(
+      *hf_ver, txtype::update_asset, priority);
+
+  std::vector<cryptonote::tx_destination_entry> dsts; // Update tx typically doesn't transfer funds
+  return create_transactions_2(dsts, fake_outs_count, 0 /*unlock_time*/,
+                               priority, extra, subaddr_account,
+                               subaddr_indices, tx_params);
+}
+// ─────────────────────────────────────────────────────────────────────────────
 std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryptonote::tx_destination_entry> dsts, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra_base, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, beldex_construct_tx_params &tx_params, const unique_index_container& subtract_fee_from_outputs)
 {
   //ensure device is let in NONE mode in any case
@@ -11350,6 +11370,13 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   LOG_PRINT_L0("is_asset_emit_tx:" << is_asset_emit_tx);
   if (is_asset_emit_tx)  {
     THROW_WALLET_EXCEPTION_IF(dsts.size() == 0, error::wallet_internal_error, "Asset emit txs must have at least 1 destinations set, has: " + std::to_string(dsts.size()));
+  }
+
+  bool const is_asset_update_tx = (tx_params.tx_type == txtype::update_asset);
+  LOG_PRINT_L0("is_asset_update_tx:" << is_asset_update_tx);
+  if (is_asset_update_tx)  {
+    THROW_WALLET_EXCEPTION_IF(dsts.size() != 0, error::wallet_internal_error, "Asset update txs must not have any destinations set, has: " + std::to_string(dsts.size()));
+    dsts.emplace_back(0, account_public_address{} /*address*/, false /*is_subaddress*/); // NOTE: Create a dummy dest that gets repurposed into the change output.
   }
 
   if(m_light_wallet) {
@@ -11518,7 +11545,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   } else {
     for(auto& dt: dsts)
     {
-      THROW_WALLET_EXCEPTION_IF(0 == dt.amount && !(is_bns_tx || is_burn_tx), error::zero_destination);
+      THROW_WALLET_EXCEPTION_IF(0 == dt.amount && !(is_bns_tx || is_burn_tx || is_asset_update_tx), error::zero_destination);
 
       if(dt.asset_id != crypto::null_aid)
       {
@@ -11540,7 +11567,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   }
   // need money should be zero for the is_asset_register_tx
   // throw if attempting a transaction with no money
-  THROW_WALLET_EXCEPTION_IF((needed_money == 0 && token_needed_money.empty()) && !(is_bns_tx || is_burn_tx|| is_asset_register_tx || is_asset_emit_tx), error::zero_destination);
+  THROW_WALLET_EXCEPTION_IF((needed_money == 0 && token_needed_money.empty()) && !(is_bns_tx || is_burn_tx|| is_asset_register_tx || is_asset_emit_tx || is_asset_update_tx), error::zero_destination);
 
   std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> unlocked_balance_per_subaddr = unlocked_balance_per_subaddress(subaddr_account, false);
   std::map<uint32_t, uint64_t> balance_per_subaddr = balance_per_subaddress(subaddr_account, false);
@@ -11559,7 +11586,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   // early out if we know we can't make it anyway
   // we could also check for being within FEE_PER_KB, but if the fee calculation
   // ever changes, this might be missed, so let this go through
-  const uint64_t min_outputs = (tx_params.tx_type == cryptonote::txtype::beldex_name_system || tx_params.tx_type == cryptonote::txtype::coin_burn) ? 1 : 2; // if bns, only request the change output
+  const uint64_t min_outputs = (tx_params.tx_type == cryptonote::txtype::beldex_name_system || tx_params.tx_type == cryptonote::txtype::coin_burn || tx_params.tx_type == cryptonote::txtype::update_asset) ? 1 : 2; // if bns, only request the change output
   {
     uint64_t min_fee = (
         base_fee.first * estimate_rct_tx_size(1, fake_outs_count, min_outputs, extra.size(), clsag, bulletproof_plus) +
@@ -11864,7 +11891,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
       pop_if_present(*unused_transfers_indices, idx);
       pop_if_present(*unused_dust_indices, idx);
       pop_if_present(unused_assets_indices_per_subaddr, idx);
-    } else if ((dsts.empty() || (dsts[0].amount == 0 && !(is_bns_tx || is_burn_tx))) && !adding_fee) {
+    } else if ((dsts.empty() || (dsts[0].amount == 0 && !(is_bns_tx || is_burn_tx || is_asset_update_tx))) && !adding_fee) {
       // NOTE: A BNS tx sets dsts[0].amount to 0, but this branch is for the
       // 2 inputs/2 outputs. We only have 1 output as BNS transactions are
       // distinguishable, so we actually want the last branch which uses unused

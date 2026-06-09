@@ -791,6 +791,13 @@ private:
         const std::vector<uint8_t>& extra,
         uint32_t subaddr_account,
         std::set<uint32_t> subaddr_indices);
+    std::vector<pending_tx> create_asset_update_tx(
+        const crypto::asset_id& asset_id,
+        const size_t fake_outs_count,
+        uint32_t priority,
+        const std::vector<uint8_t>& extra,
+        uint32_t subaddr_account,
+        std::set<uint32_t> subaddr_indices);
 
     std::vector<pending_tx> create_transactions_all(uint64_t below, const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, cryptonote::txtype tx_type = cryptonote::txtype::standard);
     std::vector<pending_tx> create_transactions_single(const crypto::key_image &ki, const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, cryptonote::txtype tx_type = cryptonote::txtype::standard);
