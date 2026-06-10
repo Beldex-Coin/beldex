@@ -8041,16 +8041,6 @@ bool simple_wallet::deploy_new_asset(const std::vector<std::string>& args_)
     if (!confirm_and_send_tx({self_info}, ptx_vector, priority == tools::tx_priority_flash))
       return false;
 
-    success_msg_writer(true)
-        << "Asset deployment submitted successfully\n"
-        << "  Asset ID:     " << tools::type_to_hex(asset_id) << "\n"
-        << "  Ticker:       " << descriptor.ticker << "\n"
-        << "  Full Name:    " << descriptor.full_name << "\n"
-        << "  Decimal Point: " << (int)descriptor.decimal_point << "\n"
-        << "  Initial Supply: " << print_asset_amount(descriptor.current_supply, descriptor.decimal_point) << "\n"
-        << "  Max Supply: " << print_asset_amount(descriptor.total_max_supply, descriptor.decimal_point) << "\n"
-        << "  TX Hash: " << get_transaction_hash(ptx_vector.front().tx) << "\n"
-        << "  TX Fee: " << print_money(ptx_vector.front().fee);
   }
   catch (const std::exception& e)
   {

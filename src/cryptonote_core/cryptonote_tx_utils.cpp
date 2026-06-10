@@ -38,6 +38,7 @@
 #include "blockchain.h"
 #include "cryptonote_basic/miner.h"
 #include "cryptonote_basic/tx_extra.h"
+#include "cryptonote_basic/asset_descriptor_operation_utils.h"
 #include "crypto/crypto.h"
 #include "crypto/asset_proofs.h"
 #include "crypto/hash.h"
@@ -941,6 +942,87 @@ namespace cryptonote
 
     remove_field_from_tx_extra<tx_extra_additional_pub_keys>(tx.extra);
 
+    // ── HF21: asset amount-commitment binding (deploy + emit) ────────────────
+    // Bind the publicly-declared asset amount to a Pedersen commitment carried
+    // in the ADO:  C = amount * asset_id + mask * G  (UNSCALED, matching the
+    // output amount_commitment convention).  The matching g_proof (generated
+    // below over the tx prefix hash) proves C - amount·asset_id = mask·G, i.e.
+    // the commitment encodes exactly the declared amount with the asset_id as
+    // base.  The on-chain verifier additionally checks that the zarcanum output
+    // commitments sum to C, which forces sum(output amounts) == declared amount.
+    // Without this an emitter could declare amount=1 while minting outputs worth
+    // far more (inflation).  Ported/adapted from Zano construct_tx_handle_ado +
+    // validate_asset_operation_amount_commitment.
+    bool     aop_required = false;
+    rct::key aop_mask     = rct::zero();
+    if (tx.type == txtype::deploy_new_asset || tx.type == txtype::emit_asset)
+    {
+      tx_extra_asset_descriptor_operation ado{};
+      if (!get_asset_descriptor_operation_from_tx_extra(tx.extra, ado))
+      {
+        LOG_ERROR("asset tx is missing its asset_descriptor_operation in tx.extra");
+        return false;
+      }
+
+      uint64_t declared_amount = 0;
+      crypto::asset_id asset_id = crypto::null_aid;
+      if (tx.type == txtype::deploy_new_asset)
+      {
+        declared_amount = ado.descriptor.current_supply;
+        asset_id        = get_or_calculate_asset_id(ado);
+      }
+      else // emit_asset
+      {
+        declared_amount = ado.amount;
+        asset_id        = ado.asset_id;
+      }
+
+      // The commitment mask is the SUM of the per-output amount masks of the
+      // minted zarcanum outputs (re-derived exactly as construct_tx_out_zarcanum
+      // does).  This makes C == sum(output amount_commitments), so the on-chain
+      // balance check (sum of zarcanum output commitments == ADO commitment)
+      // forces sum(output amounts) == declared_amount → no inflation.
+      rct::key sum_masks = rct::zero();
+      {
+        size_t out_idx = 0;
+        for (const auto& d : destinations)
+        {
+          if (d.is_zarcanum())
+          {
+            crypto::key_derivation derivation{};
+            if (!hwdev.generate_key_derivation(d.addr.m_view_public_key, tx_key, derivation))
+            {
+              LOG_ERROR("Failed to generate key derivation for asset amount commitment");
+              return false;
+            }
+            rct::key mask = cryptonote::zarcanum_derivation_to_scalar(derivation, out_idx, "amount_mask");
+            sc_add(sum_masks.bytes, sum_masks.bytes, mask.bytes);
+          }
+          ++out_idx;
+        }
+      }
+      aop_mask = sum_masks;
+
+      // C = declared_amount * asset_id + sum_masks * G   (UNSCALED, matching the
+      // unscaled output commitment convention used throughout Beldex).
+      const rct::key& asset_pt = rct::aid2rct(asset_id);
+      rct::key commitment_full = rct::commitAsset(aop_mask, asset_pt, declared_amount);
+
+      ado.amount_commitment = rct::rct2pk(commitment_full);
+      ado.fields = static_cast<uint8_t>(ado.fields | asset_field_amount_commitment);
+
+      // Re-serialize the ADO (now carrying the commitment) so it becomes part of
+      // the prefix hash that the g_proof signs below.
+      remove_field_from_tx_extra<tx_extra_asset_descriptor_operation>(tx.extra);
+      if (!add_asset_descriptor_operation_to_tx_extra(tx.extra, ado))
+      {
+        LOG_ERROR("failed to re-encode asset_descriptor_operation with amount_commitment");
+        return false;
+      }
+
+      aop_required = true;
+    }
+
     LOG_PRINT_L2("tx pubkey: " << txkey_pub);
     if (need_additional_txkeys)
     {
@@ -1124,49 +1206,34 @@ namespace cryptonote
           crypto::hash tx_prefix_hash;
           get_transaction_prefix_hash(tx, tx_prefix_hash, hwdev);
 
-          // ── HF21: asset ownership proof and balance proof for emit_asset ────────
-          if (tx_params.tx_type == txtype::emit_asset)
+          // ── HF21: asset amount-commitment proof (deploy + emit) ─────────────
+          // Proves the ADO's amount_commitment encodes exactly the declared
+          // amount with the asset_id as base:  A = C·8 - amount·asset_id = mask·G.
+          if (aop_required)
           {
-            // 1. Generate ZC balance proof
-            rct::key sum_masks = rct::zero();
-            uint64_t sum_amounts = 0;
-
-            for (size_t out_idx = 0; out_idx < destinations.size(); ++out_idx)
+            rct::key A = rct::scalarmultBase(aop_mask); // A = mask * G
+            rct::asset_operation_proof aop{};
+            if (!crypto::generate_schnorr_sig(rct::hash2rct(tx_prefix_hash), A, aop_mask, aop.g_proof))
             {
-              const auto& dst_entr = destinations[out_idx];
-              if (!dst_entr.is_zarcanum())
-                continue;
-
-              crypto::key_derivation derivation{};
-              const crypto::secret_key& sec_key = (need_additional_txkeys && out_idx < additional_tx_keys.size()) ? additional_tx_keys[out_idx] : tx_key;
-
-              if (!hwdev.generate_key_derivation(dst_entr.addr.m_view_public_key, sec_key, derivation))
-              {
-                LOG_ERROR("Failed to generate key derivation for balance proof");
-                return false;
-              }
-
-              rct::key mask = cryptonote::zarcanum_derivation_to_scalar(derivation, out_idx, "amount_mask");
-              sc_add(sum_masks.bytes, sum_masks.bytes, mask.bytes);
-              sum_amounts += dst_entr.amount;
-            }
-
-            rct::key P = rct::zero();
-            rct::key sum_masks_G = rct::scalarmultBase(sum_masks);
-            rct::key sum_amounts_X = rct::scalarmultX(rct::d2h(sum_amounts));
-            rct::addKeys(P, sum_masks_G, sum_amounts_X);
-
-            rct::zc_balance_proof balance_proof{};
-            balance_proof.P = P;
-            if (!crypto::generate_linear_composition_proof(rct::hash2rct(tx_prefix_hash), P, sum_masks, rct::d2h(sum_amounts), balance_proof.lcp))
-            {
-              LOG_ERROR("Failed to generate linear composition proof for balance");
+              LOG_ERROR("Failed to generate asset amount-commitment g_proof");
               return false;
             }
-            tx.asset_proofs.push_back(std::move(balance_proof));
-            MINFO("Attached ZC balance proof for emit_asset tx");
+            aop.flags = 2; // g_proof present
+            tx.asset_proofs.push_back(std::move(aop));
+            MINFO("Attached asset amount-commitment proof for "
+                  << (tx.type == txtype::deploy_new_asset ? "deploy" : "emit") << " tx");
+          }
 
-            // 2. Generate asset ownership proof
+          // ── HF21: asset ownership proof for emit_asset ──────────────────────
+          // No asset balance proof is generated: emit mints the asset from
+          // nothing (no asset inputs), so there is no asset in==out equation.
+          // The minted amount is constrained by the amount-commitment proof
+          // above + the supply cap; the native (BDX) side that pays the fee is
+          // balanced by the standard RingCT signature (genRctSimple) below.
+          if (tx_params.tx_type == txtype::emit_asset)
+          {
+            // Prove the asset owner authorized this emission (Schnorr over the
+            // owner's spend key, verified on-chain against descriptor.owner).
             rct::asset_operation_ownership_proof ownership_proof{};
             if (!crypto::generate_schnorr_sig(rct::hash2rct(tx_prefix_hash), rct::pk2rct(sender_account_keys.m_account_address.m_spend_public_key), rct::sk2rct(sender_account_keys.m_spend_secret_key), ownership_proof.sig))
             {

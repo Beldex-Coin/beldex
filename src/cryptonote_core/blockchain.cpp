@@ -3221,23 +3221,30 @@ bool Blockchain::check_tx_outputs(const transaction& tx, tx_verification_context
   // spend-style ZC proof bundle is only required for transactions that are not
   // initial asset registrations.
   if (hf_version >= feature::CONFIDENTIAL_ASSETS &&
-      tx.has_zarcanum_outputs() &&
-      tx.type != txtype::deploy_new_asset)
+      tx.has_zarcanum_outputs())
   {
     if (tx.type == txtype::emit_asset)
     {
-      // Emission requires a balance proof and an ownership signature from the asset owner.
-      bool has_balance   = false;
-      bool has_ownership = false;
+      // Emission mints the asset from nothing (no asset inputs), so there is no
+      // asset in==out balance proof.  It instead requires:
+      //   - an amount-commitment proof (asset_operation_proof) binding the
+      //     declared amount to the minted output commitments, and
+      //   - an ownership signature from the asset owner.
+      // The cryptographic verification of both happens in
+      // validate_tx_asset_operations_against_db(); here we only do a cheap
+      // structural presence check for early rejection.  (The native BDX side
+      // that pays the fee is balanced by the standard RingCT signature.)
+      bool has_amount_commitment = false;
+      bool has_ownership         = false;
 
       for (const auto& proof : tx.asset_proofs)
       {
-        if (std::holds_alternative<rct::zc_balance_proof>(proof))                { has_balance   = true; }
-        if (std::holds_alternative<rct::asset_operation_ownership_proof>(proof)) { has_ownership = true; }
+        if (std::holds_alternative<rct::asset_operation_proof>(proof))           { has_amount_commitment = true; }
+        if (std::holds_alternative<rct::asset_operation_ownership_proof>(proof)) { has_ownership          = true; }
       }
-      if (!has_balance)
+      if (!has_amount_commitment)
       {
-        MERROR_VER("Emission tx missing balance proof");
+        MERROR_VER("Emission tx missing amount-commitment proof");
         tvc.m_invalid_input = true;
         return false;
       }
@@ -3248,17 +3255,23 @@ bool Blockchain::check_tx_outputs(const transaction& tx, tx_verification_context
         return false;
       }
     }
-    // Verify the balance proof (linear composition proof: balance_point = a*G + b*X)
-    for (const auto& proof : tx.asset_proofs)
+
+    if(tx.type == txtype::deploy_new_asset)
     {
-      if (const auto* bp = std::get_if<rct::zc_balance_proof>(&proof))
+      // Initial registration of a new asset requires an amount-commitment proof binding the declared total supply to the output commitments,
+      // but does not require an ownership proof since the asset is not yet owned by anyone.
+      // Again, the cryptographic verification of the amount-commitment proof happens in validate_tx_asset_operations_against_db();
+      // here we only do a cheap structural presence check for early rejection.
+      bool has_amount_commitment = false;
+      for (const auto& proof : tx.asset_proofs)      
       {
-        // The balance point is provided by the prover in the proof message.
-        // Full verification of the balance equation (sum outputs - sum inputs = 0)
-        // requires pseudo-output commitments from ZC_sig entries, which are
-        // verified in check_tx_inputs. Here we check structural validity only.
-        (void)bp; // checked in check_tx_inputs via verAssetProofs()
-        break;
+        if (std::holds_alternative<rct::asset_operation_proof>(proof)) { has_amount_commitment = true; }
+      }
+      if (!has_amount_commitment)
+      {
+        MERROR_VER("Asset registration tx missing amount-commitment proof");
+        tvc.m_invalid_input = true;
+        return false;
       }
     }
   }
