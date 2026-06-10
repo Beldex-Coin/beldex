@@ -14,12 +14,99 @@
 #include "serialization/binary_utils.h"
 #include "serialization/string.h"
 #include "crypto/asset_proofs.h"
+#include "ringct/rctOps.h"
 
 namespace cryptonote
 {
 
 namespace
 {
+// ── HF21: verify the asset amount-commitment binding proof ──────────────────
+// Confirms the ADO's amount_commitment encodes exactly `declared_amount` with
+// the asset_id as base, i.e.  A = C - declared_amount·asset_id = mask·G (C is
+// UNSCALED), proven by the asset_operation_proof g_proof (a Schnorr sig over the
+// tx prefix hash), and that the zarcanum output commitments sum to C.
+// Adapted from Zano validate_asset_operation_amount_commitment.
+bool verify_asset_amount_commitment(const transaction& tx,
+                                    const tx_extra_asset_descriptor_operation& op,
+                                    const crypto::asset_id& asset_id,
+                                    uint64_t declared_amount,
+                                    std::string& reason)
+{
+  if (!op.field_is_set(asset_field_amount_commitment))
+  {
+    reason = "asset operation missing amount_commitment";
+    return false;
+  }
+
+  // Locate the single asset_operation_proof carrying the g_proof.
+  const rct::asset_operation_proof* aop = nullptr;
+  for (const auto& proof : tx.asset_proofs)
+  {
+    if (const auto* p = std::get_if<rct::asset_operation_proof>(&proof))
+    {
+      if (aop != nullptr)
+      {
+        reason = "multiple asset_operation_proof entries";
+        return false;
+      }
+      aop = p;
+    }
+  }
+  if (aop == nullptr)
+  {
+    reason = "missing asset_operation_proof";
+    return false;
+  }
+  if (!aop->has_g_proof())
+  {
+    reason = "asset_operation_proof missing g_proof";
+    return false;
+  }
+
+  // A = C - declared_amount·asset_id   (must equal mask·G; C is stored UNSCALED)
+  const rct::key C        = rct::pk2rct(op.amount_commitment);
+  rct::key amt_asset      = rct::scalarmultKey(rct::aid2rct(asset_id), rct::d2h(declared_amount));
+  rct::key A;
+  rct::subKeys(A, C, amt_asset);
+
+  crypto::hash prefix_hash;
+  get_transaction_prefix_hash(tx, prefix_hash);
+  if (!crypto::verify_schnorr_sig(rct::hash2rct(prefix_hash), A, aop->g_proof))
+  {
+    reason = "asset amount-commitment g_proof verification failed";
+    return false;
+  }
+
+  // Tie the ADO commitment to the actual minted outputs: the sum of the
+  // zarcanum output commitments must equal the ADO amount_commitment.
+  // Combined with the g_proof above (which fixes C = declared_amount·asset_id +
+  // mask·G), this forces sum(output amounts) == declared_amount, so an issuer
+  // cannot declare a small supply while minting outputs worth more.
+  rct::key sum_out = rct::identity();
+  bool saw_zc_out = false;
+  for (const auto& o : tx.vout)
+  {
+    if (const auto* z = std::get_if<tx_out_zarcanum>(&o.target))
+    {
+      rct::addKeys(sum_out, sum_out, rct::pk2rct(z->amount_commitment));
+      saw_zc_out = true;
+    }
+  }
+  if (!saw_zc_out)
+  {
+    reason = "asset operation has no zarcanum outputs to back the declared amount";
+    return false;
+  }
+  if (!rct::equalKeys(sum_out, C))
+  {
+    reason = "zarcanum output commitments do not sum to the declared amount commitment";
+    return false;
+  }
+
+  return true;
+}
+
 void set_reason(std::string* reason, std::string value)
 {
   if (reason) *reason = std::move(value);
@@ -376,7 +463,22 @@ bool validate_tx_asset_operations_against_db(
     auto [it, inserted] = states.try_emplace(asset_id);
     if (inserted && !load_asset_state_from_history(db, asset_id, it->second, reason))
       return false;
-    
+
+    // ── HF21: amount-commitment binding (register + emit) ────────────────────
+    // Cryptographically ties the publicly-declared amount to the commitment in
+    // the ADO, preventing an issuer from declaring a small supply while minting
+    // outputs worth more (asset inflation).
+    if (op.operation_type == asset_descriptor_operation_type::register_asset ||
+        op.operation_type == asset_descriptor_operation_type::emit_asset)
+    {
+      const uint64_t declared_amount =
+          (op.operation_type == asset_descriptor_operation_type::register_asset)
+              ? op.descriptor.current_supply
+              : op.amount;
+      if (!verify_asset_amount_commitment(tx, op, asset_id, declared_amount, reason))
+        return false;
+    }
+
       // ── Ownership verification for emission ──────────────────────────────────
     if (op.operation_type == asset_descriptor_operation_type::emit_asset || op.operation_type == asset_descriptor_operation_type::update_asset)
     {
