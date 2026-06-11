@@ -40,6 +40,8 @@
 #include <limits>
 #include <oxenc/base64.h>
 #include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 
 #include "wallet_rpc_server_error_codes.h"
 #include "wallet_rpc_server.h"
@@ -209,9 +211,33 @@ namespace
         !assign_uint8("decimal_point", descriptor.decimal_point) ||
         !assign_string("ticker", descriptor.ticker) ||
         !assign_string("full_name", descriptor.full_name) ||
-        !assign_string("meta_info", descriptor.meta_info) ||
         !assign_bool("hidden_supply", descriptor.hidden_supply))
       return false;
+
+    if (json.HasMember("meta_info")) {
+      if (json["meta_info"].IsObject()) {
+        if (!json["meta_info"].HasMember("url") || !json["meta_info"]["url"].IsString() || std::string(json["meta_info"]["url"].GetString()).empty()) {
+          error = "meta_info JSON must contain a non-empty 'url' string";
+          return false;
+        }
+        rapidjson::StringBuffer buffer;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+        json["meta_info"].Accept(writer);
+        descriptor.meta_info = buffer.GetString();
+      } else if (json["meta_info"].IsString()) {
+        descriptor.meta_info = json["meta_info"].GetString();
+        if (descriptor.meta_info.find("http://") != 0 && descriptor.meta_info.find("https://") != 0 && descriptor.meta_info.find(".com") == std::string::npos) {
+          error = "meta_info must be a valid URL or a JSON object containing a 'url' field";
+          return false;
+        }
+      } else {
+        error = "meta_info must be a string or a JSON object";
+        return false;
+      }
+    } else {
+      error = "meta_info is required and must contain a URL";
+      return false;
+    }
 
     if (json.HasMember("owner"))
     {
