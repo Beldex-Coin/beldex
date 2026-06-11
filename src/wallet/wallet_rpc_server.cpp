@@ -216,9 +216,25 @@ namespace
     if (json.HasMember("owner"))
     {
       const auto& owner = json["owner"];
-      if (!owner.IsString() || !tools::hex_to_type(owner.GetString(), descriptor.owner))
+      if (!owner.IsString())
       {
-        error = "owner must be a hex-encoded public key";
+        error = "owner must be a hex-encoded public key or address";
+        return false;
+      }
+      std::string owner_str = owner.GetString();
+
+      cryptonote::address_parse_info owner_info;
+      if (cryptonote::get_account_address_from_str(owner_info, cryptonote::network_type::MAINNET, owner_str) ||
+          cryptonote::get_account_address_from_str(owner_info, cryptonote::network_type::TESTNET, owner_str))
+      {
+        if (owner_info.is_subaddress)
+        {
+          error = "owner cannot be a subaddress";
+          return false;
+        }
+        descriptor.owner = owner_info.address.m_spend_public_key;
+      } else if (!tools::hex_to_type(owner_str, descriptor.owner)) {
+        error = "owner must be a hex-encoded public key or valid address";
         return false;
       }
     }
@@ -4043,6 +4059,9 @@ namespace {
   {
     require_open();
     UPDATE_ASSET::response res{};
+
+    if (req.account_index != 0 || !req.subaddr_indices.empty())
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "update_asset must be issued from the primary account without subaddress switches"};
 
     crypto::asset_id asset_id;
     if (!tools::hex_to_type(req.asset_id, asset_id))

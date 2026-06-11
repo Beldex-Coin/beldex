@@ -349,8 +349,6 @@ bool apply_asset_operation_to_state(
         return reject("update_asset cannot modify ticker");
       if (d.full_name != state.descriptor.full_name)
         return reject("update_asset cannot modify full_name");
-      if (d.owner != state.descriptor.owner)
-        return reject("update_asset cannot modify owner");
       if (d.decimal_point != state.descriptor.decimal_point)
         return reject("update_asset cannot modify decimal_point");
       if (d.hidden_supply != state.descriptor.hidden_supply)
