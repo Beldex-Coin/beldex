@@ -1577,7 +1577,9 @@ private:
     void register_devices();
     hw::device& lookup_device(const std::string & device_descriptor);
 
-    bool get_rct_distribution(uint64_t &start_height, std::vector<uint64_t> &distribution);
+    bool get_rct_distribution(
+        uint64_t &native_start_height, std::vector<uint64_t> &native_offsets, std::vector<uint64_t> &native_output_indices,
+        uint64_t &asset_start_height,  std::vector<uint64_t> &asset_offsets,  std::vector<uint64_t> &asset_output_indices);
     bool get_output_blacklist(std::vector<uint64_t> &blacklist);
 
     uint64_t get_segregation_fork_height() const;

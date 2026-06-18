@@ -2650,21 +2650,25 @@ namespace cryptonote::rpc {
       const uint64_t req_to_height = req.to_height ? req.to_height : (m_core.get_current_blockchain_height() - 1);
       for (uint64_t amount: req.amounts)
       {
-        auto data = detail::get_output_distribution(
-            [this](auto&&... args) { return m_core.get_output_distribution(std::forward<decltype(args)>(args)...); },
-            amount,
-            req.from_height,
-            req_to_height,
-            [this](uint64_t height) { return m_core.get_blockchain_storage().get_db().get_block_hash_from_height(height); },
-            req.cumulative,
-            m_core.get_current_blockchain_height());
-        if (!data)
-          throw rpc_error{ERROR_INTERNAL, "Failed to get output distribution"};
-
-        // Force binary & compression off if this is a JSON request because trying to pass binary
-        // data through JSON explodes it in terms of size (most values under 0x20 have to be encoded
-        // using 6 chars such as "\u0002").
-        res.distributions.push_back({std::move(*data), amount, "", req.binary, req.compress});
+        for (auto [otype, ftype] : {std::pair{output_distribution_type::native, uint8_t{1}},
+                                    std::pair{output_distribution_type::asset,  uint8_t{2}}})
+        {
+          // Must call m_core directly (not detail::get_output_distribution) because the shared
+          // cache in detail:: does not key on otype — a native cache hit would return an empty
+          // output_indices vector for the asset bucket, causing an infinite loop in the wallet.
+          std::vector<uint64_t> dist, indices;
+          uint64_t start_height = 0, base = 0;
+          if (!m_core.get_output_distribution(amount, req.from_height, req_to_height, start_height, dist, base, otype, &indices))
+            throw rpc_error{ERROR_INTERNAL, "Failed to get output distribution"};
+          if (!req.cumulative && !dist.empty())
+          {
+            for (size_t n = dist.size() - 1; n > 0; --n)
+              dist[n] -= dist[n - 1];
+            dist[0] -= base;
+          }
+          rpc::output_distribution_data data{std::move(dist), start_height, base, std::move(indices)};
+          res.distributions.push_back({std::move(data), amount, "", req.binary, req.compress, "", ftype});
+        }
       }
     }
     catch (const std::exception &e)

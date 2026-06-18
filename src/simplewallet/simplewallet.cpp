@@ -234,6 +234,48 @@ namespace
     return s;
   }
 
+  bool parse_asset_amount(uint64_t& amount, std::string_view str_amount, uint8_t decimal_point)
+  {
+    while (!str_amount.empty() && std::isspace((unsigned char)str_amount.front()))
+      str_amount.remove_prefix(1);
+    while (!str_amount.empty() && std::isspace((unsigned char)str_amount.back()))
+      str_amount.remove_suffix(1);
+
+    const size_t dot_pos = str_amount.find('.');
+    const std::string_view whole = (dot_pos == std::string_view::npos) ? str_amount : str_amount.substr(0, dot_pos);
+    const std::string_view frac  = (dot_pos == std::string_view::npos) ? std::string_view{} : str_amount.substr(dot_pos + 1);
+
+    for (char c : whole) if (!std::isdigit((unsigned char)c)) return false;
+    for (char c : frac)  if (!std::isdigit((unsigned char)c)) return false;
+    if (whole.empty() && frac.empty()) return false;
+    if (frac.size() > decimal_point) return false;
+
+    amount = 0;
+    for (char c : whole)
+    {
+      if (amount > (std::numeric_limits<uint64_t>::max() - (c - '0')) / 10) return false;
+      amount = amount * 10 + (c - '0');
+    }
+    for (size_t i = 0; i < decimal_point; i++)
+    {
+      if (amount > std::numeric_limits<uint64_t>::max() / 10) return false;
+      amount *= 10;
+    }
+    if (!frac.empty())
+    {
+      uint64_t frac_val = 0;
+      for (char c : frac) frac_val = frac_val * 10 + (c - '0');
+      for (size_t i = 0; i < decimal_point - frac.size(); i++)
+      {
+        if (frac_val > std::numeric_limits<uint64_t>::max() / 10) return false;
+        frac_val *= 10;
+      }
+      if (amount > std::numeric_limits<uint64_t>::max() - frac_val) return false;
+      amount += frac_val;
+    }
+    return true;
+  }
+
   bool parse_asset_prefixed_address_arg(const std::string& raw, crypto::asset_id& asset_id, std::string& address)
   {
     address = raw;
@@ -281,11 +323,7 @@ namespace
       const auto res = wallet.json_rpc("get_asset_info", {{"asset_id", asset_hex}});
 
       if (!res.contains("decimal_point") || !res["decimal_point"].is_number_unsigned())
-      {
-        std::lock_guard lock{asset_display_cache_mutex};
-        asset_display_cache[asset_id] = std::nullopt;
         return std::nullopt;
-      }
 
       asset_display_info info{};
       info.decimal_point = static_cast<uint8_t>(res["decimal_point"].get<unsigned>());
@@ -295,9 +333,12 @@ namespace
     }
     catch (const std::exception&)
     {
-      result = std::nullopt;
+      return std::nullopt;
     }
 
+    // Only cache successful lookups: the asset may not be registered on the
+    // daemon yet right after deployment, so a negative result must be retried
+    // on the next call rather than sticking for the rest of the session.
     {
       std::lock_guard lock{asset_display_cache_mutex};
       asset_display_cache[asset_id] = result;
@@ -6043,12 +6084,17 @@ bool simple_wallet::confirm_and_send_tx(std::vector<cryptonote::address_parse_in
       uint64_t dust_not_in_fee = 0;
       uint64_t dust_in_fee = 0;
       uint64_t change = 0;
+      std::unordered_map<crypto::asset_id, uint64_t> asset_sent;
       for (size_t n = 0; n < ptx_vector.size(); ++n)
       {
         total_fee += ptx_vector[n].fee;
-        for (auto i: ptx_vector[n].selected_transfers)
-          total_sent += m_wallet->get_transfer_details(i).amount();
-        total_sent -= ptx_vector[n].change_dts.amount + ptx_vector[n].fee;
+        for (const auto& dest : ptx_vector[n].dests)
+        {
+          if (dest.asset_id == crypto::null_aid)
+            total_sent += dest.amount;
+          else
+            asset_sent[dest.asset_id] += dest.amount;
+        }
         change += ptx_vector[n].change_dts.amount;
 
         if (ptx_vector[n].dust_added_to_fee)
@@ -6070,7 +6116,10 @@ bool simple_wallet::confirm_and_send_tx(std::vector<cryptonote::address_parse_in
         if (subaddr_indices.size() > 1)
           prompt << tr("WARNING: Outputs of multiple addresses are being used together, which might potentially compromise your confidentiality.\n");
       }
-      prompt << boost::format(tr("Sending %s.  ")) % print_money(total_sent);
+      for (const auto& [aid, amount] : asset_sent)
+        prompt << boost::format(tr("Sending %s.  ")) % format_amount_with_asset_id(*m_wallet, amount, tools::type_to_hex(aid));
+      if (total_sent > 0 || asset_sent.empty())
+        prompt << boost::format(tr("Sending %s.  ")) % print_money(total_sent);
       if (ptx_vector.size() > 1)
       {
         prompt << boost::format(tr("Your transaction needs to be split into %llu transactions.  "
@@ -6314,7 +6363,16 @@ bool simple_wallet::transfer_main(Transfer transfer_type, const std::vector<std:
         return false;
       }
 
-      bool ok = cryptonote::parse_amount(de.amount, local_args[i + 1]);
+      bool ok = false;
+      if (parsed_asset_id != crypto::null_aid)
+      {
+        if (const auto asset_info = get_asset_display_info(*m_wallet, parsed_asset_id))
+          ok = parse_asset_amount(de.amount, local_args[i + 1], asset_info->decimal_point);
+        else
+          ok = cryptonote::parse_amount(de.amount, local_args[i + 1]);
+      }
+      else
+        ok = cryptonote::parse_amount(de.amount, local_args[i + 1]);
       if(!ok || 0 == de.amount)
       {
         fail_msg_writer() << tr("amount is wrong: ") << local_args[i] << ' ' << local_args[i + 1] <<

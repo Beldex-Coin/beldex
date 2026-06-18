@@ -124,7 +124,7 @@ public:
   virtual bool for_all_outputs(uint64_t amount, const std::function<bool(uint64_t height)> &f) const override { return true; }
   virtual bool is_read_only() const override { return false; }
   virtual std::map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>> get_output_histogram(const std::vector<uint64_t> &amounts, bool unlocked, uint64_t recent_cutoff, uint64_t min_count,cryptonote::network_type nettype) const override { return std::map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>>(); }
-  virtual bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, std::vector<uint64_t> &distribution, uint64_t &base) const override { return false; }
+  virtual bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, std::vector<uint64_t> &distribution, uint64_t &base, output_distribution_type output_type = output_distribution_type::native, std::vector<uint64_t> *output_indices = nullptr) const override { return false; }
 
   virtual void add_txpool_tx(const crypto::hash &txid, const cryptonote::blobdata &blob, const cryptonote::txpool_tx_meta_t& details) override {}
   virtual void update_txpool_tx(const crypto::hash &txid, const cryptonote::txpool_tx_meta_t& details) override {}

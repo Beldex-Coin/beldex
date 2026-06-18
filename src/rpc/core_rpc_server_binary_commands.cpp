@@ -106,6 +106,7 @@ KV_SERIALIZE_MAP_CODE_BEGIN(GET_OUTPUTS_BIN::outkey)
   KV_SERIALIZE(unlocked)
   KV_SERIALIZE(height)
   KV_SERIALIZE_VAL_POD_AS_BLOB(txid)
+  KV_SERIALIZE_VAL_POD_AS_BLOB(blinded_asset_id)
 KV_SERIALIZE_MAP_CODE_END()
 
 
@@ -203,6 +204,32 @@ KV_SERIALIZE_MAP_CODE_BEGIN(GET_OUTPUT_DISTRIBUTION_BIN::distribution)
   else
     KV_SERIALIZE_N(data.distribution, "distribution")
   KV_SERIALIZE_N(data.base, "base")
+  KV_SERIALIZE_OPT(filter_type, (uint8_t)0)
+  if (binary)
+  {
+    if (is_store)
+    {
+      if (compress)
+      {
+        const_cast<std::string&>(compressed_output_indices) = compress_integer_array(data.output_indices);
+        KV_SERIALIZE(compressed_output_indices)
+      }
+      else
+        KV_SERIALIZE_CONTAINER_POD_AS_BLOB_N(data.output_indices, "output_indices")
+    }
+    else
+    {
+      if (compress)
+      {
+        KV_SERIALIZE(compressed_output_indices)
+        const_cast<std::vector<uint64_t>&>(data.output_indices) = decompress_integer_array<uint64_t>(compressed_output_indices);
+      }
+      else
+        KV_SERIALIZE_CONTAINER_POD_AS_BLOB_N(data.output_indices, "output_indices")
+    }
+  }
+  else
+    KV_SERIALIZE_N(data.output_indices, "output_indices")
 KV_SERIALIZE_MAP_CODE_END()
 
 

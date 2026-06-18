@@ -66,6 +66,7 @@ enum struct lmdb_version
     v6,     // remigrate quorum_signature struct due to alignment change
     v7,     // rebuild the checkpoint table because v6 update in-place made MDB_LAST not give us the newest checkpoint
     v8,     // add asset history table for custom asset registry state
+    v9,     // add blinded_asset_id to output metadata for confidential asset ring filtering
     _count
 };
 
@@ -82,6 +83,23 @@ struct pre_rct_output_data_t
   uint64_t           height;       //!< the height of the block which created the output
 };
 static_assert(sizeof(pre_rct_output_data_t) == sizeof(crypto::public_key) + 2*sizeof(uint64_t), "pre_ct_output_data_t has unexpected padding");
+
+struct output_data_v8_t
+{
+  crypto::public_key pubkey;
+  uint64_t           unlock_time;
+  uint64_t           height;
+  rct::key           commitment;
+};
+
+struct outkey_v8_t
+{
+  uint64_t amount_index;
+  uint64_t output_id;
+  output_data_v8_t data;
+};
+
+static_assert(sizeof(output_data_v8_t) == sizeof(crypto::public_key) + 2*sizeof(uint64_t) + sizeof(rct::key), "output_data_v8_t has unexpected padding");
 
 template <typename T>
 void throw0(const T &e)
@@ -1183,6 +1201,7 @@ uint64_t BlockchainLMDB::add_output(const crypto::hash& tx_hash,
     ok.data.unlock_time = unlock_time;
     ok.data.height = m_height;
     ok.data.commitment = rct::pk2rct(zout.amount_commitment);
+    ok.data.blinded_asset_id = zout.blinded_asset_id;
     data.mv_size = sizeof(ok);
   }
   else
@@ -1190,6 +1209,7 @@ uint64_t BlockchainLMDB::add_output(const crypto::hash& tx_hash,
     ok.data.pubkey = var::get<txout_to_key>(tx_output.target).key;
     ok.data.unlock_time = unlock_time;
     ok.data.height = m_height;
+    ok.data.blinded_asset_id = crypto::null_pkey;
     if (tx_output.amount == 0)
     {
       ok.data.commitment = *commitment;
@@ -4307,6 +4327,7 @@ void BlockchainLMDB::get_output_key(const epee::span<const uint64_t> &amounts, c
       output_data_t &data = outputs.back();
       memcpy(&data, &okp->data, sizeof(pre_rct_output_data_t));
       data.commitment = rct::zeroCommit(amount);
+      data.blinded_asset_id = crypto::null_pkey;
     }
   }
 
@@ -4442,7 +4463,7 @@ std::map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>> BlockchainLMDB::get
   return histogram;
 }
 
-bool BlockchainLMDB::get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, std::vector<uint64_t> &distribution, uint64_t &base) const
+bool BlockchainLMDB::get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, std::vector<uint64_t> &distribution, uint64_t &base, output_distribution_type output_type, std::vector<uint64_t> *output_indices) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
@@ -4451,6 +4472,8 @@ bool BlockchainLMDB::get_output_distribution(uint64_t amount, uint64_t from_heig
   RCURSOR(output_amounts);
 
   distribution.clear();
+  if (output_indices)
+    output_indices->clear();
   const uint64_t db_height = height();
   if (from_height >= db_height)
     return false;
@@ -4470,13 +4493,23 @@ bool BlockchainLMDB::get_output_distribution(uint64_t amount, uint64_t from_heig
     if (ret)
       throw0(DB_ERROR("Failed to enumerate outputs"));
     const outkey *ok = (const outkey *)v.mv_data;
+    if (amount == 0)
+    {
+      const bool output_is_asset = ok->data.blinded_asset_id != crypto::null_pkey;
+      if ((output_type == output_distribution_type::asset) != output_is_asset)
+        continue;
+    }
     const uint64_t height = ok->data.height;
-    if (height >= from_height)
-      distribution[height - from_height]++;
-    else
-      base++;
     if (to_height > 0 && height > to_height)
       break;
+    if (height >= from_height)
+    {
+      distribution[height - from_height]++;
+      if (output_indices)
+        output_indices->push_back(ok->amount_index);
+    }
+    else
+      base++;
   }
 
   distribution[0] += base;
@@ -6102,6 +6135,84 @@ void BlockchainLMDB::migrate_7_8()
     throw0(DB_ERROR(lmdb_error("Failed to update version for the db: ", result).c_str()));
 }
 
+void BlockchainLMDB::migrate_8_9()
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  MGINFO_YELLOW("Migrating blockchain from DB version 8 to 9 - adding blinded asset ids to output metadata");
+
+  mdb_txn_safe txn(false);
+  if (auto result = mdb_txn_begin(m_env, NULL, 0, txn))
+    throw0(DB_ERROR(lmdb_error("Failed to create a transaction for the db: ", result).c_str()));
+
+  MDB_dbi old_output_amounts = m_output_amounts;
+  MDB_dbi new_output_amounts;
+  lmdb_db_open(txn, "output_amountr", MDB_INTEGERKEY | MDB_DUPSORT | MDB_DUPFIXED | MDB_CREATE, new_output_amounts, "Failed to open db handle for output_amountr");
+  mdb_set_dupsort(txn, new_output_amounts, compare_uint64);
+
+  MDB_cursor *c_old = nullptr;
+  MDB_cursor *c_new = nullptr;
+  int result = mdb_cursor_open(txn, old_output_amounts, &c_old);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to open cursor for old output_amounts: ", result).c_str()));
+  result = mdb_cursor_open(txn, new_output_amounts, &c_new);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to open cursor for new output_amounts: ", result).c_str()));
+
+  for (MDB_cursor_op op = MDB_FIRST;; op = MDB_NEXT)
+  {
+    MDB_val k, v;
+    result = mdb_cursor_get(c_old, &k, &v, op);
+    if (result == MDB_NOTFOUND)
+      break;
+    if (result)
+      throw0(DB_ERROR(lmdb_error("Failed to enumerate old output_amounts: ", result).c_str()));
+
+    const uint64_t amount = *static_cast<const uint64_t*>(k.mv_data);
+    MDB_val new_v{};
+    if (amount == 0)
+    {
+      const outkey_v8_t *old_ok = static_cast<const outkey_v8_t*>(v.mv_data);
+      outkey new_ok{};
+      new_ok.amount_index = old_ok->amount_index;
+      new_ok.output_id = old_ok->output_id;
+      new_ok.data.pubkey = old_ok->data.pubkey;
+      new_ok.data.unlock_time = old_ok->data.unlock_time;
+      new_ok.data.height = old_ok->data.height;
+      new_ok.data.commitment = old_ok->data.commitment;
+      new_ok.data.blinded_asset_id = crypto::null_pkey;
+      new_v.mv_size = sizeof(new_ok);
+      new_v.mv_data = &new_ok;
+      result = mdb_cursor_put(c_new, &k, &new_v, 0);
+    }
+    else
+    {
+      new_v = v;
+      result = mdb_cursor_put(c_new, &k, &new_v, 0);
+    }
+    if (result)
+      throw0(DB_ERROR(lmdb_error("Failed to write migrated output_amounts entry: ", result).c_str()));
+  }
+
+  result = mdb_drop(txn, old_output_amounts, 1);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to delete old output_amounts table: ", result).c_str()));
+  mdb_dbi_close(m_env, old_output_amounts);
+
+  MDB_cursor *c_cur = nullptr;
+  MDB_val k{};
+  char *ptr = nullptr;
+  RENAME_DB("output_amountr");
+  mdb_cursor_close(c_cur);
+  mdb_dbi_close(m_env, new_output_amounts);
+  lmdb_db_open(txn, LMDB_OUTPUT_AMOUNTS, MDB_INTEGERKEY | MDB_DUPSORT | MDB_DUPFIXED, m_output_amounts, "Failed to open db handle for output_amounts");
+  mdb_set_dupsort(txn, m_output_amounts, compare_uint64);
+
+  txn.commit();
+
+  if (int result = write_db_version(m_env, m_properties, (uint32_t)lmdb_version::v9))
+    throw0(DB_ERROR(lmdb_error("Failed to update version for the db: ", result).c_str()));
+}
+
 void BlockchainLMDB::migrate(const uint32_t oldversion, cryptonote::network_type nettype)
 {
   switch(oldversion) {
@@ -6121,6 +6232,8 @@ void BlockchainLMDB::migrate(const uint32_t oldversion, cryptonote::network_type
     migrate_6_7(); /* FALLTHRU */
   case 7:
     migrate_7_8(); /* FALLTHRU */
+  case 8:
+    migrate_8_9(); /* FALLTHRU */
   default:
     break;
   }
