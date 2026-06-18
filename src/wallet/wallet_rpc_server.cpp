@@ -40,6 +40,8 @@
 #include <limits>
 #include <oxenc/base64.h>
 #include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 
 #include "wallet_rpc_server_error_codes.h"
 #include "wallet_rpc_server.h"
@@ -209,16 +211,56 @@ namespace
         !assign_uint8("decimal_point", descriptor.decimal_point) ||
         !assign_string("ticker", descriptor.ticker) ||
         !assign_string("full_name", descriptor.full_name) ||
-        !assign_string("meta_info", descriptor.meta_info) ||
         !assign_bool("hidden_supply", descriptor.hidden_supply))
       return false;
+
+    if (json.HasMember("meta_info")) {
+      if (json["meta_info"].IsObject()) {
+        if (!json["meta_info"].HasMember("url") || !json["meta_info"]["url"].IsString() || std::string(json["meta_info"]["url"].GetString()).empty()) {
+          error = "meta_info JSON must contain a non-empty 'url' string";
+          return false;
+        }
+        rapidjson::StringBuffer buffer;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+        json["meta_info"].Accept(writer);
+        descriptor.meta_info = buffer.GetString();
+      } else if (json["meta_info"].IsString()) {
+        descriptor.meta_info = json["meta_info"].GetString();
+        if (descriptor.meta_info.find("http://") != 0 && descriptor.meta_info.find("https://") != 0 && descriptor.meta_info.find(".com") == std::string::npos) {
+          error = "meta_info must be a valid URL or a JSON object containing a 'url' field";
+          return false;
+        }
+      } else {
+        error = "meta_info must be a string or a JSON object";
+        return false;
+      }
+    } else {
+      error = "meta_info is required and must contain a URL";
+      return false;
+    }
 
     if (json.HasMember("owner"))
     {
       const auto& owner = json["owner"];
-      if (!owner.IsString() || !tools::hex_to_type(owner.GetString(), descriptor.owner))
+      if (!owner.IsString())
       {
-        error = "owner must be a hex-encoded public key";
+        error = "owner must be a hex-encoded public key or address";
+        return false;
+      }
+      std::string owner_str = owner.GetString();
+
+      cryptonote::address_parse_info owner_info;
+      if (cryptonote::get_account_address_from_str(owner_info, cryptonote::network_type::MAINNET, owner_str) ||
+          cryptonote::get_account_address_from_str(owner_info, cryptonote::network_type::TESTNET, owner_str))
+      {
+        if (owner_info.is_subaddress)
+        {
+          error = "owner cannot be a subaddress";
+          return false;
+        }
+        descriptor.owner = owner_info.address.m_spend_public_key;
+      } else if (!tools::hex_to_type(owner_str, descriptor.owner)) {
+        error = "owner must be a hex-encoded public key or valid address";
         return false;
       }
     }
@@ -4024,6 +4066,103 @@ namespace {
       throw wallet_rpc_error{error_code::TX_TOO_LARGE, "Transaction would be too large."};
     if (!req.do_not_relay)
       m_wallet->commit_tx(ptx_vector.front());
+    res.tx_hash = tools::type_to_hex(cryptonote::get_transaction_hash(ptx_vector.front().tx));
+    if (req.get_tx_key)
+      res.tx_key = tools::type_to_hex(ptx_vector.front().tx_key);
+    if (req.get_tx_hex)
+      res.tx_blob = oxenc::to_hex(cryptonote::tx_to_blob(ptx_vector.front().tx));
+    if (req.get_tx_metadata)
+    {
+      std::string metadata = m_wallet->dump_tx_to_str(ptx_vector);
+      res.tx_metadata = oxenc::to_hex(metadata);
+    }
+    res.fee = ptx_vector.front().fee;
+    return res;
+  }
+
+  // HF21: Update an existing confidential asset metadata
+  UPDATE_ASSET::response wallet_rpc_server::invoke(UPDATE_ASSET::request&& req)
+  {
+    require_open();
+    UPDATE_ASSET::response res{};
+
+    if (req.account_index != 0 || !req.subaddr_indices.empty())
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "update_asset must be issued from the primary account without subaddress switches"};
+
+    crypto::asset_id asset_id;
+    if (!tools::hex_to_type(req.asset_id, asset_id))
+      throw wallet_rpc_error{error_code::BAD_HEX, "Failed to parse asset_id"};
+
+    if (req.json_filename.empty())
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "json_filename is required"};
+
+    nlohmann::json info_res;
+    try {
+      nlohmann::json info_req = nlohmann::json::object();
+      info_req["asset_id"] = req.asset_id;
+      info_res = m_wallet->json_rpc("get_asset_info", info_req);
+    } catch (const std::exception& e) {
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to fetch asset info from daemon: " + std::string(e.what())};
+    }
+
+    std::string requested_owner = tools::type_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+    if (!info_res.contains("owner") || info_res["owner"].get<std::string>() != requested_owner) {
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "This wallet does not own the asset: " + req.asset_id};
+    }
+
+    cryptonote::asset_descriptor_base adb{};
+    adb.version = info_res.value("version", 1);
+    adb.total_max_supply = info_res.value("total_max_supply", (uint64_t)0);
+    adb.current_supply = info_res.value("current_supply", (uint64_t)0);
+    adb.decimal_point = info_res.value("decimal_point", 0);
+    adb.ticker = info_res.value("ticker", "");
+    adb.full_name = info_res.value("full_name", "");
+    adb.meta_info = info_res.value("meta_info", "");
+    tools::hex_to_type(info_res.value("owner", ""), adb.owner);
+    adb.hidden_supply = info_res.value("hidden_supply", false);
+
+    std::string error;
+    if (!load_asset_descriptor_from_json_file(fs::u8path(req.json_filename), adb, error))
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, error + ": " + req.json_filename};
+
+    // Client-side validation: ensure only meta_info was changed
+    crypto::public_key old_owner;
+    tools::hex_to_type(info_res.value("owner", ""), old_owner);
+    
+    if (adb.total_max_supply != info_res.value("total_max_supply", (uint64_t)0) ||
+        adb.current_supply != info_res.value("current_supply", (uint64_t)0) ||
+        adb.ticker != info_res.value("ticker", "") ||
+        adb.full_name != info_res.value("full_name", "") ||
+        adb.owner != old_owner ||
+        adb.decimal_point != info_res.value("decimal_point", 0) ||
+        adb.hidden_supply != info_res.value("hidden_supply", false))
+    {
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Only 'meta_info' can be updated in an update_asset transaction."};
+    }
+
+    cryptonote::tx_extra_asset_descriptor_operation ado{};
+    ado.operation_type = cryptonote::asset_descriptor_operation_type::update_asset;
+    ado.fields         = static_cast<uint8_t>(cryptonote::asset_field_descriptor |
+                                               cryptonote::asset_field_asset_id);
+    ado.descriptor     = adb;
+    ado.asset_id       = asset_id;
+
+    std::vector<uint8_t> extra;
+    if (!cryptonote::add_asset_descriptor_operation_to_tx_extra(extra, ado))
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to encode asset descriptor into tx extra"};
+
+    auto ptx_vector = m_wallet->create_asset_update_tx(
+        asset_id, cryptonote::TX_OUTPUT_DECOYS, req.priority, extra,
+        req.account_index, req.subaddr_indices);
+
+    if (ptx_vector.empty())
+      throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "No outputs found or daemon not ready"};
+    if (ptx_vector.size() != 1)
+      throw wallet_rpc_error{error_code::TX_TOO_LARGE, "Transaction would be too large."};
+
+    if (!req.do_not_relay)
+      m_wallet->commit_tx(ptx_vector.front());
+
     res.tx_hash = tools::type_to_hex(cryptonote::get_transaction_hash(ptx_vector.front().tx));
     if (req.get_tx_key)
       res.tx_key = tools::type_to_hex(ptx_vector.front().tx_key);

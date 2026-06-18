@@ -1230,7 +1230,7 @@ namespace cryptonote
           // The minted amount is constrained by the amount-commitment proof
           // above + the supply cap; the native (BDX) side that pays the fee is
           // balanced by the standard RingCT signature (genRctSimple) below.
-          if (tx_params.tx_type == txtype::emit_asset)
+          if (tx_params.tx_type == txtype::emit_asset || tx_params.tx_type == txtype::update_asset)
           {
             // Prove the asset owner authorized this emission (Schnorr over the
             // owner's spend key, verified on-chain against descriptor.owner).
@@ -1241,7 +1241,7 @@ namespace cryptonote
               return false;
             }
             tx.asset_proofs.push_back(std::move(ownership_proof));
-            MINFO("Attached ownership proof for emit_asset tx: " << get_transaction_hash(tx));
+            MINFO("Attached ownership proof for emit_asset/update_asset tx: " << get_transaction_hash(tx));
           }
 
           rct::ctkeyV outSk;

@@ -219,7 +219,7 @@ namespace cryptonote
     }
     else
     {
-      if (tx.type != txtype::standard && tx.type != txtype::stake && tx.type != txtype::coin_burn && tx.type != txtype::deploy_new_asset && tx.type != txtype::emit_asset)
+      if (tx.type != txtype::standard && tx.type != txtype::stake && tx.type != txtype::coin_burn && tx.type != txtype::deploy_new_asset && tx.type != txtype::emit_asset && tx.type != txtype::update_asset)
       {
         // NOTE(beldex): This is a developer error. If we come across this in production, be conservative and just reject
         MERROR("Unrecognised transaction type: " << tx.type << " for tx: " << get_transaction_hash(tx));

@@ -4534,9 +4534,9 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
           return false;
         }
 
-        if (tx.type != txtype::deploy_new_asset && tx.type != txtype::emit_asset)
+        if (tx.type != txtype::deploy_new_asset && tx.type != txtype::emit_asset && tx.type != txtype::update_asset)
         {
-          MERROR_VER("Asset operation found in tx type " << tx.type << " but only deploy_new_asset and emit_asset are allowed");
+          MERROR_VER("Asset operation found in tx type " << tx.type << " but only deploy_new_asset, emit_asset, and update_asset are allowed");
           bvc.m_verifivation_failed = true;
           return_tx_to_pool(txs);
           return false;
