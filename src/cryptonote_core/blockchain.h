@@ -566,7 +566,9 @@ namespace cryptonote
      * @param return-by-reference distribution the start offset of the first rct output in this block (same as previous if none)
      * @param return-by-reference base how many outputs of that amount are before the stated distribution
      */
-    bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base) const;
+    bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base,
+        output_distribution_type otype = output_distribution_type::native,
+        std::vector<uint64_t> *output_indices = nullptr) const;
 
     /**
      * @brief gets global output indexes that should not be used, i.e. registration tx outputs

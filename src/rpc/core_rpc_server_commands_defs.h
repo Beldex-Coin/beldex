@@ -1717,6 +1717,7 @@ namespace cryptonote::rpc {
     std::vector<std::uint64_t> distribution;
     std::uint64_t start_height;
     std::uint64_t base;
+    std::vector<std::uint64_t> output_indices; // bucket_rank → real amount-0 global index; populated only for native/asset filter
   };
 
 

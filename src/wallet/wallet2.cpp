@@ -3791,7 +3791,9 @@ bool wallet2::refresh(bool trusted_daemon, uint64_t & blocks_fetched, bool& rece
   return ok;
 }
 //----------------------------------------------------------------------------------------------------
-bool wallet2::get_rct_distribution(uint64_t &start_height, std::vector<uint64_t> &distribution)
+bool wallet2::get_rct_distribution(
+    uint64_t &native_start_height, std::vector<uint64_t> &native_offsets, std::vector<uint64_t> &native_output_indices,
+    uint64_t &asset_start_height,  std::vector<uint64_t> &asset_offsets,  std::vector<uint64_t> &asset_output_indices)
 {
   rpc::version_t rpc_version;
   if (!m_node_rpc_proxy.get_rpc_version(rpc_version))
@@ -3827,20 +3829,46 @@ bool wallet2::get_rct_distribution(uint64_t &start_height, std::vector<uint64_t>
     MWARNING("Failed to request output distribution: " << res.status);
     return false;
   }
-  if (res.distributions.size() != 1)
+  // Response carries one native (filter_type=1) and one asset (filter_type=2) entry per amount.
+  if (res.distributions.size() != 2)
   {
-    MWARNING("Failed to request output distribution: not the expected single result");
+    MWARNING("Failed to request output distribution: expected 2 bucketed results, got " << res.distributions.size());
     return false;
   }
-  if (res.distributions[0].amount != 0)
+
+  const auto *native_d = static_cast<const cryptonote::rpc::GET_OUTPUT_DISTRIBUTION_BIN::distribution *>(nullptr);
+  const auto *asset_d  = static_cast<const cryptonote::rpc::GET_OUTPUT_DISTRIBUTION_BIN::distribution *>(nullptr);
+  for (const auto &d : res.distributions)
   {
-    MWARNING("Failed to request output distribution: results are not for amount 0");
+    if (d.filter_type == 1) native_d = &d;
+    else if (d.filter_type == 2) asset_d  = &d;
+  }
+  if (!native_d || !asset_d)
+  {
+    MWARNING("Failed to request output distribution: missing native or asset bucket");
     return false;
   }
-  for (size_t i = 1; i < res.distributions[0].data.distribution.size(); ++i)
-    res.distributions[0].data.distribution[i] += res.distributions[0].data.distribution[i-1];
-  start_height = res.distributions[0].data.start_height;
-  distribution = std::move(res.distributions[0].data.distribution);
+
+  auto cumulate = [](std::vector<uint64_t> &v)
+  {
+    for (size_t i = 1; i < v.size(); ++i)
+      v[i] += v[i - 1];
+  };
+
+  native_start_height  = native_d->data.start_height;
+  native_offsets       = native_d->data.distribution;
+  cumulate(native_offsets);
+  native_output_indices = native_d->data.output_indices;
+
+  asset_start_height   = asset_d->data.start_height;
+  asset_offsets        = asset_d->data.distribution;
+  cumulate(asset_offsets);
+  asset_output_indices  = asset_d->data.output_indices;
+
+  LOG_PRINT_L1("Received rct distribution: native start_height=" << native_start_height
+      << " size=" << native_offsets.size() << " indices=" << native_output_indices.size()
+      << "; asset start_height=" << asset_start_height
+      << " size=" << asset_offsets.size() << " indices=" << asset_output_indices.size());
   return true;
 }
 //----------------------------------------------------------------------------------------------------
@@ -9512,11 +9540,14 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
     bool is_shortly_after_segregation_fork = height >= segregation_fork_height && height < segregation_fork_height + SEGREGATION_FORK_VICINITY;
     bool is_after_segregation_fork = height >= segregation_fork_height;
 
-    // if we have at least one rct out, get the distribution, or fall back to the previous system
-    uint64_t rct_start_height;
-    std::vector<uint64_t> rct_offsets;
+    // if we have at least one rct out, get native and asset bucketed distributions
+    uint64_t native_start_height, asset_start_height;
+    std::vector<uint64_t> native_offsets, native_output_indices;
+    std::vector<uint64_t> asset_offsets,  asset_output_indices;
     std::vector<uint64_t> amounts;
-    const bool has_rct_distribution = has_rct && get_rct_distribution(rct_start_height, rct_offsets);
+    const bool has_rct_distribution = has_rct && get_rct_distribution(
+        native_start_height, native_offsets, native_output_indices,
+        asset_start_height,  asset_offsets,  asset_output_indices);
 
     // get histogram for the amounts we need
     {
@@ -9537,11 +9568,11 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
 
       if (has_rct_distribution)
       {
-        // check we're clear enough of rct start, to avoid corner cases below
-        THROW_WALLET_EXCEPTION_IF(rct_offsets.size() <= DEFAULT_TX_SPENDABLE_AGE_V17,
-            error::get_output_distribution, "Not enough rct outputs");
-        THROW_WALLET_EXCEPTION_IF(rct_offsets.back() <= max_rct_index,
-            error::get_output_distribution, "Daemon reports suspicious number of rct outputs");
+        // Use native offsets for sanity checks (native bucket must have enough spendable outputs)
+        THROW_WALLET_EXCEPTION_IF(native_offsets.size() <= DEFAULT_TX_SPENDABLE_AGE_V17,
+            error::get_output_distribution, "Not enough native rct outputs");
+        THROW_WALLET_EXCEPTION_IF(native_offsets.back() <= max_rct_index,
+            error::get_output_distribution, "Daemon reports suspicious number of native rct outputs");
       }
     }
 
@@ -9550,13 +9581,24 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       THROW_WALLET_EXCEPTION_IF(true, error::get_output_blacklist, "Couldn't retrive list of outputs that are to be excluded from selection");
 
     std::sort(output_blacklist.begin(), output_blacklist.end());
-    if (output_blacklist.size() * 0.05 > (double)rct_offsets.size())
+    const size_t total_rct_offsets = native_offsets.size() + asset_offsets.size();
+    if (output_blacklist.size() * 0.05 > (double)total_rct_offsets)
     {
       MWARNING("More than 5% of outputs are blacklisted ("
-               << output_blacklist.size() << "/" << rct_offsets.size()
+               << output_blacklist.size() << "/" << total_rct_offsets
                << "), please notify the Beldex developers");
     }
 
+    std::cout << "NATIVE OFFSETS SIZE: " << native_offsets.size() << std::endl;
+    for (size_t i = 0; i < native_offsets.size(); ++i)
+      std::cout << "NATIVE OFFSETS[" << i << "]: " << native_offsets[i] << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "ASSET OFFSETS SIZE: " << asset_offsets.size() << std::endl;
+    for (size_t i = 0; i < asset_offsets.size(); ++i)
+      std::cout << "ASSET OFFSETS[" << i << "]: " << asset_offsets[i] << std::endl;
+    std::cout << std::endl;
+    
     nlohmann::json res;
     if (!amounts.empty())
     {
@@ -9627,15 +9669,25 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
 
     // we ask for more, to have spares if some outputs are still locked
     size_t base_requested_outputs_count = (size_t)((fake_outputs_count + 1) * 1.5 + 1);
-    LOG_PRINT_L2("base_requested_outputs_count: " << base_requested_outputs_count);
+    LOG_PRINT_L2("base_requested_outputs_coun9t: " << base_requested_outputs_count);
 
     // generate output indices to request
     rpc::GET_OUTPUTS_BIN::request req{};
     decltype(req.outputs) get_outputs;
 
-    std::unique_ptr<gamma_picker> gamma;
+    std::unique_ptr<gamma_picker> gamma_native_picker, gamma_asset_picker;
+
     if (has_rct_distribution)
-      gamma.reset(new gamma_picker(rct_offsets));
+    {
+      if (native_offsets.size() > DEFAULT_TX_SPENDABLE_AGE_V17)
+      {
+        gamma_native_picker.reset(new gamma_picker(native_offsets));
+      }
+      if (asset_offsets.size() > DEFAULT_TX_SPENDABLE_AGE_V17 && asset_offsets.back() > 0)
+      {
+        gamma_asset_picker.reset(new gamma_picker(asset_offsets));
+      }
+    }
 
     size_t num_selected_transfers = 0;
     for(size_t idx: selected_transfers)
@@ -9713,12 +9765,18 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       }
       else
       {
-        // the base offset of the first rct output in the first unlocked block (or the one to be if there's none)
-        num_outs = gamma->get_num_rct_outs();
-        LOG_PRINT_L1("" << num_outs << " unlocked rct outputs");
+        const bool spending_asset = td.is_zarcanum();
+        auto *picker = spending_asset ? gamma_asset_picker.get() : gamma_native_picker.get();
+        THROW_WALLET_EXCEPTION_IF(!picker, error::wallet_internal_error, "No gamma picker for spend type");
+        num_outs = picker->get_num_rct_outs();
+        LOG_PRINT_L1("" << num_outs << " unlocked " << (spending_asset ? "asset" : "native") << " rct outputs");
         THROW_WALLET_EXCEPTION_IF(num_outs == 0, error::wallet_internal_error,
             "histogram reports no unlocked rct outputs, not even ours");
       }
+
+      // Convenience ref to the per-type output_indices for the rct path (bucket rank → real global index).
+      const std::vector<uint64_t> &bucket_indices = !use_histogram && td.is_zarcanum()
+          ? asset_output_indices : native_output_indices;
 
       // how many fake outs to draw on a pre-fork distribution
       size_t pre_fork_outputs_count = requested_outputs_count * pre_fork_num_out_ratio;
@@ -9744,8 +9802,11 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
 
       uint64_t num_found = 0;
 
-      // if we have a known ring, use it
-      if (td.m_key_image_known && !td.m_key_image_partial)
+      // if we have a known ring, use it — but skip seeding when direct enumeration will be used,
+      // since the enumeration pushes all available outputs anyway and seeding would over-count,
+      // breaking the base offset for subsequent transfers.
+      const bool will_use_direct_enum = (num_outs <= requested_outputs_count);
+      if (!will_use_direct_enum && td.m_key_image_known && !td.m_key_image_partial)
       {
         std::vector<uint64_t> ring;
         if (get_ring(get_ringdb_key(), td.m_key_image, ring))
@@ -9756,10 +9817,13 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
               std::to_string(ring.size()) + ", it cannot be spent now with ring size " +
               std::to_string(fake_outputs_count + 1) + " as it is smaller: use a higher ring size");
           bool own_found = false;
+          // For the rct path, num_outs is a bucket count; compare against the last spendable real index.
+          const uint64_t ring_bound = (!use_histogram && !bucket_indices.empty())
+              ? bucket_indices[num_outs - 1] : num_outs - 1;
           for (const auto &out: ring)
           {
             MINFO("Ring has output " << out);
-            if (out < num_outs)
+            if (out <= ring_bound)
             {
               MINFO("Using it");
               get_outputs.push_back({amount, out});
@@ -9783,13 +9847,21 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
 
       if (num_outs <= requested_outputs_count)
       {
-        for (uint64_t i = 0; i < num_outs; i++)
-          get_outputs.push_back({amount, i});
-        // duplicate to make up shortfall: this will be caught after the RPC call,
-        // so we can also output the amounts for which we can't reach the required
-        // mixin after checking the actual unlockedness
-        for (uint64_t i = num_outs; i < requested_outputs_count; ++i)
-          get_outputs.push_back({amount, num_outs - 1});
+        if (!use_histogram && !bucket_indices.empty())
+        {
+          // rct path: translate bucket ranks to real global indices
+          for (uint64_t i = 0; i < num_outs; i++)
+            get_outputs.push_back({amount, bucket_indices[i]});
+          for (uint64_t i = num_outs; i < requested_outputs_count; ++i)
+            get_outputs.push_back({amount, bucket_indices[num_outs - 1]});
+        }
+        else
+        {
+          for (uint64_t i = 0; i < num_outs; i++)
+            get_outputs.push_back({amount, i});
+          for (uint64_t i = num_outs; i < requested_outputs_count; ++i)
+            get_outputs.push_back({amount, num_outs - 1});
+        }
       }
       else
       {
@@ -9829,27 +9901,31 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
           // return to the top of the loop and try again, otherwise add it to the
           // list of output indices we've seen.
 
+          std::cout << "Asset Output Indices" << std::endl;
+          for (const auto& idx : asset_output_indices)
+            std::cout << idx << " ";
+          std::cout << std::endl;
+          // std::cout << "Native Output Indices" << std::endl;
+          // for (const auto& idx : native_output_indices)
+          //   std::cout << idx << " ";
+          // std::cout << std::endl;
+
           uint64_t i;
           const char *type = "";
           if (amount == 0 && has_rct_distribution)
           {
-            THROW_WALLET_EXCEPTION_IF(!gamma, error::wallet_internal_error, "No gamma picker");
-            // gamma distribution
-            if (num_found -1 < recent_outputs_count + pre_fork_outputs_count)
-            {
-              do i = gamma->pick(); while (i >= segregation_limit[amount].first);
-              type = "pre-fork gamma";
-            }
-            else if (num_found -1 < recent_outputs_count + pre_fork_outputs_count + post_fork_outputs_count)
-            {
-              do i = gamma->pick(); while (i < segregation_limit[amount].first || i >= num_outs);
-              type = "post-fork gamma";
-            }
-            else
-            {
-              do i = gamma->pick(); while (i >= num_outs);
-              type = "gamma";
-            }
+            // Use the per-type gamma picker; translate bucket rank → real global index via output_indices.
+            const bool spending_asset = td.is_zarcanum();
+            std::cout << "Picking from " << (spending_asset ? "asset" : "native") << " rct distribution" << std::endl;
+            auto *picker  = spending_asset ? gamma_asset_picker.get()  : gamma_native_picker.get();
+            const auto &indices = spending_asset ? asset_output_indices : native_output_indices;
+            THROW_WALLET_EXCEPTION_IF(!picker, error::wallet_internal_error, "No gamma picker for spend type");
+            uint64_t rank;
+            do rank = picker->pick(); while (rank >= indices.size());
+            std::cout << "GAMMA PICKED RANK: " << rank << std::endl;
+            std::cout << "PICKED OUTPUT INDEX: " << indices[rank] << std::endl;
+            i = indices[rank];
+            type = spending_asset ? "asset-gamma" : "native-gamma";
           }
           else if (num_found - 1 < recent_outputs_count) // -1 to account for the real one we seeded with
           {
@@ -9941,6 +10017,11 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
           [](const auto& a, const auto& b) { return a.index < b.index; });
     }
 
+    std::cout << "Requesting outputs for " << get_outputs.size() << " outputs" << std::endl;
+    for (const auto &o: get_outputs)
+      std::cout << "  " << print_money(o.amount) << " " << o.index << std::endl;
+    std::cout << std::endl;
+
     if (ELPP->vRegistry()->allowed(el::Level::Debug, BELDEX_DEFAULT_LOG_CATEGORY))
     {
       std::map<uint64_t, std::set<uint64_t>> outs;
@@ -10023,7 +10104,12 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       }
       bool use_histogram = amount != 0 || !has_rct_distribution;
       if (!use_histogram)
-        num_outs = gamma->get_num_rct_outs();
+      {
+        const bool spending_asset = td.is_zarcanum();
+        auto *picker = spending_asset ? gamma_asset_picker.get() : gamma_native_picker.get();
+        THROW_WALLET_EXCEPTION_IF(!picker, error::wallet_internal_error, "No gamma picker for spend type");
+        num_outs = picker->get_num_rct_outs();
+      }
 
       // make sure the real outputs we asked for are really included, along
       // with the correct key and mask: this guards against an active attack

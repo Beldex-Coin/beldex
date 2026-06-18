@@ -216,6 +216,7 @@ namespace cryptonote::rpc {
       bool unlocked;          // States if output is locked (`false`) or not (`true`).
       uint64_t height;        // Block height of the output.
       crypto::hash txid;      // Transaction id.
+      crypto::public_key blinded_asset_id; // null for native outputs, T for confidential asset outputs
 
       KV_MAP_SERIALIZABLE
     };
@@ -280,6 +281,8 @@ namespace cryptonote::rpc {
       std::string compressed_data;
       bool binary;
       bool compress;
+      std::string compressed_output_indices; // varint-compressed output_indices when binary+compress
+      uint8_t filter_type; // 1=native, 2=asset; identifies which bucket this entry covers
 
       KV_MAP_SERIALIZABLE
     };

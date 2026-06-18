@@ -2475,7 +2475,7 @@ bool Blockchain::get_outs(const rpc::GET_OUTPUTS_BIN::request& req, rpc::GET_OUT
       return false;
     }
     for (const auto &t: data)
-      res.outs.push_back({t.pubkey, t.commitment, is_output_spendtime_unlocked(t.unlock_time), t.height, crypto::null_hash});
+      res.outs.push_back({t.pubkey, t.commitment, is_output_spendtime_unlocked(t.unlock_time), t.height, crypto::null_hash, t.blinded_asset_id});
 
     if (req.get_txid)
     {
@@ -2501,7 +2501,8 @@ void Blockchain::get_output_key_mask_unlocked(const uint64_t& amount, const uint
   unlocked = is_output_spendtime_unlocked(o_data.unlock_time);
 }
 //------------------------------------------------------------------
-bool Blockchain::get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base) const
+bool Blockchain::get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base,
+    output_distribution_type otype, std::vector<uint64_t> *output_indices) const
 {
   // rct outputs don't exist before v4, NOTE(beldex): we started from v7 so our start is always 0
   start_height = 0;
@@ -2520,25 +2521,7 @@ bool Blockchain::get_output_distribution(uint64_t amount, uint64_t from_height, 
   if (start_height >= db_height || to_height >= db_height)
     return false;
 
-  if (amount == 0)
-  {
-    std::vector<uint64_t> heights;
-    heights.reserve(to_height + 1 - start_height);
-    const uint64_t real_start_height = start_height > 0 ? start_height-1 : start_height;
-    for (uint64_t h = real_start_height; h <= to_height; ++h)
-      heights.push_back(h);
-    distribution = m_db->get_block_cumulative_rct_outputs(heights);
-    if (start_height > 0)
-    {
-      base = distribution[0];
-      distribution.erase(distribution.begin());
-    }
-    return true;
-  }
-  else
-  {
-    return m_db->get_output_distribution(amount, start_height, to_height, distribution, base);
-  }
+  return m_db->get_output_distribution(amount, start_height, to_height, distribution, base, otype, output_indices);
 }
 //------------------------------------------------------------------
 void Blockchain::get_output_blacklist(std::vector<uint64_t> &blacklist) const

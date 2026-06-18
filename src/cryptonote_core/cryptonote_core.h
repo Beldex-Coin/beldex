@@ -651,7 +651,9 @@ namespace cryptonote
       *
       * @brief get per block distribution of outputs of a given amount
       */
-     bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base) const;
+     bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base,
+         output_distribution_type otype = output_distribution_type::native,
+         std::vector<uint64_t> *output_indices = nullptr) const;
 
      void get_output_blacklist(std::vector<uint64_t> &blacklist) const;
 
