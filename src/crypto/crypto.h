@@ -189,6 +189,10 @@ namespace crypto {
    */
   bool check_key(const public_key &key);
 
+  /* Check an asset key. Returns true if it is valid, false otherwise.
+   */
+  bool check_asset_key(const asset_id &key);
+
   /* Checks a private key and computes the corresponding public key.
    */
   bool secret_key_to_public_key(const secret_key &sec, public_key &pub);

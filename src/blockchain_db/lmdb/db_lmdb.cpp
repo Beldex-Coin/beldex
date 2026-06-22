@@ -84,22 +84,6 @@ struct pre_rct_output_data_t
 };
 static_assert(sizeof(pre_rct_output_data_t) == sizeof(crypto::public_key) + 2*sizeof(uint64_t), "pre_ct_output_data_t has unexpected padding");
 
-struct output_data_v8_t
-{
-  crypto::public_key pubkey;
-  uint64_t           unlock_time;
-  uint64_t           height;
-  rct::key           commitment;
-};
-
-struct outkey_v8_t
-{
-  uint64_t amount_index;
-  uint64_t output_id;
-  output_data_v8_t data;
-};
-
-static_assert(sizeof(output_data_v8_t) == sizeof(crypto::public_key) + 2*sizeof(uint64_t) + sizeof(rct::key), "output_data_v8_t has unexpected padding");
 
 template <typename T>
 void throw0(const T &e)
@@ -1209,7 +1193,7 @@ uint64_t BlockchainLMDB::add_output(const crypto::hash& tx_hash,
     ok.data.pubkey = var::get<txout_to_key>(tx_output.target).key;
     ok.data.unlock_time = unlock_time;
     ok.data.height = m_height;
-    ok.data.blinded_asset_id = crypto::null_pkey;
+    ok.data.blinded_asset_id = crypto::null_aid;
     if (tx_output.amount == 0)
     {
       ok.data.commitment = *commitment;
@@ -4327,7 +4311,7 @@ void BlockchainLMDB::get_output_key(const epee::span<const uint64_t> &amounts, c
       output_data_t &data = outputs.back();
       memcpy(&data, &okp->data, sizeof(pre_rct_output_data_t));
       data.commitment = rct::zeroCommit(amount);
-      data.blinded_asset_id = crypto::null_pkey;
+      data.blinded_asset_id = crypto::null_aid;
     }
   }
 
@@ -4495,7 +4479,7 @@ bool BlockchainLMDB::get_output_distribution(uint64_t amount, uint64_t from_heig
     const outkey *ok = (const outkey *)v.mv_data;
     if (amount == 0)
     {
-      const bool output_is_asset = ok->data.blinded_asset_id != crypto::null_pkey;
+      const bool output_is_asset = ok->data.blinded_asset_id != crypto::null_aid;
       if ((output_type == output_distribution_type::asset) != output_is_asset)
         continue;
     }
@@ -6138,79 +6122,152 @@ void BlockchainLMDB::migrate_7_8()
 void BlockchainLMDB::migrate_8_9()
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
-  MGINFO_YELLOW("Migrating blockchain from DB version 8 to 9 - adding blinded asset ids to output metadata");
+  const auto migration_started = std::chrono::steady_clock::now();
+  MGINFO_YELLOW("Migrating blockchain from DB version 8 to 9 - adding blinded_asset_id to output records; this may take a while:");
 
+  // v9 appends a 32-byte crypto::asset_id (blinded_asset_id) to output_data_t,
+  // which lives in the rct (amount==0) records of m_output_amounts. That table
+  // is MDB_DUPFIXED, so all dups under a key must share one size; we therefore
+  // rebuild the rct dup-list at the new record size via a temp table. Native /
+  // legacy outputs get null_aid; confidential-asset (zarcanum) outputs get their
+  // real blinded id, recovered by a forward scan that reproduces the exact
+  // output_id assignment order (per block: miner_tx, then txs in tx_hashes
+  // order, each vout ascending — see BlockchainDB::add_block).
+  // ── v8 on-disk record layout (BEFORE the new field) ──
+
+#pragma pack(push, 1)
+  struct v8_output_data_t
+  {
+    crypto::public_key pubkey;
+    uint64_t unlock_time;
+    uint64_t height;
+    rct::key commitment;
+  };
+
+  struct v8_outkey
+  {
+    uint64_t amount_index;
+    uint64_t output_id;
+    v8_output_data_t data;
+  };
+#pragma pack(pop)
+
+  // No confidential-asset (zarcanum) outputs exist on chain at this migration,
+  // so there is nothing to preserve - every output gets null_aid below. The old
+  // full-chain scan that built an output_id -> blinded_asset_id map was therefore
+  // pure overhead and has been removed.
+
+  // ── Rebuild m_output_amounts at the new record size ──
   mdb_txn_safe txn(false);
   if (auto result = mdb_txn_begin(m_env, NULL, 0, txn))
     throw0(DB_ERROR(lmdb_error("Failed to create a transaction for the db: ", result).c_str()));
 
-  MDB_dbi old_output_amounts = m_output_amounts;
-  MDB_dbi new_output_amounts;
-  lmdb_db_open(txn, "output_amountr", MDB_INTEGERKEY | MDB_DUPSORT | MDB_DUPFIXED | MDB_CREATE, new_output_amounts, "Failed to open db handle for output_amountr");
-  mdb_set_dupsort(txn, new_output_amounts, compare_uint64);
+  MDB_dbi tmp;
 
-  MDB_cursor *c_old = nullptr;
-  MDB_cursor *c_new = nullptr;
-  int result = mdb_cursor_open(txn, old_output_amounts, &c_old);
-  if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to open cursor for old output_amounts: ", result).c_str()));
-  result = mdb_cursor_open(txn, new_output_amounts, &c_new);
-  if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to open cursor for new output_amounts: ", result).c_str()));
+  if (auto result = mdb_dbi_open(txn, "output_amounts_tmp_v9", MDB_INTEGERKEY | MDB_DUPSORT | MDB_DUPFIXED | MDB_CREATE, &tmp))
+    throw0(DB_ERROR(lmdb_error("Failed to open temp output table: ", result).c_str()));
 
-  for (MDB_cursor_op op = MDB_FIRST;; op = MDB_NEXT)
+  mdb_set_dupsort(txn, tmp, compare_uint64);
+
+  // 2a. copy old -> tmp, converting rct records
   {
-    MDB_val k, v;
-    result = mdb_cursor_get(c_old, &k, &v, op);
-    if (result == MDB_NOTFOUND)
-      break;
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to enumerate old output_amounts: ", result).c_str()));
+    MDB_cursor *c_old = nullptr, *c_tmp = nullptr;
 
-    const uint64_t amount = *static_cast<const uint64_t*>(k.mv_data);
-    MDB_val new_v{};
-    if (amount == 0)
+    if (mdb_cursor_open(txn, m_output_amounts, &c_old))
+      throw0(DB_ERROR("migrate_8_9: failed to open old cursor"));
+
+    if (mdb_cursor_open(txn, tmp, &c_tmp))
+      throw0(DB_ERROR("migrate_8_9: failed to open tmp cursor"));
+
+    MDB_val k, v;
+
+    for (MDB_cursor_op op = MDB_FIRST;; op = MDB_NEXT)
     {
-      const outkey_v8_t *old_ok = static_cast<const outkey_v8_t*>(v.mv_data);
-      outkey new_ok{};
-      new_ok.amount_index = old_ok->amount_index;
-      new_ok.output_id = old_ok->output_id;
-      new_ok.data.pubkey = old_ok->data.pubkey;
-      new_ok.data.unlock_time = old_ok->data.unlock_time;
-      new_ok.data.height = old_ok->data.height;
-      new_ok.data.commitment = old_ok->data.commitment;
-      new_ok.data.blinded_asset_id = crypto::null_pkey;
-      new_v.mv_size = sizeof(new_ok);
-      new_v.mv_data = &new_ok;
-      result = mdb_cursor_put(c_new, &k, &new_v, 0);
+      int ret = mdb_cursor_get(c_old, &k, &v, op);
+
+      if (ret == MDB_NOTFOUND)
+        break;
+
+      if (ret)
+        throw0(DB_ERROR(lmdb_error("migrate_8_9: enumerate old outputs: ", ret).c_str()));
+
+      if (v.mv_size == sizeof(v8_outkey))
+      {
+        const v8_outkey *old = static_cast<const v8_outkey *>(v.mv_data);
+
+        outkey nk{};
+        nk.amount_index = old->amount_index;
+        nk.output_id = old->output_id;
+        nk.data.pubkey = old->data.pubkey;
+        nk.data.unlock_time = old->data.unlock_time;
+        nk.data.height = old->data.height;
+        nk.data.commitment = old->data.commitment;
+        // No confidential-asset outputs exist yet at this migration, so every
+        // record gets the null blinded asset id.
+        nk.data.blinded_asset_id = crypto::null_aid;
+        MDB_val nv{sizeof(outkey), &nk};
+
+        if (mdb_cursor_put(c_tmp, &k, &nv, MDB_APPENDDUP))
+          throw0(DB_ERROR("migrate_8_9: failed to write converted rct output"));
+
+        // MGINFO_MAGENTA("migrate_8_9: converted rct output " << old->output_id << " at amount index " << old->amount_index);
+      }
+
+      else
+      {
+        // pre-rct record (or anything else): copy verbatim
+        if (mdb_cursor_put(c_tmp, &k, &v, MDB_APPENDDUP))
+          throw0(DB_ERROR("migrate_8_9: failed to copy pre-rct output"));
+      }
     }
-    else
-    {
-      new_v = v;
-      result = mdb_cursor_put(c_new, &k, &new_v, 0);
-    }
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to write migrated output_amounts entry: ", result).c_str()));
+
+    mdb_cursor_close(c_tmp);
+    mdb_cursor_close(c_old);
   }
 
-  result = mdb_drop(txn, old_output_amounts, 1);
-  if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to delete old output_amounts table: ", result).c_str()));
-  mdb_dbi_close(m_env, old_output_amounts);
+  // 2b. empty the real table, then copy tmp back into it
+  if (mdb_drop(txn, m_output_amounts, 0))
+    throw0(DB_ERROR("migrate_8_9: failed to empty m_output_amounts"));
 
-  MDB_cursor *c_cur = nullptr;
-  MDB_val k{};
-  char *ptr = nullptr;
-  RENAME_DB("output_amountr");
-  mdb_cursor_close(c_cur);
-  mdb_dbi_close(m_env, new_output_amounts);
-  lmdb_db_open(txn, LMDB_OUTPUT_AMOUNTS, MDB_INTEGERKEY | MDB_DUPSORT | MDB_DUPFIXED, m_output_amounts, "Failed to open db handle for output_amounts");
-  mdb_set_dupsort(txn, m_output_amounts, compare_uint64);
+  {
+    MDB_cursor *c_tmp = nullptr, *c_new = nullptr;
+
+    if (mdb_cursor_open(txn, tmp, &c_tmp))
+      throw0(DB_ERROR("migrate_8_9: failed to reopen tmp cursor"));
+
+    if (mdb_cursor_open(txn, m_output_amounts, &c_new))
+      throw0(DB_ERROR("migrate_8_9: failed to reopen new cursor"));
+
+    MDB_val k, v;
+
+    for (MDB_cursor_op op = MDB_FIRST;; op = MDB_NEXT)
+    {
+      int ret = mdb_cursor_get(c_tmp, &k, &v, op);
+      if (ret == MDB_NOTFOUND)
+        break;
+
+      if (ret)
+        throw0(DB_ERROR(lmdb_error("migrate_8_9: enumerate tmp outputs: ", ret).c_str()));
+
+      if (mdb_cursor_put(c_new, &k, &v, MDB_APPENDDUP))
+        throw0(DB_ERROR("migrate_8_9: failed to copy output back"));
+    }
+
+    MGINFO_YELLOW("migrate_8_9: copied outputs back into m_output_amounts");
+    mdb_cursor_close(c_new);
+    mdb_cursor_close(c_tmp);
+  }
+
+  // 2c. drop the temp table entirely
+  if (mdb_drop(txn, tmp, 1))
+    throw0(DB_ERROR("migrate_8_9: failed to drop temp output table"));
 
   txn.commit();
 
   if (int result = write_db_version(m_env, m_properties, (uint32_t)lmdb_version::v9))
     throw0(DB_ERROR(lmdb_error("Failed to update version for the db: ", result).c_str()));
+
+  MGINFO("migrate_8_9: completed in " << tools::friendly_duration(std::chrono::steady_clock::now() - migration_started));
 }
 
 void BlockchainLMDB::migrate(const uint32_t oldversion, cryptonote::network_type nettype)

@@ -1952,7 +1952,7 @@ namespace rct {
                     ctx.bytes[0] ^= static_cast<uint8_t>(out_idx);
 
                     const auto& zout = std::get<cryptonote::tx_out_zarcanum>(tx.vout[k].target);
-                    const rct::key T = rct::pk2rct(zout.blinded_asset_id);
+                    const rct::key T = rct::aid2rct(zout.blinded_asset_id);
 
                     // BGE ring = asset IDs from all ring members of all inputs.
                     // Here we use a simplified check: verify the proof is

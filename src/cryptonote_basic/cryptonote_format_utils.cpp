@@ -1024,7 +1024,7 @@ namespace cryptonote
         const auto& zout = var::get<tx_out_zarcanum>(out.target);
         CHECK_AND_ASSERT_MES(check_key(zout.stealth_address), false,
           "invalid stealth_address in tx_out_zarcanum, tx id=" << get_transaction_hash(tx));
-        CHECK_AND_ASSERT_MES(check_key(zout.blinded_asset_id), false,
+        CHECK_AND_ASSERT_MES(check_asset_key(zout.blinded_asset_id), false,
           "invalid blinded_asset_id in tx_out_zarcanum, tx id=" << get_transaction_hash(tx));
         CHECK_AND_ASSERT_MES(check_key(zout.amount_commitment), false,
           "invalid amount_commitment in tx_out_zarcanum, tx id=" << get_transaction_hash(tx));
@@ -1205,7 +1205,7 @@ namespace cryptonote
     rct::key r = zarcanum_derivation_to_scalar(derivation, output_index, "asset_blind");
     rct::key rX = rct::scalarmultX(r);
     rct::key asset_id_rct;
-    rct::subKeys(asset_id_rct, rct::pk2rct(zout.blinded_asset_id), rX);
+    rct::subKeys(asset_id_rct, rct::aid2rct(zout.blinded_asset_id), rX);
     asset_id_out = reinterpret_cast<const crypto::asset_id&>(rct::rct2pk(asset_id_rct));
     asset_blinding_mask_out = r;
 

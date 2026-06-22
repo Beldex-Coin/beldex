@@ -886,7 +886,7 @@ namespace cryptonote
         const rct::key& asset_id_rct = rct::aid2rct(dst_entr.asset_id);
         rct::key T;
         rct::addKeys(T, asset_id_rct, rX);
-        zout.blinded_asset_id = rct::rct2pk(T);
+        zout.blinded_asset_id = rct::rct2aid(T);
         LOG_PRINT_L0("Blinded asset ID done");
 
         // Amount commitment:  C = amount * asset_id + mask * G

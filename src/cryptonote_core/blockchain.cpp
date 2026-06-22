@@ -3078,7 +3078,7 @@ bool Blockchain::check_tx_outputs(const transaction& tx, tx_verification_context
     if (const auto* zout = std::get_if<tx_out_zarcanum>(&o.target))
     {
       if (!crypto::check_key(zout->stealth_address) ||
-          !crypto::check_key(zout->blinded_asset_id) ||
+          !crypto::check_asset_key(zout->blinded_asset_id) ||
           !crypto::check_key(zout->amount_commitment))
       {
         MERROR_VER("tx_out_zarcanum has invalid pubkey field");

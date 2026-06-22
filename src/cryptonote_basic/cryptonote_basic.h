@@ -100,7 +100,7 @@ namespace cryptonote
     crypto::public_key stealth_address   = crypto::null_pkey; // one-time stealth address
     crypto::public_key concealing_point  = crypto::null_pkey; // Q = q*G; receiver uses for key recovery
     crypto::public_key amount_commitment = crypto::null_pkey; // C = amount*asset_id + mask*G
-    crypto::public_key blinded_asset_id  = crypto::null_pkey; // T = asset_id + r*X
+    crypto::asset_id   blinded_asset_id  = crypto::null_aid; // T = asset_id + r*X
     uint64_t           encrypted_amount  = 0;                 // amount XOR H_s("enc"||derivation||idx)
     uint8_t            mix_attr          = 0;
     uint8_t            version           = 0;

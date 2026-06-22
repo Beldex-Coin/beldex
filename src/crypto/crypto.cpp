@@ -188,6 +188,11 @@ namespace crypto {
     return ge_frombytes_vartime(&point, &key) == 0;
   }
 
+  bool check_asset_key(const asset_id &key) {
+    ge_p3 point;
+    return ge_frombytes_vartime(&point, &key) == 0;
+  }
+
   bool secret_key_to_public_key(const secret_key &sec, public_key &pub) {
     ge_p3 point;
     if (sc_check(&unwrap(sec)) != 0) {

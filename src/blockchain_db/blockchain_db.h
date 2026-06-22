@@ -121,7 +121,7 @@ struct output_data_t
   uint64_t           unlock_time;  //!< the output's unlock time (or height)
   uint64_t           height;       //!< the height of the block which created the output
   rct::key           commitment;   //!< the output's amount commitment (for spend verification)
-  crypto::public_key blinded_asset_id; //!< null for native outputs, blinded asset id for confidential asset outputs
+  crypto::asset_id blinded_asset_id; //!< null for native outputs, blinded asset id for confidential asset outputs
 };
 #pragma pack(pop)
 
