@@ -153,6 +153,12 @@ namespace hashkey {
   inline constexpr std::string_view CLSAG_ROUND = "CLSAG_round"sv;
   inline constexpr std::string_view CLSAG_AGG_0 = "CLSAG_agg_0"sv;
   inline constexpr std::string_view CLSAG_AGG_1 = "CLSAG_agg_1"sv;
+  // 3-layer CLSAG-GGX (zarcanum ZC_sig): layer 0 = stealth address (G),
+  // layer 1 = amount commitment (G), layer 2 = blinded asset id (X).
+  inline constexpr std::string_view CLSAG_GGX_ROUND = "CLSAG_GGX_round"sv;
+  inline constexpr std::string_view CLSAG_GGX_AGG_0 = "CLSAG_GGX_agg_0"sv;
+  inline constexpr std::string_view CLSAG_GGX_AGG_1 = "CLSAG_GGX_agg_1"sv;
+  inline constexpr std::string_view CLSAG_GGX_AGG_2 = "CLSAG_GGX_agg_2"sv;
 }
 
 // Maximum allowed stake contribution, as a fraction of the available contribution room.  This

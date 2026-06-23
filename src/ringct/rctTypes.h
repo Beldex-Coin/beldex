@@ -183,6 +183,29 @@ namespace rct {
         END_SERIALIZE()
     };
 
+    // 3-layer CLSAG over (G, G, X) for spending a tx_out_zarcanum (HF21+ confidential assets).
+    // Layer 0 (G): stealth address ownership.
+    // Layer 1 (G): amount-commitment difference vs. the pseudo-output is a commitment to 0.
+    // Layer 2 (X): blinded-asset-id difference vs. the pseudo-output is a commitment to 0.
+    struct clsag_ggx {
+        keyV s_g; // responses for layers 0/1 (G), size = ring size
+        keyV s_x; // responses for layer 2 (X), size = ring size
+        key c1;
+
+        key I; // signing key image (layer 0)
+        key D; // auxiliary key image, amount-commitment layer (layer 1)
+        key E; // auxiliary key image, asset-id layer (layer 2)
+
+        BEGIN_SERIALIZE_OBJECT()
+            FIELD(s_g)
+            FIELD(s_x)
+            FIELD(c1)
+            // FIELD(I) - not serialized, it can be reconstructed
+            FIELD(D)
+            FIELD(E)
+        END_SERIALIZE()
+    };
+
     //contains the data for an Borromean sig
     // also contains the "Ci" values such that
     // \sum Ci = C
@@ -693,8 +716,8 @@ namespace rct {
     struct zc_balance_proof
     {
       key P{};
-      crypto::linear_composition_proof_s lcp;
-      BEGIN_SERIALIZE_OBJECT() FIELD(P) FIELD(lcp) END_SERIALIZE()
+      crypto::double_schnorr_sig_s dss; // binds P to mask*G AND tx_pub_key to tx_key.sec*G
+      BEGIN_SERIALIZE_OBJECT() FIELD(P) FIELD(dss) END_SERIALIZE()
     };
 
     struct asset_operation_proof
@@ -722,13 +745,28 @@ namespace rct {
 
     struct ZC_sig
     {
-      crypto::key_image key_image;
-      clsag             clsag_sig;
-      key               pseudo_out_commitment;
+      clsag_ggx clsag_sig;
+      key       pseudo_out_amount_commitment;
+      key       pseudo_out_blinded_asset_id;
       BEGIN_SERIALIZE_OBJECT()
-        FIELD(key_image)
         FIELD(clsag_sig)
-        FIELD(pseudo_out_commitment)
+        FIELD(pseudo_out_amount_commitment)
+        FIELD(pseudo_out_blinded_asset_id)
+      END_SERIALIZE()
+    };
+
+    // HF21: range proof for zarcanum output amounts (prevents integer
+    // overflow / negative-amount inflation attacks). One per transaction,
+    // covering every zarcanum output in that tx. aggregation_proof binds the
+    // real per-output commitments to the fixed-generator auxiliary
+    // commitments that bpp (an unmodified Bulletproof+) range-proves.
+    struct zc_outs_range_proof
+    {
+      BulletproofPlus                       bpp;
+      crypto::vector_ug_aggregation_proof_s aggregation_proof;
+      BEGIN_SERIALIZE_OBJECT()
+        FIELD(bpp)
+        FIELD(aggregation_proof)
       END_SERIALIZE()
     };
 
@@ -737,7 +775,8 @@ namespace rct {
       zc_balance_proof,
       asset_operation_proof,
       asset_operation_ownership_proof,
-      ZC_sig
+      ZC_sig,
+      zc_outs_range_proof
     >;
 
 } // namespace rct (continued)
@@ -748,3 +787,4 @@ VARIANT_TAG(rct::zc_balance_proof,                "zc_balance",    0xb1);
 VARIANT_TAG(rct::asset_operation_proof,           "asset_op_proof",0xb2);
 VARIANT_TAG(rct::asset_operation_ownership_proof, "asset_owner",   0xb3);
 VARIANT_TAG(rct::ZC_sig,                          "zc_sig",        0xb4);
+VARIANT_TAG(rct::zc_outs_range_proof,             "zc_range_proof",0xb5);

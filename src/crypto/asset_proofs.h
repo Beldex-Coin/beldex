@@ -106,6 +106,42 @@ bool verify_linear_composition_proof(const rct::key&                    msg,
                                      const linear_composition_proof_s&  sig);
 
 
+// ── 2b. Double Schnorr proof ─────────────────────────────────────────────────
+//
+// Proves knowledge of TWO independent scalars (s0, s1) such that
+// P0 = s0*G  and  P1 = s1*G, under one shared Fiat-Shamir challenge.
+//
+// Used to bind the confidential-asset balance proof (P0 = the balance
+// residual, s0 = its mask) to the transaction's own keypair (P1 = tx_pub_key,
+// s1 = tx_key.sec) -- so a balance proof can't be detached from / replayed
+// against a transaction it wasn't actually generated for. Mirrors Zano's
+// generate_double_schnorr_sig<gt_G, gt_G>.
+struct double_schnorr_sig_s
+{
+    rct::key y0;  // response for P0: y0 = r0 - c*s0
+    rct::key y1;  // response for P1: y1 = r1 - c*s1
+    rct::key c;   // shared challenge: c = H(msg || P0 || P1 || R0 || R1)
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(y0)
+      FIELD(y1)
+      FIELD(c)
+    END_SERIALIZE()
+};
+
+bool generate_double_schnorr_sig(const rct::key&        msg,
+                                 const rct::key&        P0,
+                                 const rct::key&        s0,
+                                 const rct::key&        P1,
+                                 const rct::key&        s1,
+                                 double_schnorr_sig_s&  out);
+
+bool verify_double_schnorr_sig(const rct::key&              msg,
+                               const rct::key&              P0,
+                               const rct::key&              P1,
+                               const double_schnorr_sig_s&  sig);
+
+
 // ── 3. BGE asset surjection proof ───────────────────────────────────────────
 //
 // Groth-Bootle-Esgin one-out-of-many proof.
@@ -117,6 +153,8 @@ bool verify_linear_composition_proof(const rct::key&                    msg,
 // The ring is the set of plaintext asset IDs from the transaction inputs.
 //
 // Proof size: O(log4(ring_size)) group elements and scalars.
+// For ring_size == 1 this stores a compact Schnorr-over-X proof instead:
+// A=c, B=y, with Pk/f empty and y/z zero.
 struct BGE_proof_s
 {
     rct::key A;            // commitment A (premultiplied by 1/8 on-chain)
@@ -157,5 +195,71 @@ bool verify_BGE_proof(const rct::key&  context_hash,
                       const rct::keyV& ring,
                       const rct::key&  T,
                       const BGE_proof_s& sig);
+
+
+// ── 4. Vector HG aggregation proof ──────────────────────────────────────────
+//
+// Adapted from Zano's vector_UG_aggregation_proof (src/crypto/zarcanum.cpp).
+// Binds each output's real amount commitment E_j = amount_j*tag_j + mask_j*G
+// to an auxiliary commitment E'_j = amount_j*H + y'_j*G that the existing,
+// unmodified Bulletproof+ engine can range-prove directly (it already uses
+// rct::H as its value-generator for ordinary RingCT outputs; reusing it here
+// avoids touching that shared, consensus-critical code at all). real_tags_j
+// varies per output in Zano (a per-output blinded asset tag); in Beldex it's
+// the same plaintext asset_id for every output in a tx, since one tx may
+// only touch one confidential asset -- a valid specialization of the same
+// proof.
+//
+// For a random public weight w = Hs(m, {E_j}, {E'_j}), proves knowledge of
+// (amount_j, mask_j + w*y'_j) such that, for every j simultaneously:
+//   E_j + w*E'_j == amount_j*(tag_j + w*H) + (mask_j + w*y'_j)*G
+// Soundness: if any amount_j used in E_j differs from the one used in E'_j
+// (the one the Bulletproof+ actually range-checked), this equation fails
+// except with negligible probability over the random w. This relies on
+// nobody knowing a discrete-log relation between tag_j (asset_id) and H,
+// which holds given asset_id is derived via hash-to-point (see
+// get_or_calculate_asset_id) -- the same requirement the rest of HF21's
+// asset-id-based proofs already depend on.
+struct vector_ug_aggregation_proof_s
+{
+    rct::keyV amount_commitments_for_rp_aggregation; // E'_j, one per ZC output, premultiplied by 1/8
+    rct::keyV y0s; // response scalars (knowledge of amount_j)
+    rct::keyV y1s; // response scalars (knowledge of mask_j + w*y'_j)
+    rct::key  c;   // common Fiat-Shamir challenge
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(amount_commitments_for_rp_aggregation)
+      FIELD(y0s)
+      FIELD(y1s)
+      FIELD(c)
+    END_SERIALIZE()
+};
+
+// Generate a vector HG aggregation proof.
+//   context_hash : binds proof to the transaction (e.g. the HF21 asset proof message)
+//   amounts      : amount_j for each ZC output (the prover's secret)
+//   real_masks   : mask_j used in each output's real amount commitment
+//   aux_masks    : y'_j used in each output's auxiliary commitment E'_j
+//   real_commitments : E_j, the outputs' real amount commitments
+//   aux_commitments  : E'_j = amount_j*H + y'_j*G (not yet 1/8-scaled)
+//   tags             : the per-output "tag" base used in E_j (Beldex: the
+//                       tx's single plaintext asset_id, repeated per output)
+bool generate_vector_ug_aggregation_proof(const rct::key&  context_hash,
+                                          const rct::keyV& amounts,
+                                          const rct::keyV& real_masks,
+                                          const rct::keyV& aux_masks,
+                                          const rct::keyV& real_commitments,
+                                          const rct::keyV& aux_commitments,
+                                          const rct::keyV& tags,
+                                          vector_ug_aggregation_proof_s& out);
+
+// Verify a vector HG aggregation proof.
+//   context_hash     : same value used during generation
+//   real_commitments : E_j, the outputs' real amount commitments
+//   tags             : the per-output tag base used in E_j
+bool verify_vector_ug_aggregation_proof(const rct::key&  context_hash,
+                                        const rct::keyV& real_commitments,
+                                        const rct::keyV& tags,
+                                        const vector_ug_aggregation_proof_s& sig);
 
 } // namespace crypto

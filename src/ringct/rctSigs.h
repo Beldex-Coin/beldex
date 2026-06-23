@@ -85,30 +85,68 @@ namespace rct {
     // reason on any failure.
     bool verAssetProofs(const cryptonote::transaction& tx,
                         const rct::ctkeyM& pubkeys,   // ring pubkeys per input
+                        const std::vector<rct::keyV>& asset_id_rings, // blinded asset id ring per input (only populated for txin_zc_input entries)
                         std::string& reason);
 
-    // HF21: ZC_sig — 1-layer CLSAG for spending a tx_out_zarcanum.
-    // Ring is a mix of BDX and ZC pubkeys from output_amounts[0].
-    // message      : transaction prefix hash
-    // ring_pubkeys : pubkeys of all ring members (P[i].dest), size = ring_size
-    // spend_sk     : sender's ephemeral spend key for the real output
-    // pseudo_out_C : pseudo-output commitment (amount*asset_id + delta*G)
-    // real_index   : index of the real output in ring_pubkeys
+    // HF21: 3-layer CLSAG-GGX, the ring signature used by ZC_sig to spend a
+    // tx_out_zarcanum. Proves, for one real ring index l, all of:
+    //   layer 0 (G): knowledge of the spend key for P[l]            (stealth address)
+    //   layer 1 (G): A[l]*8 - pseudo_A = f*G for known f             (amount commitment)
+    //   layer 2 (X): T[l]*8 - pseudo_T = t*X for known t             (blinded asset id)
+    // P, A, T are parallel rings (stealth addresses, amount commitments,
+    // blinded asset ids); A[i]/T[i] are the canonical (already-decompressed,
+    // i.e. previously stored *8) values, matching how C_nonzero is used by
+    // CLSAG_Gen. pseudo_A/pseudo_T are the pseudo-output's amount commitment
+    // and blinded asset id, not premultiplied by 1/8.
+    clsag_ggx CLSAG_GGX_Gen(const key& message,
+                            const keyV& P,
+                            const keyV& A,
+                            const keyV& T,
+                            const key& p,
+                            const key& f,
+                            const key& t,
+                            const key& pseudo_A,
+                            const key& pseudo_T,
+                            unsigned int l);
+
+    bool verify_CLSAG_GGX(const key& message,
+                          const keyV& P,
+                          const keyV& A,
+                          const keyV& T,
+                          const key& pseudo_A,
+                          const key& pseudo_T,
+                          const clsag_ggx& sig);
+
+    // HF21: ZC_sig — 3-layer CLSAG-GGX signature for spending a tx_out_zarcanum.
+    // message                      : transaction prefix hash
+    // ring_stealth_addrs           : stealth addresses of all ring members, size = ring_size
+    // ring_amount_commitments      : amount commitments of all ring members (canonical, *8)
+    // ring_blinded_asset_ids       : blinded asset ids of all ring members (canonical, *8)
+    // spend_secret                 : sender's ephemeral spend key for the real output (layer 0)
+    // real_amount_mask_diff        : f = real_out_amount_mask - pseudo_out_amount_mask (layer 1)
+    // real_asset_mask_diff         : t = -pseudo_out_asset_id_mask (layer 2)
+    // pseudo_out_amount_commitment : pseudo-output amount commitment, not premultiplied by 1/8
+    // pseudo_out_blinded_asset_id  : pseudo-output blinded asset id, not premultiplied by 1/8
+    // real_index                   : index of the real output in the ring
     ZC_sig genZCSig(const key& message,
-                    const keyV& ring_pubkeys,
-                    const ctkey& spend_sk,
-                    const key& pseudo_out_C,
-                    unsigned int real_index,
-                    hw::device& hwdev);
+                    const keyV& ring_stealth_addrs,
+                    const keyV& ring_amount_commitments,
+                    const keyV& ring_blinded_asset_ids,
+                    const key& spend_secret,
+                    const key& real_amount_mask_diff,
+                    const key& real_asset_mask_diff,
+                    const key& pseudo_out_amount_commitment,
+                    const key& pseudo_out_blinded_asset_id,
+                    unsigned int real_index);
 
     // Verify a ZC_sig.
-    // message      : transaction prefix hash
-    // ring_pubkeys : pubkeys of all ring members
-    // pseudo_out_C : pseudo-output commitment from ZC_sig
     bool verZCSig(const key& message,
                   const ZC_sig& sig,
-                  const keyV& ring_pubkeys,
-                  const key& pseudo_out_C);
+                  const keyV& ring_stealth_addrs,
+                  const keyV& ring_amount_commitments,
+                  const keyV& ring_blinded_asset_ids,
+                  const key& pseudo_out_amount_commitment,
+                  const key& pseudo_out_blinded_asset_id);
 
     //proveRange and verRange
     //proveRange gives C, and mask such that \sumCi = C

@@ -396,7 +396,14 @@ namespace cryptonote
               else if (std::holds_alternative<txin_zc_input>(vin[0]))
                 mixin = var::get<txin_zc_input>(vin[0]).key_offsets.size() - 1;
             }
-            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, vin.size(), vout.size(), mixin);
+            // HF21: zarcanum (txin_zc_input) inputs are proven via their own
+            // ZC_sig in asset_proofs, not via the native CLSAGs/pseudoOuts
+            // arrays here -- those are sized to the native-only input count.
+            size_t native_inputs = 0;
+            for (const auto& in : vin)
+              if (std::holds_alternative<txin_to_key>(in))
+                ++native_inputs;
+            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, native_inputs, vout.size(), mixin);
           }
 
           // HF21: confidential asset proofs (present only when has_zarcanum_outputs() or for update_asset txs)

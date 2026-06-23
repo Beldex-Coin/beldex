@@ -316,6 +316,52 @@ bool verify_linear_composition_proof(const rct::key&                   msg,
 }
 
 // ---------------------------------------------------------------------------
+// 2b. Double Schnorr proof  P0 = s0*G, P1 = s1*G  (one shared challenge)
+// ---------------------------------------------------------------------------
+
+bool generate_double_schnorr_sig(const rct::key&        msg,
+                                 const rct::key&        P0,
+                                 const rct::key&        s0,
+                                 const rct::key&        P1,
+                                 const rct::key&        s1,
+                                 double_schnorr_sig_s&  out)
+{
+    // r0, r1 random; R0 = r0*G, R1 = r1*G
+    rct::key r0 = rct::skGen();
+    rct::key r1 = rct::skGen();
+    rct::key R0 = rct::scalarmultBase(r0);
+    rct::key R1 = rct::scalarmultBase(r1);
+
+    // c = H(msg || P0 || P1 || R0 || R1)
+    out.c = hash_to_scalar_varargs({&msg, &P0, &P1, &R0, &R1});
+
+    // y0 = r0 - c*s0,  y1 = r1 - c*s1
+    sc_mulsub(out.y0.bytes, out.c.bytes, s0.bytes, r0.bytes);
+    sc_mulsub(out.y1.bytes, out.c.bytes, s1.bytes, r1.bytes);
+    return true;
+}
+
+bool verify_double_schnorr_sig(const rct::key&              msg,
+                               const rct::key&              P0,
+                               const rct::key&              P1,
+                               const double_schnorr_sig_s&  sig)
+{
+    // R0' = y0*G + c*P0,  R1' = y1*G + c*P1
+    rct::key y0G = rct::scalarmultBase(sig.y0);
+    rct::key cP0 = scalarmult(P0, sig.c);
+    rct::key R0_prime;
+    rct::addKeys(R0_prime, y0G, cP0);
+
+    rct::key y1G = rct::scalarmultBase(sig.y1);
+    rct::key cP1 = scalarmult(P1, sig.c);
+    rct::key R1_prime;
+    rct::addKeys(R1_prime, y1G, cP1);
+
+    rct::key c_prime = hash_to_scalar_varargs({&msg, &P0, &P1, &R0_prime, &R1_prime});
+    return c_prime == sig.c;
+}
+
+// ---------------------------------------------------------------------------
 // 4. BGE one-out-of-many proof
 // ---------------------------------------------------------------------------
 //
@@ -367,6 +413,26 @@ bool generate_BGE_proof(const rct::key&  context_hash,
     const size_t ring_size = ring.size();
     if (ring_size == 0 || real_index >= ring_size)
         return false;
+
+    // Degenerate one-member ring: no index needs hiding.  Prove directly that
+    // T - ring[0] = r_blind*X with a Schnorr proof over X, stored compactly in
+    // the BGE container as A=c, B=y and empty vector fields.
+    if (ring_size == 1)
+    {
+        if (real_index != 0)
+            return false;
+
+        out = {};
+        const rct::key P = point_sub(T, ring[0]);
+        const rct::key msg = hash_to_scalar_varargs({&context_hash, &ring[0], &T});
+        schnorr_sig_s sig{};
+        if (!generate_schnorr_sig_X(msg, P, r_blind, sig))
+            return false;
+
+        out.A = sig.c;
+        out.B = sig.y;
+        return verify_BGE_proof(context_hash, ring, T, out);
+    }
 
     // Verify debug invariant: T = ring[real_index] + r_blind*X
 #ifndef NDEBUG
@@ -560,7 +626,20 @@ bool generate_BGE_proof(const rct::key&  context_hash,
     // y = r_A + x * r_B
     sc_muladd(out.y.bytes, x.bytes, r_B.bytes, r_A.bytes);
 
-    // z = secret * x^m - sum_{k=0}^{m-1}( x^k * ro[k] )
+    // z = secret * x^m + sum_{k=0}^{m-1}( x^k * ro[k] )
+    //
+    // Unlike Zano's generic one-out-of-many proof (which runs on a
+    // caller-shifted ring so ring[l] == secret*X directly, collapsing the
+    // whole check to z*X), this proof keeps the *unshifted* asset-id ring
+    // and folds the shift (T = ring[l] + r_blind*X) into the final check
+    // instead. That changes which identity z has to satisfy: substituting
+    // ring[l] = T - r_blind*X into the base-agnostic identity
+    //   sum_i(p_i*ring[i]) - sum_k(x^k*Pk[k]) == x^m*ring[l] - sum_k(x^k*ro[k])*X
+    // gives
+    //   sum_i(p_i*ring[i]) - sum_k(x^k*Pk[k]) == x^m*T - (x^m*r_blind + sum_k(x^k*ro[k]))*X
+    // so z must be the *sum* x^m*r_blind + sum_k(x^k*ro[k]) (not the
+    // difference), and the verifier needs both an x^m*T and a z*X term --
+    // see verify_BGE_proof below.
     rct::key x_power;
     memset(x_power.bytes, 0, 32);
     x_power.bytes[0] = 1; // x^0 = 1
@@ -570,11 +649,14 @@ bool generate_BGE_proof(const rct::key&  context_hash,
     {
         rct::key xk_ro;
         sc_muladd(xk_ro.bytes, x_power.bytes, ro[k].bytes, rct::zero().bytes);
-        sc_sub(z_acc.bytes, z_acc.bytes, xk_ro.bytes);
+        sc_add(z_acc.bytes, z_acc.bytes, xk_ro.bytes);
         sc_muladd(x_power.bytes, x_power.bytes, x.bytes, rct::zero().bytes);
     }
     // x_power is now x^m
     sc_muladd(out.z.bytes, x_power.bytes, r_blind.bytes, z_acc.bytes);
+
+    if (!verify_BGE_proof(context_hash, ring, T, out))
+        return false;
 
     return true;
 }
@@ -592,6 +674,21 @@ bool verify_BGE_proof(const rct::key&    context_hash,
 
     const size_t ring_size = ring.size();
     if (ring_size == 0) return false;
+
+    // Single-member rings use the compact Schnorr-over-X encoding produced by
+    // generate_BGE_proof above: A=c, B=y, proving T - ring[0] = r*X.
+    if (ring_size == 1)
+    {
+        if (!sig.Pk.empty() || !sig.f.empty() || sig.y != rct::zero() || sig.z != rct::zero())
+            return false;
+
+        const rct::key P = point_sub(T, ring[0]);
+        const rct::key msg = hash_to_scalar_varargs({&context_hash, &ring[0], &T});
+        schnorr_sig_s schnorr{};
+        schnorr.c = sig.A;
+        schnorr.y = sig.B;
+        return verify_schnorr_sig_X(msg, P, schnorr);
+    }
 
     const size_t m = ceil_log_n(ring_size, n);
     const size_t N = pow_n(n, m);
@@ -644,12 +741,11 @@ bool verify_BGE_proof(const rct::key&    context_hash,
 
     if (LHS != RHS) return false;
 
-    // ── Check 2: sum_i( p_i * ring[i] ) - sum_k( x^k * Pk[k] ) = z*X + ? ──
-    // Actually: sum_i(p_i * ring[i]) - sum_k(x^k * Pk8[k]) = z * T
-    // where T is the blinded_asset_id and the secret = r_blind.
-    // (ring[j] = real_asset_id, T = ring[j] + r_blind*X)
-    //
-    // Rewrite: sum_i(p_i * ring[i]) - sum_k(x^k * Pk8[k]) - z*T = 0
+    // ── Check 2: sum_i(p_i*ring[i]) - sum_k(x^k*Pk8[k]) == x^m*T - z*X ──
+    // where T is the blinded_asset_id, ring[l] + r_blind*X == T for the
+    // (hidden) real index l, and z == x^m*r_blind + sum_k(x^k*ro[k]) (see
+    // generate_BGE_proof). Rewrite as a single zero check:
+    //   sum_i(p_i*ring[i]) - sum_k(x^k*Pk8[k]) - x^m*T + z*X == 0
 
     // p_vec[i] = product_{j=0}^{m-1}( f[j, digit_j(i)] )
     std::vector<rct::key> p_vec(N);
@@ -692,13 +788,165 @@ bool verify_BGE_proof(const rct::key&    context_hash,
         sc_muladd(x_power.bytes, x_power.bytes, x.bytes, rct::zero().bytes);
     }
 
-    // subtract z * T  (T is the blinded_asset_id passed in)
-    Z = point_sub(Z, scalarmult(T, sig.z));
+    // subtract x^m * T, add z * X  (see generate_BGE_proof's z comment for
+    // the derivation -- x_power is x^m here, carried over from the loop above)
+    Z = point_sub(Z, scalarmult(T, x_power));
+    Z = point_add(Z, rct::scalarmultX(sig.z));
 
     // Z must be the identity (zero point)
     rct::key identity;
     ge_p3_tobytes(identity.bytes, &ge_p3_identity);
     return Z == identity;
+}
+
+// ---------------------------------------------------------------------------
+// Vector HG aggregation proof
+// ---------------------------------------------------------------------------
+//
+// Adapted from Zano's vector_UG_aggregation_proof (src/crypto/zarcanum.cpp).
+// See asset_proofs.h for the proof's purpose and the Beldex-specific
+// adaptations: a fixed `tags[j]` per tx instead of Zano's per-output blinded
+// asset tag, and the existing rct::H (rather than a dedicated new generator)
+// as the auxiliary commitment's value-base, so the unmodified Bulletproof+
+// engine can be reused without modification.
+
+static rct::key hash_buffer_to_scalar(const std::vector<uint8_t>& buf)
+{
+    rct::key result;
+    keccak(buf.data(), (int)buf.size(), result.bytes, 32);
+    sc_reduce32(result.bytes);
+    return result;
+}
+
+bool generate_vector_ug_aggregation_proof(const rct::key&  context_hash,
+                                          const rct::keyV& amounts,
+                                          const rct::keyV& real_masks,
+                                          const rct::keyV& aux_masks,
+                                          const rct::keyV& real_commitments,
+                                          const rct::keyV& aux_commitments,
+                                          const rct::keyV& tags,
+                                          vector_ug_aggregation_proof_s& out)
+{
+    const size_t n = amounts.size();
+    if (n == 0)                          return false;
+    if (real_masks.size()       != n)    return false;
+    if (aux_masks.size()        != n)    return false;
+    if (real_commitments.size() != n)    return false;
+    if (aux_commitments.size()  != n)    return false;
+    if (tags.size()              != n)   return false;
+
+    // w = Hs(m, {E_j}, {E'_j})
+    std::vector<uint8_t> buf;
+    buf.reserve((1 + 2 * n) * 32);
+    auto push = [&](const rct::key& k){ buf.insert(buf.end(), k.bytes, k.bytes + 32); };
+    push(context_hash);
+    for (const auto& e : real_commitments) push(e);
+    for (const auto& e : aux_commitments)  push(e);
+
+    rct::key w = hash_buffer_to_scalar(buf);
+
+    rct::key wU = rct::scalarmultH(w);
+    rct::keyV tag_plus_wU(n);
+    for (size_t j = 0; j < n; ++j)
+        tag_plus_wU[j] = point_add(tags[j], wU);
+
+    rct::keyV r0(n), r1(n);
+    for (size_t j = 0; j < n; ++j)
+    {
+        r0[j] = rct::skGen();
+        r1[j] = rct::skGen();
+    }
+
+    // R[j] = r0[j]*(tags[j] + w*H) + r1[j]*G
+    rct::keyV R(n);
+    for (size_t j = 0; j < n; ++j)
+    {
+        rct::key term1 = scalarmult(tag_plus_wU[j], r0[j]);
+        rct::key term2 = rct::scalarmultBase(r1[j]);
+        R[j] = point_add(term1, term2);
+    }
+
+    for (const auto& r : R) push(r);
+    rct::key c = hash_buffer_to_scalar(buf);
+
+    out.amount_commitments_for_rp_aggregation.resize(n);
+    out.y0s.resize(n);
+    out.y1s.resize(n);
+    out.c = c;
+    for (size_t j = 0; j < n; ++j)
+    {
+        // y0_j = r0_j - c*amount_j
+        rct::key c_amount;
+        sc_mul(c_amount.bytes, c.bytes, amounts[j].bytes);
+        sc_sub(out.y0s[j].bytes, r0[j].bytes, c_amount.bytes);
+
+        // combined_mask_j = real_masks[j] + w*aux_masks[j]
+        rct::key w_auxmask;
+        sc_mul(w_auxmask.bytes, w.bytes, aux_masks[j].bytes);
+        rct::key combined_mask;
+        sc_add(combined_mask.bytes, real_masks[j].bytes, w_auxmask.bytes);
+
+        // y1_j = r1_j - c*combined_mask_j
+        rct::key c_combined;
+        sc_mul(c_combined.bytes, c.bytes, combined_mask.bytes);
+        sc_sub(out.y1s[j].bytes, r1[j].bytes, c_combined.bytes);
+
+        // store E'_j premultiplied by 1/8, matching the BGE proof's on-chain
+        // storage convention for A/B/Pk.
+        out.amount_commitments_for_rp_aggregation[j] = scalarmult_inv8(aux_commitments[j]);
+    }
+
+    return true;
+}
+
+bool verify_vector_ug_aggregation_proof(const rct::key&  context_hash,
+                                        const rct::keyV& real_commitments,
+                                        const rct::keyV& tags,
+                                        const vector_ug_aggregation_proof_s& sig)
+{
+    const size_t n = real_commitments.size();
+    if (n == 0)                                                return false;
+    if (tags.size()                                    != n)   return false;
+    if (sig.amount_commitments_for_rp_aggregation.size() != n) return false;
+    if (sig.y0s.size()                                  != n)  return false;
+    if (sig.y1s.size()                                  != n)  return false;
+
+    std::vector<uint8_t> buf;
+    buf.reserve((1 + 2 * n) * 32);
+    auto push = [&](const rct::key& k){ buf.insert(buf.end(), k.bytes, k.bytes + 32); };
+    push(context_hash);
+    for (const auto& e : real_commitments) push(e);
+
+    rct::keyV aux_commitments(n); // de-scaled by *8 (full resolution)
+    for (size_t j = 0; j < n; ++j)
+    {
+        aux_commitments[j] = scalarmult8_key(sig.amount_commitments_for_rp_aggregation[j]);
+        push(aux_commitments[j]);
+    }
+
+    rct::key w = hash_buffer_to_scalar(buf);
+
+    rct::key wU = rct::scalarmultH(w);
+    rct::keyV tag_plus_wU(n);
+    for (size_t j = 0; j < n; ++j)
+        tag_plus_wU[j] = point_add(tags[j], wU);
+
+    // R'[j] = y0_j*(tags[j] + w*H) + y1_j*G + c*(E_j + w*E'_j)
+    rct::keyV R(n);
+    for (size_t j = 0; j < n; ++j)
+    {
+        rct::key term1 = scalarmult(tag_plus_wU[j], sig.y0s[j]);
+        rct::key term2 = rct::scalarmultBase(sig.y1s[j]);
+        rct::key w_aux = scalarmult(aux_commitments[j], w);
+        rct::key combined = point_add(real_commitments[j], w_aux);
+        rct::key term3 = scalarmult(combined, sig.c);
+        R[j] = point_add(point_add(term1, term2), term3);
+    }
+
+    for (const auto& r : R) push(r);
+    rct::key c_prime = hash_buffer_to_scalar(buf);
+
+    return c_prime == sig.c;
 }
 
 } // namespace crypto

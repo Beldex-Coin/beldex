@@ -145,6 +145,15 @@ namespace cryptonote
     rct::key mask;                      //ringct amount mask
     rct::multisig_kLRki multisig_kLRki; //multisig info
 
+    // Confidential asset (HF21+). null_aid = native BDX input (txin_to_key).
+    crypto::asset_id asset_id = crypto::null_aid;
+    rct::key asset_mask = rct::zero();  // real output's asset-id blinding mask (transfer_details::m_asset_mask)
+    // Blinded asset ids of the ring, parallel to `outputs` (same index correspondence).
+    // Only populated/used when is_zarcanum() is true.
+    std::vector<crypto::asset_id> ring_blinded_asset_ids;
+
+    bool is_zarcanum() const { return asset_id != crypto::null_aid; }
+
     void push_output(uint64_t idx, const crypto::public_key &k, uint64_t amount) { outputs.push_back(std::make_pair(idx, rct::ctkey({rct::pk2rct(k), rct::zeroCommit(amount)}))); }
 
     BEGIN_SERIALIZE_OBJECT()
@@ -157,6 +166,9 @@ namespace cryptonote
       FIELD(rct)
       FIELD(mask)
       FIELD(multisig_kLRki)
+      FIELD(asset_id)
+      FIELD(asset_mask)
+      FIELD(ring_blinded_asset_ids)
 
       if (real_output >= outputs.size())
         throw std::invalid_argument{"invalid real_output size"};
