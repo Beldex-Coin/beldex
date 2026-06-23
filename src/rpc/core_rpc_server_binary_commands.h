@@ -216,7 +216,7 @@ namespace cryptonote::rpc {
       bool unlocked;          // States if output is locked (`false`) or not (`true`).
       uint64_t height;        // Block height of the output.
       crypto::hash txid;      // Transaction id.
-      crypto::public_key blinded_asset_id; // null for native outputs, T for confidential asset outputs
+      crypto::asset_id blinded_asset_id; // null for native outputs, T for confidential asset outputs
 
       KV_MAP_SERIALIZABLE
     };

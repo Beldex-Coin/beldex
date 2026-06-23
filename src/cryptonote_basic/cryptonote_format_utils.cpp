@@ -992,10 +992,25 @@ namespace cryptonote
     return coinbase_in.height;
   }
   //---------------------------------------------------------------
+  const crypto::key_image& get_input_key_image(const txin_v& in)
+  {
+    if (const auto* tokey_in = std::get_if<txin_to_key>(&in))
+      return tokey_in->k_image;
+    if (const auto* zc_in = std::get_if<txin_zc_input>(&in))
+      return zc_in->k_image;
+    throw std::runtime_error("get_input_key_image: unexpected txin_v variant: " + std::string(tools::type_name(tools::variant_type(in))));
+  }
+  //---------------------------------------------------------------
   bool check_inputs_types_supported(const transaction& tx)
   {
     for(const auto& in: tx.vin)
     {
+      // Confidential asset input (HF21+): proven via its own ZC_sig/asset
+      // proofs rather than a plaintext amount, so it's exempt from the
+      // legacy txin_to_key-only restriction here.
+      if (std::holds_alternative<txin_zc_input>(in))
+        continue;
+
       CHECK_AND_ASSERT_MES(std::holds_alternative<txin_to_key>(in), false, "wrong variant type: "
         << tools::type_name(tools::variant_type(in)) << ", expected " << tools::type_name<txin_to_key>()
         << ", in transaction id=" << get_transaction_hash(tx));
@@ -1059,6 +1074,12 @@ namespace cryptonote
     uint64_t money = 0;
     for(const auto& in: tx.vin)
     {
+      // Confidential asset inputs carry no plaintext amount (it's hidden in
+      // the commitment, conserved separately by the asset balance proof),
+      // so they don't participate in this native-money overflow check.
+      if (std::holds_alternative<txin_zc_input>(in))
+        continue;
+
       CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
       if(money > tokey_in.amount + money)
         return false;

@@ -232,6 +232,10 @@ namespace cryptonote
   bool parse_and_validate_block_from_blob(const std::string_view b_blob, block& b, crypto::hash &block_hash);
   bool get_inputs_money_amount(const transaction& tx, uint64_t& money);
   uint64_t get_outs_money_amount(const transaction& tx);
+  // Key image of any spending input (txin_to_key or, HF21+, txin_zc_input).
+  // Throws if `in` is neither (txin_gen/txin_to_script/txin_to_scripthash
+  // never appear in a spending tx's vin).
+  const crypto::key_image& get_input_key_image(const txin_v& in);
   bool check_inputs_types_supported(const transaction& tx);
   bool check_outs_valid(const transaction& tx);
   bool parse_amount(uint64_t& amount, std::string_view str_amount);

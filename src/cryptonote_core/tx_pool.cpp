@@ -867,10 +867,10 @@ namespace cryptonote
   {
     for(const auto& in: tx.vin)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, txin, false);
-      std::unordered_set<crypto::hash>& kei_image_set = m_spent_key_images[txin.k_image];
+      const crypto::key_image& ki = get_input_key_image(in);
+      std::unordered_set<crypto::hash>& kei_image_set = m_spent_key_images[ki];
       CHECK_AND_ASSERT_MES(kept_by_block || kei_image_set.size() == 0, false, "internal error: kept_by_block=" << kept_by_block
-                                          << ",  kei_image_set.size()=" << kei_image_set.size() << "\ntxin.k_image=" << txin.k_image
+                                          << ",  kei_image_set.size()=" << kei_image_set.size() << "\ntxin.k_image=" << ki
                                           << "\ntx_id=" << id );
       auto ins_res = kei_image_set.insert(id);
       CHECK_AND_ASSERT_MES(ins_res.second, false, "internal error: try to insert duplicate iterator in key_image set");
@@ -889,16 +889,16 @@ namespace cryptonote
     // ND: Speedup
     for(const txin_v& vi: tx.vin)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(vi, txin_to_key, txin, false);
-      auto it = m_spent_key_images.find(txin.k_image);
-      CHECK_AND_ASSERT_MES(it != m_spent_key_images.end(), false, "failed to find transaction input in key images. img=" << txin.k_image
+      const crypto::key_image& ki = get_input_key_image(vi);
+      auto it = m_spent_key_images.find(ki);
+      CHECK_AND_ASSERT_MES(it != m_spent_key_images.end(), false, "failed to find transaction input in key images. img=" << ki
                                     << "\ntransaction id = " << actual_hash);
       std::unordered_set<crypto::hash>& key_image_set =  it->second;
-      CHECK_AND_ASSERT_MES(key_image_set.size(), false, "empty key_image set, img=" << txin.k_image
+      CHECK_AND_ASSERT_MES(key_image_set.size(), false, "empty key_image set, img=" << ki
         << "\ntransaction id = " << actual_hash);
 
       auto it_in_set = key_image_set.find(actual_hash);
-      CHECK_AND_ASSERT_MES(it_in_set != key_image_set.end(), false, "transaction id not found in key_image set, img=" << txin.k_image
+      CHECK_AND_ASSERT_MES(it_in_set != key_image_set.end(), false, "transaction id not found in key_image set, img=" << ki
         << "\ntransaction id = " << actual_hash);
       key_image_set.erase(it_in_set);
       if(!key_image_set.size())
@@ -1451,8 +1451,7 @@ namespace cryptonote
     bool ret = false;
     for(const auto& in: tx.vin)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, true);//should never fail
-      auto it = m_spent_key_images.find(tokey_in.k_image);
+      auto it = m_spent_key_images.find(get_input_key_image(in));
       if (it != m_spent_key_images.end())
       {
         if (!conflicting)
@@ -1646,8 +1645,7 @@ end:
   {
     for(size_t i = 0; i!= tx.vin.size(); i++)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(tx.vin[i], txin_to_key, itk, false);
-      if(k_images.count(itk.k_image))
+      if(k_images.count(get_input_key_image(tx.vin[i])))
         return true;
     }
     return false;
@@ -1666,9 +1664,9 @@ end:
   {
     for(size_t i = 0; i!= tx.vin.size(); i++)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(tx.vin[i], txin_to_key, itk, false);
-      auto i_res = k_images.insert(itk.k_image);
-      CHECK_AND_ASSERT_MES(i_res.second, false, "internal error: key images pool cache - inserted duplicate image in set: " << itk.k_image);
+      const crypto::key_image& ki = get_input_key_image(tx.vin[i]);
+      auto i_res = k_images.insert(ki);
+      CHECK_AND_ASSERT_MES(i_res.second, false, "internal error: key images pool cache - inserted duplicate image in set: " << ki);
     }
     return true;
   }
@@ -1681,8 +1679,8 @@ end:
     LockedTXN lock(m_blockchain);
     for(size_t i = 0; i!= tx.vin.size(); i++)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(tx.vin[i], txin_to_key, itk, void());
-      const key_images_container::const_iterator it = m_spent_key_images.find(itk.k_image);
+      const crypto::key_image& ki = get_input_key_image(tx.vin[i]);
+      const key_images_container::const_iterator it = m_spent_key_images.find(ki);
       if (it != m_spent_key_images.end())
       {
         for (const crypto::hash &txid: it->second)
@@ -1696,7 +1694,7 @@ end:
           }
           if (!meta.double_spend_seen)
           {
-            MDEBUG("Marking " << txid << " as double spending " << itk.k_image);
+            MDEBUG("Marking " << txid << " as double spending " << ki);
             meta.double_spend_seen = true;
             changed = true;
             try
