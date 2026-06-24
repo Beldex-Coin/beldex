@@ -397,6 +397,9 @@ bool validate_tx_asset_operations_against_db(
     std::string& reason,
     hf hf_version)
 {
+  if (hf_version < feature::CONFIDENTIAL_ASSETS)
+    return true;
+
   size_t op_index = 0;
   tx_extra_asset_descriptor_operation op{};
   std::unordered_map<crypto::asset_id, asset_consensus_state> states;

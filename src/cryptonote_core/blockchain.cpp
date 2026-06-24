@@ -795,6 +795,7 @@ block Blockchain::pop_block_from_blockchain()
   std::vector<transaction> popped_txs;
 
   CHECK_AND_ASSERT_THROW_MES(m_db->height() > 1, "Cannot pop the genesis block");
+  const hf popped_hf = get_network_version(m_db->height() - 1);
 
   try
   {
@@ -813,6 +814,7 @@ block Blockchain::pop_block_from_blockchain()
     throw;
   }
 
+  if (popped_hf >= feature::CONFIDENTIAL_ASSETS)
   {
     std::string rewind_reason;
     CHECK_AND_ASSERT_THROW_MES(
@@ -3666,6 +3668,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     if (!expand_transaction_2(tx, tx_prefix_hash, pubkeys))
     {
       MERROR_VER("Failed to expand rct signatures!");
+      tvc.m_verbose_error = "failed to expand rct signatures";
       return false;
     }
 
@@ -3694,6 +3697,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
         if (native_sig_indices.size() != rv.mixRing.size())
         {
           MERROR_VER("Failed to check ringct signatures: mismatched pubkeys/mixRing size");
+          tvc.m_verbose_error = "ringct pubkeys/mixRing size mismatch";
           return false;
         }
         for (size_t i = 0; i < native_sig_indices.size(); ++i)
@@ -3701,6 +3705,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
           if (pubkeys[native_sig_indices[i]].size() != rv.mixRing[i].size())
           {
             MERROR_VER("Failed to check ringct signatures: mismatched pubkeys/mixRing size");
+            tvc.m_verbose_error = "ringct pubkeys/mixRing ring size mismatch";
             return false;
           }
         }
@@ -3713,11 +3718,13 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
             if (ring[m].dest != rct::rct2pk(rv.mixRing[n][m].dest))
             {
               MERROR_VER("Failed to check ringct signatures: mismatched pubkey at vin " << n << ", index " << m);
+              tvc.m_verbose_error = "ringct pubkey mismatch at vin " + std::to_string(n) + ", index " + std::to_string(m);
               return false;
             }
             if (ring[m].mask != rct::rct2pk(rv.mixRing[n][m].mask))
             {
               MERROR_VER("Failed to check ringct signatures: mismatched commitment at vin " << n << ", index " << m);
+              tvc.m_verbose_error = "ringct commitment mismatch at vin " + std::to_string(n) + ", index " + std::to_string(m);
               return false;
             }
           }
@@ -3728,6 +3735,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
       if (n_sigs != native_sig_indices.size())
       {
         MERROR_VER("Failed to check ringct signatures: mismatched MGs/vin sizes");
+        tvc.m_verbose_error = "ringct signature count mismatch";
         return false;
       }
       for (size_t n = 0; n < native_sig_indices.size(); ++n)
@@ -3741,13 +3749,15 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
         if (error)
         {
           MERROR_VER("Failed to check ringct signatures: mismatched key image");
+          tvc.m_verbose_error = "ringct key image mismatch";
           return false;
         }
       }
 
-      if (!rct::verRctNonSemanticsSimple(rv))
+      if (!rct::verRctNonSemanticsSimple(rv, hf_version >= feature::CONFIDENTIAL_ASSETS))
       {
         MERROR_VER("Failed to check ringct signatures!");
+        tvc.m_verbose_error = "ringct non-semantics verification failed";
         return false;
       }
       break;
@@ -3804,7 +3814,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
         }
       }
 
-      if (!rct::verRct(rv, false))
+      if (!rct::verRct(rv, false, hf_version >= feature::CONFIDENTIAL_ASSETS))
       {
         MERROR_VER("Failed to check ringct signatures!");
         return false;
@@ -4243,12 +4253,16 @@ bool Blockchain::check_tx_input(const txin_to_key& txin, const crypto::hash& tx_
   if (!scan_outputkeys_for_indexes(txin, vi, tx_prefix_hash, pmax_related_block_height))
   {
     MERROR_VER("Failed to get output keys for tx with amount = " << print_money(txin.amount) << " and count indexes " << txin.key_offsets.size());
+    MGINFO_RED("check_tx_input failed: failed to get output keys for amount " << print_money(txin.amount)
+        << ", input ring size " << txin.key_offsets.size());
     return false;
   }
 
   if(txin.key_offsets.size() != output_keys.size())
   {
     MERROR_VER("Output keys for tx with amount = " << txin.amount << " and count indexes " << txin.key_offsets.size() << " returned wrong keys count " << output_keys.size());
+    MGINFO_RED("check_tx_input failed: output key count mismatch for amount " << print_money(txin.amount)
+        << ", expected " << txin.key_offsets.size() << ", got " << output_keys.size());
     return false;
   }
   // rct_signatures will be expanded after this
@@ -4732,6 +4746,7 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
       if(!check_tx_inputs(tx, tvc))
       {
         MGINFO_RED("Block with id: " << id  << " has at least one transaction (id: " << tx_id << ") with wrong inputs.");
+        MGINFO_RED("Transaction input verification context: " << print_tx_verification_context(tvc, &tx));
 
         add_block_as_invalid(bl);
         MGINFO_RED("Block with id " << id << " added as invalid because of wrong inputs in transactions");
@@ -4936,27 +4951,31 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
     return false;
   }
 
+  const hf blk_hf = get_network_version(new_height - 1);
+
   // Persist validated asset operations once block/tx acceptance has succeeded.
-  try
+  if (blk_hf >= feature::CONFIDENTIAL_ASSETS)
   {
-    std::string append_reason;
-    CHECK_AND_ASSERT_MES(
-        append_assets_from_transactions(*m_db, only_txs, &append_reason),
-        false,
-        "Failed to persist asset operation(s): " << append_reason);
-  }
-  catch (const std::exception& e)
-  {
-    MGINFO_RED("Failed to persist asset operation(s): " << e.what());
-    bvc.m_verifivation_failed = true;
-    return false;
+    try
+    {
+      std::string append_reason;
+      CHECK_AND_ASSERT_MES(
+          append_assets_from_transactions(*m_db, only_txs, &append_reason),
+          false,
+          "Failed to persist asset operation(s): " << append_reason);
+    }
+    catch (const std::exception& e)
+    {
+      MGINFO_RED("Failed to persist asset operation(s): " << e.what());
+      bvc.m_verifivation_failed = true;
+      return false;
+    }
   }
 
   // HF21: index every tx_out_zarcanum output in the per-asset LMDB table.
   // This feeds the BGE surjection ring for future asset transfers.
   if (get_current_blockchain_height() >= 1)
   {
-    const hf blk_hf = get_network_version(new_height - 1);
     if (blk_hf >= feature::CONFIDENTIAL_ASSETS)
     {
       try

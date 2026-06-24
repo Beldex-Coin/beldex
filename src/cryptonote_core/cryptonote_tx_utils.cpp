@@ -1409,7 +1409,7 @@ namespace cryptonote
               tx.rct_signatures = rct::genRctSimple(rct::hash2rct(tx_prefix_hash), inSk, dest_keys, inamounts,
                                                     outamounts,
                                                     amount_in - amount_out, mixRing, amount_keys, msout ? &kLRki : NULL,
-                                                    msout, index, outSk, rct_config, hwdev);
+                                                    msout, index, outSk, rct_config, hwdev, tx_params.hf_version >= feature::CONFIDENTIAL_ASSETS);
           }
           else {
               LOG_PRINT_L2("genRct");

@@ -623,7 +623,7 @@ namespace rct {
       catch (...) { return false; }
     }
 
-    key get_pre_mlsag_hash(const rctSig &rv, hw::device &hwdev)
+    key get_pre_mlsag_hash(const rctSig &rv, hw::device &hwdev, bool hash_bulletproof_plus = false)
     {
         keyV hashes;
         hashes.reserve(3);
@@ -666,7 +666,7 @@ namespace rct {
                 kv.push_back(p.t);
             }
         }
-        else if (rv.type == RCTType::BulletproofPlus)
+        else if (hash_bulletproof_plus && rv.type == RCTType::BulletproofPlus)
         {
             kv.reserve((6 * 2 + 6) * rv.p.bulletproofs_plus.size());
             for (const auto &p : rv.p.bulletproofs_plus)
@@ -791,7 +791,7 @@ namespace rct {
         return result;
     }
 
-    key get_pre_clsag_hash(const rctSig &rv, hw::device &hwdev)
+    key get_pre_clsag_hash(const rctSig &rv, hw::device &hwdev, bool hash_bulletproof_plus)
     {
       keyV hashes;
       hashes.reserve(3);
@@ -834,7 +834,7 @@ namespace rct {
           kv.push_back(p.t);
         }
       }
-      else if (rv.type == RCTType::BulletproofPlus)
+      else if (hash_bulletproof_plus && rv.type == RCTType::BulletproofPlus)
       {
         kv.reserve((6 * 2 + 6) * rv.p.bulletproofs_plus.size());
         for (const auto &p : rv.p.bulletproofs_plus)
@@ -874,7 +874,7 @@ namespace rct {
 
     key get_hf21_asset_proof_message(const cryptonote::transaction& tx, const rct::ctkeyM& rings, hw::device &hwdev)
     {
-      const key pre = get_pre_clsag_hash(tx.rct_signatures, hwdev);
+      const key pre = get_pre_clsag_hash(tx.rct_signatures, hwdev, true);
       std::vector<uint8_t> blob;
       auto append = [&blob](const void* ptr, size_t n) {
         const auto* p = static_cast<const uint8_t*>(ptr);
@@ -1283,7 +1283,7 @@ namespace rct {
     }
     //RCT simple    
     //for post-rct only
-    rctSig genRctSimple(const key &message, const ctkeyV & inSk, const keyV & destinations, const std::vector<xmr_amount> &inamounts, const std::vector<xmr_amount> &outamounts, xmr_amount txnFee, const ctkeyM & mixRing, const keyV &amount_keys, const std::vector<multisig_kLRki> *kLRki, multisig_out *msout, const std::vector<unsigned int> & index, ctkeyV &outSk, const RCTConfig &rct_config, hw::device &hwdev) {
+    rctSig genRctSimple(const key &message, const ctkeyV & inSk, const keyV & destinations, const std::vector<xmr_amount> &inamounts, const std::vector<xmr_amount> &outamounts, xmr_amount txnFee, const ctkeyM & mixRing, const keyV &amount_keys, const std::vector<multisig_kLRki> *kLRki, multisig_out *msout, const std::vector<unsigned int> & index, ctkeyV &outSk, const RCTConfig &rct_config, hw::device &hwdev, bool hash_bulletproof_plus) {
         LOG_PRINT_L0("genRctSimple called with " << inSk.size() << " inputs, " << amount_keys.size() << " amount_keys, " << destinations.size() << " outputs, mixin " << mixRing.size() << ", index[0] " << (index.empty() ? 0 : index[0]) << ", kLRki " << (kLRki ? kLRki->size() : 0) << ", msout " << (msout ? 1 : 0));
         const bool bulletproof_or_plus = rct_config.range_proof_type > RangeProofType::Borromean;
         CHECK_AND_ASSERT_THROW_MES(inamounts.size() > 0, "Empty inamounts");
@@ -1459,7 +1459,7 @@ namespace rct {
         genC(pseudoOuts[i], a[i], inamounts[i]);
         DP(pseudoOuts[i]);
 
-        key full_message = get_pre_clsag_hash(rv, hwdev);
+        key full_message = get_pre_clsag_hash(rv, hwdev, hash_bulletproof_plus);
         if (msout)
         {
             msout->c.resize(inamounts.size());
@@ -1479,7 +1479,7 @@ namespace rct {
         return rv;
     }
 
-    rctSig genRctSimple(const key &message, const ctkeyV & inSk, const ctkeyV & inPk, const keyV & destinations, const std::vector<xmr_amount> &inamounts, const std::vector<xmr_amount> &outamounts, const keyV &amount_keys, const std::vector<multisig_kLRki> *kLRki, multisig_out *msout, xmr_amount txnFee, unsigned int mixin, const RCTConfig &rct_config, hw::device &hwdev) {
+    rctSig genRctSimple(const key &message, const ctkeyV & inSk, const ctkeyV & inPk, const keyV & destinations, const std::vector<xmr_amount> &inamounts, const std::vector<xmr_amount> &outamounts, const keyV &amount_keys, const std::vector<multisig_kLRki> *kLRki, multisig_out *msout, xmr_amount txnFee, unsigned int mixin, const RCTConfig &rct_config, hw::device &hwdev, bool hash_bulletproof_plus) {
         std::vector<unsigned int> index;
         index.resize(inPk.size());
         ctkeyM mixRing;
@@ -1489,7 +1489,7 @@ namespace rct {
           mixRing[i].resize(mixin+1);
           index[i] = populateFromBlockchainSimple(mixRing[i], inPk[i], mixin);
         }
-        return genRctSimple(message, inSk, destinations, inamounts, outamounts, txnFee, mixRing, amount_keys, kLRki, msout, index, outSk, rct_config, hwdev);
+        return genRctSimple(message, inSk, destinations, inamounts, outamounts, txnFee, mixRing, amount_keys, kLRki, msout, index, outSk, rct_config, hwdev, hash_bulletproof_plus);
     }
 
     //RingCT protocol
@@ -1502,7 +1502,7 @@ namespace rct {
     //decodeRct: (c.f. https://eprint.iacr.org/2015/1098 section 5.1.1)
     //   uses the attached ecdh info to find the amounts represented by each output commitment 
     //   must know the destination private key to find the correct amount, else will return a random number    
-    bool verRct(const rctSig & rv, bool semantics) {
+    bool verRct(const rctSig & rv, bool semantics, bool hash_bulletproof_plus) {
         PERF_TIMER(verRct);
         CHECK_AND_ASSERT_MES(rv.type == RCTType::Full, false, "verRct called on non-full rctSig");
         if (semantics)
@@ -1539,7 +1539,7 @@ namespace rct {
           if (!semantics) {
             //compute txn fee
             key txnFeeKey = scalarmultH(d2h(rv.txnFee));
-            bool mgVerd = verRctMG(rv.p.MGs[0], rv.mixRing, rv.outPk, txnFeeKey, get_pre_clsag_hash(rv, hw::get_device("default")));
+            bool mgVerd = verRctMG(rv.p.MGs[0], rv.mixRing, rv.outPk, txnFeeKey, get_pre_clsag_hash(rv, hw::get_device("default"), hash_bulletproof_plus));
             DP("mg sig verified?");
             DP(mgVerd);
             if (!mgVerd) {
@@ -1699,7 +1699,7 @@ namespace rct {
 
     //ver RingCT simple
     //assumes only post-rct style inputs (at least for max anonymity)
-    bool verRctNonSemanticsSimple(const rctSig & rv) {
+    bool verRctNonSemanticsSimple(const rctSig & rv, bool hash_bulletproof_plus) {
       try
       {
         PERF_TIMER(verRctNonSemanticsSimple);
@@ -1722,7 +1722,7 @@ namespace rct {
 
         const keyV &pseudoOuts = bulletproof || bulletproof_plus ? rv.p.pseudoOuts : rv.pseudoOuts;
 
-        const key message = get_pre_clsag_hash(rv, hw::get_device("default"));
+        const key message = get_pre_clsag_hash(rv, hw::get_device("default"), hash_bulletproof_plus);
 
         results.clear();
         results.resize(rv.mixRing.size());
