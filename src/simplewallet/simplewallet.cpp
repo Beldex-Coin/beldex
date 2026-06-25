@@ -5507,6 +5507,7 @@ bool simple_wallet::show_balance_unlocked(bool detailed)
   // HF21: show per-asset balances
   {
     const auto asset_bals = m_wallet->asset_balances(m_current_subaddress_account, false);
+    const auto asset_unlocked_bals = m_wallet->asset_balances(m_current_subaddress_account, true);
     if (!asset_bals.empty())
     {
       success_msg_writer() << tr("Confidential asset balances:");
@@ -5518,9 +5519,20 @@ bool simple_wallet::show_balance_unlocked(bool detailed)
             ? print_asset_amount(amount, asset_info->decimal_point)
             : std::to_string(amount);
 
+        // Fetch unlocked balance
+        uint64_t unlocked_amount = 0;
+        auto unlocked_it = asset_unlocked_bals.find(asset_id);
+        if (unlocked_it != asset_unlocked_bals.end())
+          unlocked_amount = unlocked_it->second;
+
+        const std::string formatted_unlocked = asset_info
+            ? print_asset_amount(unlocked_amount, asset_info->decimal_point)
+            : std::to_string(unlocked_amount);
+
         success_msg_writer() << "  " << asset_hex
                              << (asset_info && !asset_info->ticker.empty() ? " (" + asset_info->ticker + ")" : "")
                              << "  balance: " << formatted_amount
+                             << ", unlocked balance: " << formatted_unlocked
                              << (asset_info ? fmt::format(" [dp={}]", asset_info->decimal_point) : " [atomic units]");
       }
     }
