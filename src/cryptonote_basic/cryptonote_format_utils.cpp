@@ -1213,13 +1213,7 @@ namespace cryptonote
                                rct::key& amount_mask_out,
                                rct::key& asset_blinding_mask_out)
   {
-    // 1. Verify ownership: stealth_address must match derivation
-    crypto::public_key expected;
-    if (!acc.get_device().derive_public_key(derivation, output_index,
-                                            acc.m_account_address.m_spend_public_key, expected))
-      return false;
-    if (expected != zout.stealth_address)
-      return false;
+    // 1. Ownership has already been verified by check_acc_out_precomp_once / is_out_to_acc_precomp
 
     // 2. Recover asset blinding mask r and plaintext asset_id
     //    T = asset_id + r*X  =>  asset_id = T - r*X

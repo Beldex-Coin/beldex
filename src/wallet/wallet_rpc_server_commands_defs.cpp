@@ -55,6 +55,15 @@ KV_SERIALIZE_MAP_CODE_BEGIN(GET_BALANCE::per_subaddress_info)
   KV_SERIALIZE(num_unspent_outputs)
   KV_SERIALIZE(blocks_to_unlock)
   KV_SERIALIZE(time_to_unlock)
+  KV_SERIALIZE(asset_balances)
+KV_SERIALIZE_MAP_CODE_END()
+
+
+KV_SERIALIZE_MAP_CODE_BEGIN(GET_BALANCE::asset_balance_entry)
+  KV_SERIALIZE(asset_id)
+  KV_SERIALIZE(ticker)
+  KV_SERIALIZE(balance)
+  KV_SERIALIZE(unlocked_balance)
 KV_SERIALIZE_MAP_CODE_END()
 
 
