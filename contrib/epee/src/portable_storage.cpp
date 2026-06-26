@@ -169,15 +169,18 @@ namespace epee {
 
     bool portable_storage::get_value(const std::string& value_name, storage_entry& val, section* parent_section)
     {
-      //TRY_ENTRY();
-      if(!parent_section) parent_section = &m_root;
+      if (!parent_section)
+          parent_section = &m_root;
       storage_entry* pentry = find_storage_entry(value_name, parent_section);
       if(!pentry)
         return false;
 
-      val = *pentry;
-      return true;
-      //CATCH_ENTRY("portable_storage::template<>get_value", false);
+      try {
+          val = *pentry;
+          return true;
+      } catch (const std::exception&) {
+          return false;
+      }
     }
 
     storage_entry* portable_storage::find_storage_entry(const std::string& pentry_name, section* psection)
