@@ -1047,7 +1047,9 @@ namespace cryptonote
 
         // Derive blinding scalars for this output index
         crypto::key_derivation derivation{};
-        hwdev.generate_key_derivation(dst_entr.addr.m_view_public_key, tx_key, derivation);
+        bool use_additional = need_additional_txkeys && dst_entr.is_subaddress;
+        const crypto::secret_key& derivation_tx_key = use_additional ? additional_tx_keys[output_index] : tx_key;
+        hwdev.generate_key_derivation(dst_entr.addr.m_view_public_key, derivation_tx_key, derivation);
         LOG_PRINT_L0("Key derivation for output done");
 
         // Blinded asset ID:  T = asset_id + r*X
