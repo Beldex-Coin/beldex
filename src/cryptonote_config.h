@@ -204,6 +204,7 @@ enum class hf : uint8_t
     hf18_bns,
     hf19_enhance_bns, // provided EVM address in BNS
     hf20_bulletproof_plus,
+    hf21_bulletproof_plus,
 
     _next,
     none = 0
