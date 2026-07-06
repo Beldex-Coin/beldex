@@ -182,9 +182,11 @@ struct TransactionInfo
     virtual int  direction() const = 0;
     virtual bool isPending() const = 0;
     virtual bool isFailed() const = 0;
+    virtual bool isCoinbase() const = 0;
     virtual uint64_t amount() const = 0;
     virtual uint64_t fee() const = 0;
     virtual uint64_t blockHeight() const = 0;
+    virtual std::string description() const = 0;
     virtual std::set<uint32_t> subaddrIndex() const = 0;
     virtual uint32_t subaddrAccount() const = 0;
     virtual std::string label() const = 0;
@@ -208,6 +210,7 @@ struct TransactionHistory
     virtual TransactionInfo * transaction(std::string_view id) const = 0;
     virtual std::vector<TransactionInfo*> getAll() const = 0;
     virtual void refresh() = 0;
+    virtual void setTxNote(const std::string &txid, const std::string &note) = 0;
 };
 
 /**
@@ -246,6 +249,7 @@ struct AddressBook
     virtual std::vector<AddressBookRow*> getAll() const = 0;
     virtual bool addRow(const std::string &dst_addr, const std::string &description) = 0;
     virtual bool deleteRow(std::size_t rowId) = 0;
+    virtual bool setDescription(std::size_t index, const std::string &description) = 0;
     virtual void refresh() = 0;
     virtual std::string errorString() const = 0;
     virtual int errorCode() const = 0;
@@ -461,6 +465,12 @@ struct Wallet
         ConnectionStatus_WrongVersion
     };
 
+    enum BackgroundSyncType {
+        BackgroundSync_Off = 0,
+        BackgroundSync_ReusePassword = 1,
+        BackgroundSync_CustomPassword = 2
+    };
+
     virtual ~Wallet() = 0;
     virtual std::string seed() const = 0;
     virtual std::string getSeedLanguage() const = 0;
@@ -471,6 +481,7 @@ struct Wallet
     /// returns error status code (Status_Ok, Status_Error, or Status_Critical) and error string.
     virtual std::pair<int, std::string> status() const = 0;
     virtual bool setPassword(const std::string &password) = 0;
+    virtual const std::string& getPassword() const = 0;
     virtual bool setDevicePin(const std::string &pin) { (void)pin; return false; };
     virtual bool setDevicePassphrase(const std::string &passphrase) { (void)passphrase; return false; };
     virtual std::string address(uint32_t accountIndex = 0, uint32_t addressIndex = 0) const = 0;
@@ -525,6 +536,11 @@ struct Wallet
      * \return                        - public multisignature signer key or empty string if wallet is not multisig
      */
     virtual std::string publicMultisigSignerKey() const = 0;
+
+    /*!
+     * \brief stop - interrupts wallet refresh() loop once (doesn't stop background refresh thread)
+     */
+    virtual void stop() = 0;
 
     /*!
      * \brief store - stores wallet to file.
@@ -614,6 +630,7 @@ struct Wallet
     virtual ConnectionStatus connected() const = 0;
     virtual void setTrustedDaemon(bool arg) = 0;
     virtual bool trustedDaemon() const = 0;
+    virtual bool setProxy(const std::string &address) = 0;
     virtual uint64_t balance(uint32_t accountIndex = 0) const = 0;
     uint64_t balanceAll() const {
         uint64_t result = 0;
@@ -645,6 +662,12 @@ struct Wallet
     * @return - true if watch only
     */
     virtual bool watchOnly() const = 0;
+
+    /**
+     * @brief isDeterministic - checks if wallet keys are deterministic
+     * @return - true if deterministic
+     */
+    virtual bool isDeterministic() const = 0;
 
     /**
      * @brief blockChainHeight - returns current blockchain height.This is thread-safe and will
@@ -1028,12 +1051,71 @@ struct Wallet
     */
     virtual bool importKeyImages(std::string_view filename) = 0;
 
+    /*!
+     * \brief exportOutputs - exports outputs to file
+     * \param filename
+     * \return                  - true on success
+     */
+    virtual bool exportOutputs(const std::string &filename, bool all = false) = 0;
+
+    /*!
+     * \brief importOutputs - imports outputs from file
+     * \param filename
+     * \return                  - true on success
+     */
+    virtual bool importOutputs(const std::string &filename) = 0;
+
+    /*!
+     * \brief setupBackgroundSync       - setup background sync mode with just a view key
+     * \param background_sync_type      - the mode the wallet background syncs in
+     * \param wallet_password
+     * \param background_cache_password - custom password to encrypt background cache, only needed for custom password background sync type
+     * \return                          - true on success
+     */
+    virtual bool setupBackgroundSync(const BackgroundSyncType background_sync_type, const std::string &wallet_password, const std::optional<std::string> &background_cache_password) = 0;
+
+    /*!
+     * \brief getBackgroundSyncType     - get mode the wallet background syncs in
+     * \return                          - the type, or off if type is unknown
+     */
+    virtual BackgroundSyncType getBackgroundSyncType() const = 0;
+
+    /**
+     * @brief startBackgroundSync - sync the chain in the background with just view key
+     */
+    virtual bool startBackgroundSync() = 0;
+
+    /**
+     * @brief stopBackgroundSync  - bring back spend key and process background synced txs
+     * \param wallet_password
+     */
+    virtual bool stopBackgroundSync(const std::string &wallet_password) = 0;
+
+    /**
+     * @brief isBackgroundSyncing - returns true if the wallet is background syncing
+     */
+    virtual bool isBackgroundSyncing() const = 0;
+
+    /**
+     * @brief isBackgroundWallet - returns true if the wallet is a background wallet
+     */
+    virtual bool isBackgroundWallet() const = 0;
 
     virtual TransactionHistory * history() = 0;
     virtual AddressBook * addressBook() = 0;
     virtual Subaddress * subaddress() = 0;
     virtual SubaddressAccount * subaddressAccount() = 0;
     virtual void setListener(WalletListener *) = 0;
+    /*!
+     * \brief defaultMixin - returns number of mixins used in transactions
+     * \return
+     */
+    virtual uint32_t defaultMixin() const = 0;
+    /*!
+     * \brief setDefaultMixin - setum number of mixins to be used for new transactions
+     * \param arg
+     */
+    virtual void setDefaultMixin(uint32_t arg) = 0;
 
     /*!
      * \brief setCacheAttribute - attach an arbitrary string to a wallet cache attribute
@@ -1114,6 +1196,13 @@ struct Wallet
     */
     virtual bool rescanSpent() = 0;
 
+    /*
+    * \brief setOffline - toggle set offline on/off
+    * \param offline - true/false
+    */
+    virtual void setOffline(bool offline) = 0;
+    virtual bool isOffline() const = 0;
+
     //! blackballs a set of outputs
     virtual bool blackballOutputs(const std::vector<std::string> &outputs, bool add) = 0;
 
@@ -1171,6 +1260,15 @@ struct Wallet
 
     //! shows address on device display
     virtual void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) = 0;
+
+    //! attempt to reconnect to hardware device
+    virtual bool reconnectDevice() = 0;
+
+    //! get bytes received
+    virtual uint64_t getBytesReceived() = 0;
+
+    //! get bytes sent
+    virtual uint64_t getBytesSent() = 0;
 };
 
 /**
@@ -1328,8 +1426,14 @@ struct WalletManagerBase
     //! returns current blockchain target height
     virtual uint64_t blockchainTargetHeight() = 0;
 
+    //! returns current network difficulty
+    virtual uint64_t networkDifficulty() = 0;
+
     //! returns current block target
     virtual uint64_t blockTarget() = 0;
+
+    //! sets proxy address, empty string to disable
+    virtual bool setProxy(const std::string &address) = 0;
 };
 
 struct WalletManagerFactory

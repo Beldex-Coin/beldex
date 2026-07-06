@@ -98,6 +98,7 @@ public:
     bool good() const override;
     std::pair<int, std::string> status() const override;
     bool setPassword(const std::string &password) override;
+    const std::string& getPassword() const override;
     bool setDevicePin(const std::string &password) override;
     bool setDevicePassphrase(const std::string &password) override;
     std::string address(uint32_t accountIndex = 0, uint32_t addressIndex = 0) const override;
@@ -108,6 +109,7 @@ public:
     std::string publicSpendKey() const override;
     std::string publicMultisigSignerKey() const override;
     std::string path() const override;
+    void stop() override;
     bool store(std::string_view path) override;
     std::string filename() const override;
     std::string keysFilename() const override;
@@ -116,6 +118,7 @@ public:
     ConnectionStatus connected() const override;
     void setTrustedDaemon(bool arg) override;
     bool trustedDaemon() const override;
+    bool setProxy(const std::string &address) override;
     uint64_t balance(uint32_t accountIndex = 0) const override;
     uint64_t unlockedBalance(uint32_t accountIndex = 0) const override;
     int countBns() override;
@@ -141,6 +144,7 @@ public:
     void setRecoveringFromDevice(bool recoveringFromDevice) override;
     void setSubaddressLookahead(uint32_t major, uint32_t minor) override;
     bool watchOnly() const override;
+    bool isDeterministic() const override;
     bool rescanSpent() override;
     NetworkType nettype() const override {return static_cast<NetworkType>(m_wallet_ptr->nettype());}
     void hardForkInfo(uint8_t &version, uint64_t &earliest_height) const override;
@@ -218,6 +222,15 @@ public:
     UnsignedTransaction* loadUnsignedTx(std::string_view unsigned_filename) override;
     bool exportKeyImages(std::string_view filename) override;
     bool importKeyImages(std::string_view filename) override;
+    bool exportOutputs(const std::string &filename, bool all = false) override;
+    bool importOutputs(const std::string &filename) override;
+
+    bool setupBackgroundSync(const BackgroundSyncType background_sync_type, const std::string &wallet_password, const std::optional<std::string> &background_cache_password = std::optional<std::string>()) override;
+    BackgroundSyncType getBackgroundSyncType() const override;
+    bool startBackgroundSync() override;
+    bool stopBackgroundSync(const std::string &wallet_password) override;
+    bool isBackgroundSyncing() const override;
+    bool isBackgroundWallet() const override;
 
     void disposeTransaction(PendingTransaction * t) override;
     uint64_t estimateTransactionFee(uint32_t priority, uint32_t recipients = 1) const override;
@@ -226,8 +239,15 @@ public:
     Subaddress * subaddress() override;
     SubaddressAccount * subaddressAccount() override;
     void setListener(WalletListener * l) override;
+    virtual uint32_t defaultMixin() const override;
+    virtual void setDefaultMixin(uint32_t arg) override;
+
     bool setCacheAttribute(const std::string &key, const std::string &val) override;
     std::string getCacheAttribute(const std::string &key) const override;
+
+    virtual void setOffline(bool offline) override;
+    virtual bool isOffline() const override;
+
     bool setUserNote(const std::string &txid, const std::string &note) override;
     std::string getUserNote(const std::string &txid) const override;
     std::string getTxKey(const std::string &txid) const override;
@@ -262,6 +282,9 @@ public:
     bool isKeysFileLocked() override;
     uint64_t coldKeyImageSync(uint64_t &spent, uint64_t &unspent) override;
     void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) override;
+    virtual bool reconnectDevice() override;
+    virtual uint64_t getBytesReceived() override;
+    virtual uint64_t getBytesSent() override;
 
 private:
     void clearStatus() const;
@@ -275,8 +298,9 @@ private:
     bool isNewWallet() const;
     void pendingTxPostProcess(PendingTransactionImpl * pending);
     bool doInit(const std::string &daemon_address, uint64_t upper_transaction_size_limit = 0, bool ssl = false);
+    bool checkBackgroundSync(const std::string &message) const;
     bool bns_validate_years(std::string_view map_years, bns::mapping_years *mapping_years);
-   
+
 private:
     friend class PendingTransactionImpl;
     friend class UnsignedTransactionImpl;    
@@ -290,6 +314,10 @@ private:
     mutable std::mutex m_statusMutex;
     LockedWallet wallet() const { return {m_wallet_ptr, m_refreshMutex2}; }
     mutable std::pair<int, std::string> m_status;
+    // TODO: harden password handling in the wallet API, see relevant discussion
+    // https://github.com/monero-project/monero-gui/issues/1537
+    // https://github.com/feather-wallet/feather/issues/72#issuecomment-1405602142
+    // https://github.com/monero-project/monero/pull/8619#issuecomment-1632951461
     std::string m_password;
     std::unique_ptr<TransactionHistoryImpl> m_history;
     std::unique_ptr<Wallet2CallbackImpl> m_wallet2Callback;
