@@ -1887,8 +1887,7 @@ namespace cryptonote
     std::unordered_set<crypto::key_image> ki;
     for(const auto& in: tx.vin)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
-      if(!ki.insert(tokey_in.k_image).second)
+      if(!ki.insert(get_input_key_image(in)).second)
         return false;
     }
     return true;
@@ -1898,9 +1897,16 @@ namespace cryptonote
   {
     for(const auto& in: tx.vin)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
-      for (size_t n = 1; n < tokey_in.key_offsets.size(); ++n)
-        if (tokey_in.key_offsets[n] == 0)
+      const std::vector<uint64_t>* key_offsets = nullptr;
+      if (const auto* tokey_in = std::get_if<txin_to_key>(&in))
+        key_offsets = &tokey_in->key_offsets;
+      else if (const auto* zc_in = std::get_if<txin_zc_input>(&in))
+        key_offsets = &zc_in->key_offsets;
+      else
+        return false;
+
+      for (size_t n = 1; n < key_offsets->size(); ++n)
+        if ((*key_offsets)[n] == 0)
           return false;
     }
 
@@ -1912,8 +1918,7 @@ namespace cryptonote
     std::unordered_set<crypto::key_image> ki;
     for(const auto& in: tx.vin)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
-      if (!(rct::scalarmultKey(rct::ki2rct(tokey_in.k_image), rct::curveOrder()) == rct::identity()))
+      if (!(rct::scalarmultKey(rct::ki2rct(get_input_key_image(in)), rct::curveOrder()) == rct::identity()))
         return false;
     }
     return true;
@@ -2070,9 +2075,10 @@ namespace cryptonote
     return m_blockchain_storage.get_outs(req, res);
   }
   //-----------------------------------------------------------------------------------------------
-  bool core::get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base) const
+  bool core::get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base,
+      output_distribution_type otype, std::vector<uint64_t> *output_indices) const
   {
-    return m_blockchain_storage.get_output_distribution(amount, from_height, to_height, start_height, distribution, base);
+    return m_blockchain_storage.get_output_distribution(amount, from_height, to_height, start_height, distribution, base, otype, output_indices);
   }
   //-----------------------------------------------------------------------------------------------
   void core::get_output_blacklist(std::vector<uint64_t> &blacklist) const

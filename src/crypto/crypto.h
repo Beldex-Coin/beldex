@@ -83,6 +83,8 @@ namespace crypto {
 
   struct key_image: ec_point {};
 
+  struct asset_id : ec_point {};
+
   struct signature {
     ec_scalar c, r;
 
@@ -132,6 +134,7 @@ namespace crypto {
   static_assert(sizeof(ec_point) == 32 && sizeof(ec_scalar) == 32 &&
     sizeof(public_key) == 32 && sizeof(secret_key) == 32 &&
     sizeof(key_derivation) == 32 && sizeof(key_image) == 32 &&
+    sizeof(asset_id) == 32 &&
     sizeof(signature) == 64, "Invalid structure size");
 
   void generate_random_bytes_thread_safe(size_t N, uint8_t *bytes);
@@ -185,6 +188,10 @@ namespace crypto {
   /* Check a public key. Returns true if it is valid, false otherwise.
    */
   bool check_key(const public_key &key);
+
+  /* Check an asset key. Returns true if it is valid, false otherwise.
+   */
+  bool check_asset_key(const asset_id &key);
 
   /* Checks a private key and computes the corresponding public key.
    */
@@ -294,6 +301,9 @@ namespace crypto {
   inline std::ostream &operator <<(std::ostream &o, const crypto::key_image &v) {
     return o << '<' << tools::type_to_hex(v) << '>';
   }
+  inline std::ostream &operator <<(std::ostream &o, const crypto::asset_id &v) {
+    return o << '<' << tools::type_to_hex(v) << '>';
+  }
   inline std::ostream &operator <<(std::ostream &o, const crypto::signature &v) {
     return o << '<' << tools::type_to_hex(v) << '>';
   }
@@ -305,6 +315,7 @@ namespace crypto {
   }
   constexpr inline crypto::public_key null_pkey{};
   const inline crypto::secret_key null_skey{};
+  const inline crypto::asset_id null_aid{};
 }
 
 CRYPTO_MAKE_HASHABLE(public_key)
@@ -313,3 +324,4 @@ CRYPTO_MAKE_HASHABLE(key_image)
 CRYPTO_MAKE_HASHABLE(signature)
 CRYPTO_MAKE_HASHABLE(ed25519_public_key)
 CRYPTO_MAKE_HASHABLE(x25519_public_key)
+CRYPTO_MAKE_HASHABLE(asset_id)

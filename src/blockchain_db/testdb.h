@@ -124,7 +124,7 @@ public:
   virtual bool for_all_outputs(uint64_t amount, const std::function<bool(uint64_t height)> &f) const override { return true; }
   virtual bool is_read_only() const override { return false; }
   virtual std::map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>> get_output_histogram(const std::vector<uint64_t> &amounts, bool unlocked, uint64_t recent_cutoff, uint64_t min_count,cryptonote::network_type nettype) const override { return std::map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>>(); }
-  virtual bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, std::vector<uint64_t> &distribution, uint64_t &base) const override { return false; }
+  virtual bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, std::vector<uint64_t> &distribution, uint64_t &base, output_distribution_type output_type = output_distribution_type::native, std::vector<uint64_t> *output_indices = nullptr) const override { return false; }
 
   virtual void add_txpool_tx(const crypto::hash &txid, const cryptonote::blobdata &blob, const cryptonote::txpool_tx_meta_t& details) override {}
   virtual void update_txpool_tx(const crypto::hash &txid, const cryptonote::txpool_tx_meta_t& details) override {}
@@ -172,6 +172,11 @@ public:
   std::unordered_map<crypto::public_key, master_nodes::proof_info> get_all_master_node_proofs() const override { return {}; }
   void set_master_node_proof(const crypto::public_key &pubkey, const master_nodes::proof_info &proof) override { }
   bool remove_master_node_proof(const crypto::public_key &pubkey) override { return false; }
+  void set_asset_history(const crypto::asset_id &asset_id, const std::string &data) override { }
+  bool get_asset_history(const crypto::asset_id &asset_id, std::string &data) const override { return false; }
+  bool remove_asset_history(const crypto::asset_id &asset_id) override { return false; }
+  bool asset_exists(const crypto::asset_id &asset_id) const override { return false; }
+  std::vector<crypto::asset_id> get_all_asset_ids() const override { return {}; }
 
   virtual void add_alt_block(const crypto::hash &blkid, const cryptonote::alt_block_data_t &data, const cryptonote::blobdata &blob, const cryptonote::blobdata *checkpoint) override {}
   virtual bool get_alt_block(const crypto::hash &blkid, alt_block_data_t *data, cryptonote::blobdata *blob, cryptonote::blobdata *checkpoint) const override { return false; }

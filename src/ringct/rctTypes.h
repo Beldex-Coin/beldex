@@ -183,6 +183,29 @@ namespace rct {
         END_SERIALIZE()
     };
 
+    // 3-layer CLSAG over (G, G, X) for spending a tx_out_zarcanum (HF21+ confidential assets).
+    // Layer 0 (G): stealth address ownership.
+    // Layer 1 (G): amount-commitment difference vs. the pseudo-output is a commitment to 0.
+    // Layer 2 (X): blinded-asset-id difference vs. the pseudo-output is a commitment to 0.
+    struct clsag_ggx {
+        keyV s_g; // responses for layers 0/1 (G), size = ring size
+        keyV s_x; // responses for layer 2 (X), size = ring size
+        key c1;
+
+        key I; // signing key image (layer 0)
+        key D; // auxiliary key image, amount-commitment layer (layer 1)
+        key E; // auxiliary key image, asset-id layer (layer 2)
+
+        BEGIN_SERIALIZE_OBJECT()
+            FIELD(s_g)
+            FIELD(s_x)
+            FIELD(c1)
+            // FIELD(I) - not serialized, it can be reconstructed
+            FIELD(D)
+            FIELD(E)
+        END_SERIALIZE()
+    };
+
     //contains the data for an Borromean sig
     // also contains the "Ci" values such that
     // \sum Ci = C
@@ -277,6 +300,8 @@ namespace rct {
     size_t n_bulletproof_plus_max_amounts(const BulletproofPlus &proof);
     size_t n_bulletproof_plus_amounts(const std::vector<BulletproofPlus> &proofs);
     size_t n_bulletproof_plus_max_amounts(const std::vector<BulletproofPlus> &proofs);
+
+    // HF21 proof wrapper types are defined below (after asset_proofs.h include)
 
     template <typename Archive, typename T>
     auto start_array(Archive& ar, std::string_view tag, std::vector<T>& v, size_t size) {
@@ -615,10 +640,12 @@ namespace rct {
     xmr_amount b2d(bits amountb);
 
     inline const rct::key &pk2rct(const crypto::public_key &pk) { return (const rct::key&)pk; }
+    inline const rct::key &aid2rct(const crypto::asset_id &aid) { return (const rct::key&)aid; }
     inline const rct::key &sk2rct(const crypto::secret_key &sk) { return (const rct::key&)sk; }
     inline const rct::key &ki2rct(const crypto::key_image &ki) { return (const rct::key&)ki; }
     inline const rct::key &hash2rct(const crypto::hash &h) { return (const rct::key&)h; }
     inline const crypto::public_key &rct2pk(const rct::key &k) { return (const crypto::public_key&)k; }
+    inline const crypto::asset_id &rct2aid(const rct::key &k) { return (const crypto::asset_id&)k; }
     inline const crypto::secret_key &rct2sk(const rct::key &k) { return (const crypto::secret_key&)k; }
     inline const crypto::key_image &rct2ki(const rct::key &k) { return (const crypto::key_image&)k; }
     inline const crypto::hash &rct2hash(const rct::key &k) { return (const crypto::hash&)k; }
@@ -669,3 +696,95 @@ VARIANT_TAG(rct::multisig_kLRki, "rct_multisig_kLR", 0x9d);
 VARIANT_TAG(rct::multisig_out, "rct_multisig_out", 0x9e);
 VARIANT_TAG(rct::clsag, "rct_clsag", 0x9f);
 VARIANT_TAG(rct::BulletproofPlus, "rct_bulletproof_plus", 0xa0);
+
+// HF21: asset proof primitives — included after rct namespace so rct::key is defined
+#include "crypto/asset_proofs.h"
+
+// Re-open rct namespace to define proof wrapper structs that depend on
+// both rct::key (defined above) and crypto::*_proof_s (defined in asset_proofs.h).
+namespace rct {
+
+    // ── Confidential asset proof wrappers (HF21+) ────────────────────────────
+    // Embedded in transaction::asset_proofs.
+
+    struct zc_asset_surjection_proof
+    {
+      std::vector<crypto::BGE_proof_s> bge_proofs; // one per ZC output
+      BEGIN_SERIALIZE_OBJECT() FIELD(bge_proofs) END_SERIALIZE()
+    };
+
+    struct zc_balance_proof
+    {
+      key P{};
+      crypto::double_schnorr_sig_s dss; // binds P to mask*G AND tx_pub_key to tx_key.sec*G
+      BEGIN_SERIALIZE_OBJECT() FIELD(P) FIELD(dss) END_SERIALIZE()
+    };
+
+    struct asset_operation_proof
+    {
+      // flags: bit 0 = composition_proof present, bit 1 = g_proof present
+      uint8_t flags = 0;
+      crypto::linear_composition_proof_s composition_proof{};
+      crypto::schnorr_sig_s              g_proof{};
+
+      bool has_composition_proof() const { return flags & 1; }
+      bool has_g_proof()           const { return flags & 2; }
+
+      BEGIN_SERIALIZE_OBJECT()
+        FIELD(flags)
+        if (has_composition_proof()) FIELD(composition_proof)
+        if (has_g_proof())           FIELD(g_proof)
+      END_SERIALIZE()
+    };
+
+    struct asset_operation_ownership_proof
+    {
+      crypto::schnorr_sig_s sig;
+      BEGIN_SERIALIZE_OBJECT() FIELD(sig) END_SERIALIZE()
+    };
+
+    struct ZC_sig
+    {
+      clsag_ggx clsag_sig;
+      key       pseudo_out_amount_commitment;
+      key       pseudo_out_blinded_asset_id;
+      BEGIN_SERIALIZE_OBJECT()
+        FIELD(clsag_sig)
+        FIELD(pseudo_out_amount_commitment)
+        FIELD(pseudo_out_blinded_asset_id)
+      END_SERIALIZE()
+    };
+
+    // HF21: range proof for zarcanum output amounts (prevents integer
+    // overflow / negative-amount inflation attacks). One per transaction,
+    // covering every zarcanum output in that tx. aggregation_proof binds the
+    // real per-output commitments to the fixed-generator auxiliary
+    // commitments that bpp (an unmodified Bulletproof+) range-proves.
+    struct zc_outs_range_proof
+    {
+      BulletproofPlus                       bpp;
+      crypto::vector_ug_aggregation_proof_s aggregation_proof;
+      BEGIN_SERIALIZE_OBJECT()
+        FIELD(bpp)
+        FIELD(aggregation_proof)
+      END_SERIALIZE()
+    };
+
+    using asset_proof_v = std::variant<
+      zc_asset_surjection_proof,
+      zc_balance_proof,
+      asset_operation_proof,
+      asset_operation_ownership_proof,
+      ZC_sig,
+      zc_outs_range_proof
+    >;
+
+} // namespace rct (continued)
+
+// Variant tag registration for binary serialization of asset_proof_v
+VARIANT_TAG(rct::zc_asset_surjection_proof,       "zc_surjection", 0xb0);
+VARIANT_TAG(rct::zc_balance_proof,                "zc_balance",    0xb1);
+VARIANT_TAG(rct::asset_operation_proof,           "asset_op_proof",0xb2);
+VARIANT_TAG(rct::asset_operation_ownership_proof, "asset_owner",   0xb3);
+VARIANT_TAG(rct::ZC_sig,                          "zc_sig",        0xb4);
+VARIANT_TAG(rct::zc_outs_range_proof,             "zc_range_proof",0xb5);

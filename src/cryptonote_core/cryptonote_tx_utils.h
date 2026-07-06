@@ -145,6 +145,15 @@ namespace cryptonote
     rct::key mask;                      //ringct amount mask
     rct::multisig_kLRki multisig_kLRki; //multisig info
 
+    // Confidential asset (HF21+). null_aid = native BDX input (txin_to_key).
+    crypto::asset_id asset_id = crypto::null_aid;
+    rct::key asset_mask = rct::zero();  // real output's asset-id blinding mask (transfer_details::m_asset_mask)
+    // Blinded asset ids of the ring, parallel to `outputs` (same index correspondence).
+    // Only populated/used when is_zarcanum() is true.
+    std::vector<crypto::asset_id> ring_blinded_asset_ids;
+
+    bool is_zarcanum() const { return asset_id != crypto::null_aid; }
+
     void push_output(uint64_t idx, const crypto::public_key &k, uint64_t amount) { outputs.push_back(std::make_pair(idx, rct::ctkey({rct::pk2rct(k), rct::zeroCommit(amount)}))); }
 
     BEGIN_SERIALIZE_OBJECT()
@@ -157,6 +166,9 @@ namespace cryptonote
       FIELD(rct)
       FIELD(mask)
       FIELD(multisig_kLRki)
+      FIELD(asset_id)
+      FIELD(asset_mask)
+      FIELD(ring_blinded_asset_ids)
 
       if (real_output >= outputs.size())
         throw std::invalid_argument{"invalid real_output size"};
@@ -170,10 +182,14 @@ namespace cryptonote
     account_public_address addr;        // Destination Address
     bool is_subaddress;
     bool is_integrated;
+    // Confidential asset (HF21+). null_pkey = native BDX output (txout_to_key).
+    crypto::asset_id asset_id = crypto::null_aid;
 
     tx_destination_entry() : amount(0), addr{}, is_subaddress(false), is_integrated(false) { }
     tx_destination_entry(uint64_t a, const account_public_address &ad, bool is_subaddress) : amount(a), addr(ad), is_subaddress(is_subaddress), is_integrated(false) { }
     tx_destination_entry(const std::string &o, uint64_t a, const account_public_address &ad, bool is_subaddress) : original(o), amount(a), addr(ad), is_subaddress(is_subaddress), is_integrated(false) { }
+
+    bool is_zarcanum() const { return asset_id != crypto::null_aid; }
 
     bool operator==(const tx_destination_entry& other) const
     {
@@ -201,6 +217,7 @@ namespace cryptonote
       FIELD(addr)
       FIELD(is_subaddress)
       FIELD(is_integrated)
+      FIELD(asset_id)
     END_SERIALIZE()
   };
 

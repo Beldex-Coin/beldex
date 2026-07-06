@@ -186,6 +186,8 @@ private:
     wallet::pay_type type;
     uint64_t amount;
     uint64_t unlock_time;
+    // HF21: null_aid = native BDX output
+    crypto::asset_id asset_id = crypto::null_aid;
   };
 
   class hashchain
@@ -311,6 +313,9 @@ private:
       uint64_t unlock_time;
       bool error;
       std::optional<cryptonote::subaddress_receive_info> received;
+      // HF21: confidential asset fields (null = native BDX)
+      crypto::asset_id  asset_id         = crypto::null_aid;
+      rct::key           asset_mask      = rct::zero();
 
       tx_scan_info_t(): amount(0), money_transfered(0), error(true) {}
     };
@@ -327,8 +332,11 @@ private:
       cryptonote::subaddress_index m_subaddr_index;
       bool m_unmined_flash;
       bool m_was_flash;
+      // HF21: asset ID for confidential asset outputs; null = native BDX
+      crypto::asset_id m_asset_id = crypto::null_aid;
 
       bool is_coinbase() const { return ((m_type == wallet::pay_type::miner) || (m_type == wallet::pay_type::master_node) || (m_type == wallet::pay_type::governance)); }
+      bool is_asset()    const { return m_asset_id != crypto::null_aid; }
     };
 
     struct address_tx : payment_details
@@ -446,7 +454,8 @@ private:
       crypto::signature key_image_sig;
     };
 
-    typedef std::tuple<uint64_t, crypto::public_key, rct::key> get_outs_entry;
+    // (global_index, pubkey, amount commitment, blinded asset id -- null_pkey for native outputs)
+    typedef std::tuple<uint64_t, crypto::public_key, rct::key, crypto::asset_id> get_outs_entry;
 
     struct parsed_block
     {
@@ -730,9 +739,14 @@ private:
     // locked & unlocked balance per subaddress of given or current subaddress account
     std::map<uint32_t, uint64_t> balance_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
     std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> unlocked_balance_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
+    std::map<uint32_t, std::unordered_map<crypto::asset_id, uint64_t>> asset_balances_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
+    std::map<uint32_t, std::unordered_map<crypto::asset_id, uint64_t>> unlocked_asset_balances_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
     // all locked & unlocked balances of all subaddress accounts
     uint64_t balance_all(bool strict) const;
     uint64_t unlocked_balance_all(bool strict, uint64_t *blocks_to_unlock = NULL, uint64_t *time_to_unlock = NULL) const;
+
+    // HF21: per-asset balances — maps asset_id → total amount held in unspent ZC outputs
+    std::unordered_map<crypto::asset_id, uint64_t> asset_balances(uint32_t subaddr_index_major, bool strict) const;
     void transfer_selected_rct(std::vector<cryptonote::tx_destination_entry> dsts, const std::vector<size_t>& selected_transfers, size_t fake_outputs_count,
       std::vector<std::vector<tools::wallet2::get_outs_entry>> &outs,
       uint64_t unlock_time, uint64_t fee, const std::vector<uint8_t>& extra, cryptonote::transaction& tx, pending_tx &ptx, const rct::RCTConfig &rct_config, const cryptonote::beldex_construct_tx_params &beldex_tx_params);
@@ -758,6 +772,33 @@ private:
     bool load_tx(const fs::path& signed_filename, std::vector<pending_tx>& ptx, std::function<bool(const signed_tx_set&)> accept_func = NULL);
     bool parse_tx_from_str(std::string_view signed_tx_st, std::vector<pending_tx> &ptx, std::function<bool(const signed_tx_set &)> accept_func);
     std::vector<pending_tx> create_transactions_2(std::vector<cryptonote::tx_destination_entry> dsts, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra_base, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, cryptonote::beldex_construct_tx_params &tx_params, const unique_index_container& subtract_fee_from_outputs = {});     // pass subaddr_indices by value on purpose
+
+    // HF21: build a deploy_new_asset or emit_asset transaction.
+    // Automatically pads ZC destinations with self-sends to reach
+    // MIN_ASSET_EMISSION_OUTPUTS so the blockchain fan-out rule passes.
+    std::vector<pending_tx> create_asset_deploy_tx(
+        std::vector<cryptonote::tx_destination_entry> dsts,
+        const crypto::asset_id& asset_id,
+        const size_t fake_outs_count,
+        uint32_t priority,
+        const std::vector<uint8_t>& extra,
+        uint32_t subaddr_account,
+        std::set<uint32_t> subaddr_indices);
+    std::vector<pending_tx> create_asset_emit_tx(
+        std::vector<cryptonote::tx_destination_entry> dsts,
+        const crypto::asset_id& asset_id,
+        const size_t fake_outs_count,
+        uint32_t priority,
+        const std::vector<uint8_t>& extra,
+        uint32_t subaddr_account,
+        std::set<uint32_t> subaddr_indices);
+    std::vector<pending_tx> create_asset_update_tx(
+        const crypto::asset_id& asset_id,
+        const size_t fake_outs_count,
+        uint32_t priority,
+        const std::vector<uint8_t>& extra,
+        uint32_t subaddr_account,
+        std::set<uint32_t> subaddr_indices);
 
     std::vector<pending_tx> create_transactions_all(uint64_t below, const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, cryptonote::txtype tx_type = cryptonote::txtype::standard);
     std::vector<pending_tx> create_transactions_single(const crypto::key_image &ki, const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, cryptonote::txtype tx_type = cryptonote::txtype::standard);
@@ -909,8 +950,16 @@ private:
         {
           const transfer_details &td = m_transfers[i];
           const cryptonote::tx_out &out = td.m_tx.vout[td.m_internal_output_index];
-          const cryptonote::txout_to_key &o = var::get<cryptonote::txout_to_key>(out.target);
-          m_pub_keys.emplace(o.key, i);
+          if (std::holds_alternative<cryptonote::tx_out_zarcanum>(out.target))
+          {
+            // Zarcanum outputs are indexed by stealth_address, not a plain pubkey.
+            m_pub_keys.emplace(var::get<cryptonote::tx_out_zarcanum>(out.target).stealth_address, i);
+          }
+          else
+          {
+            const cryptonote::txout_to_key &o = var::get<cryptonote::txout_to_key>(out.target);
+            m_pub_keys.emplace(o.key, i);
+          }
         }
         return;
       }
@@ -1508,13 +1557,14 @@ private:
     cryptonote::byte_and_output_fees get_dynamic_base_fee_estimate() const;
     float get_output_relatedness(const transfer_details &td0, const transfer_details &td1) const;
     std::vector<size_t> pick_preferred_rct_inputs(uint64_t needed_money, uint32_t subaddr_account, const std::set<uint32_t> &subaddr_indices) const;
+    std::unordered_map<crypto::asset_id, std::vector<size_t>> pick_preferred_rct_inputs_for_asset(const std::unordered_map<crypto::asset_id, uint64_t> &asset_amounts, uint32_t subaddr_account, const std::set<uint32_t> &subaddr_indices) const;
     void set_spent(size_t idx, uint64_t height);
     void set_unspent(size_t idx);
     bool is_spent(const transfer_details &td, bool strict = true) const;
     bool is_spent(size_t idx, bool strict = true) const;
     void get_outs(std::vector<std::vector<get_outs_entry>> &outs, const std::vector<size_t> &selected_transfers, size_t fake_outputs_count, bool has_rct);
     void get_outs(std::vector<std::vector<get_outs_entry>> &outs, const std::vector<size_t> &selected_transfers, size_t fake_outputs_count, std::vector<uint64_t> &rct_offsets, bool has_rct);
-    bool tx_add_fake_output(std::vector<std::vector<tools::wallet2::get_outs_entry>> &outs, uint64_t global_index, const crypto::public_key& tx_public_key, const rct::key& mask, uint64_t real_index, bool unlocked) const;
+    bool tx_add_fake_output(std::vector<std::vector<tools::wallet2::get_outs_entry>> &outs, uint64_t global_index, const crypto::public_key& tx_public_key, const rct::key& mask, uint64_t real_index, bool unlocked, const crypto::asset_id& blinded_asset_id = crypto::null_aid) const;
     bool should_pick_a_second_output(size_t n_transfers, const std::vector<size_t> &unused_transfers_indices, const std::vector<size_t> &unused_dust_indices) const;
     std::vector<size_t> get_only_rct(const std::vector<size_t> &unused_dust_indices, const std::vector<size_t> &unused_transfers_indices) const;
     void scan_output(const cryptonote::transaction &tx, bool miner_tx, const crypto::public_key &tx_pub_key, size_t vout_index, tx_scan_info_t &tx_scan_info, std::vector<tx_money_got_in_out> &tx_money_got_in_outs, std::vector<size_t> &outs, bool pool, bool flash);
@@ -1535,7 +1585,9 @@ private:
     void register_devices();
     hw::device& lookup_device(const std::string & device_descriptor);
 
-    bool get_rct_distribution(uint64_t &start_height, std::vector<uint64_t> &distribution);
+    bool get_rct_distribution(
+        uint64_t &native_start_height, std::vector<uint64_t> &native_offsets, std::vector<uint64_t> &native_output_indices,
+        uint64_t &asset_start_height,  std::vector<uint64_t> &asset_offsets,  std::vector<uint64_t> &asset_output_indices);
     bool get_output_blacklist(std::vector<uint64_t> &blacklist);
 
     uint64_t get_segregation_fork_height() const;

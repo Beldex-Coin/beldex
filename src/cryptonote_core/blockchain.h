@@ -566,7 +566,9 @@ namespace cryptonote
      * @param return-by-reference distribution the start offset of the first rct output in this block (same as previous if none)
      * @param return-by-reference base how many outputs of that amount are before the stated distribution
      */
-    bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base) const;
+    bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base,
+        output_distribution_type otype = output_distribution_type::native,
+        std::vector<uint64_t> *output_indices = nullptr) const;
 
     /**
      * @brief gets global output indexes that should not be used, i.e. registration tx outputs
@@ -1187,6 +1189,12 @@ namespace cryptonote
     template<class visitor_t>
     bool scan_outputkeys_for_indexes(const txin_to_key& tx_in_to_key, visitor_t &vis, const crypto::hash &tx_prefix_hash, uint64_t* pmax_related_block_height = NULL) const;
 
+    // HF21: confidential asset (zarcanum) input variant. Outputs are stored in
+    // the same amount=0 bucket as native rct outputs; the visitor additionally
+    // receives each ring member's blinded_asset_id.
+    template<class visitor_t>
+    bool scan_outputkeys_for_indexes(const txin_zc_input& tx_in_zc, visitor_t &vis, const crypto::hash &tx_prefix_hash, uint64_t* pmax_related_block_height = NULL) const;
+
     /**
      * @brief collect output public keys of a transaction input set
      *
@@ -1205,6 +1213,11 @@ namespace cryptonote
      * @return false if any output is not yet unlocked, or is missing, otherwise true
      */
     bool check_tx_input(const txin_to_key& txin, const crypto::hash& tx_prefix_hash, std::vector<rct::ctkey> &output_keys, uint64_t* pmax_related_block_height);
+
+    // HF21: confidential asset (zarcanum) analogue of check_tx_input. Populates
+    // output_keys (stealth_address, amount_commitment) the same way check_tx_input
+    // does, plus a parallel ring of each member's blinded_asset_id.
+    bool check_tx_input_zc(const txin_zc_input& txin, const crypto::hash& tx_prefix_hash, std::vector<rct::ctkey> &output_keys, std::vector<crypto::asset_id> &output_blinded_asset_ids, uint64_t* pmax_related_block_height);
 
     /**
      * @brief validate a transaction's inputs and their keys

@@ -170,7 +170,32 @@ namespace cryptonote
   bool get_encrypted_payment_id_from_tx_extra_nonce(const blobdata& extra_nonce, crypto::hash8& payment_id);
   bool add_burned_amount_to_tx_extra(std::vector<uint8_t>& tx_extra, uint64_t burn);
   uint64_t get_burned_amount_from_tx_extra(const std::vector<uint8_t>& tx_extra);
+  bool add_asset_descriptor_operation_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_asset_descriptor_operation& op);
+  bool get_asset_descriptor_operation_from_tx_extra(const std::vector<uint8_t>& tx_extra, tx_extra_asset_descriptor_operation& op, size_t skip = 0);
   bool is_out_to_acc(const account_keys& acc, const txout_to_key& out_key, const crypto::public_key& tx_pub_key, const std::vector<crypto::public_key>& additional_tx_public_keys, size_t output_index);
+  // Overload for confidential asset outputs (HF21+): checks stealth_address match.
+  bool is_out_to_acc(const account_keys& acc, const tx_out_zarcanum& zout, const crypto::public_key& tx_pub_key, size_t output_index);
+
+  // HF21: domain-separated scalar derivation for zarcanum output fields.
+  // Produces a deterministic scalar from a shared key_derivation + output_index + domain tag.
+  // domain: "asset_blind" → asset ID blinding scalar r (T = asset_id + r*X)
+  //         "amount_mask" → Pedersen mask          (C = amount*asset_id + mask*G)
+  //         "enc_amount"  → amount encryption mask (enc = amount XOR le64(mask))
+  rct::key zarcanum_derivation_to_scalar(const crypto::key_derivation& derivation,
+                                          size_t output_index,
+                                          const char* domain);
+
+  // HF21: decode a tx_out_zarcanum received by acc.
+  // Returns false if the output does not belong to acc.
+  // On success fills: amount, asset_id, amount_mask, asset_blinding_mask.
+  bool decode_zarcanum_output(const account_keys& acc,
+                               const tx_out_zarcanum& zout,
+                               const crypto::key_derivation& derivation,
+                               size_t output_index,
+                               uint64_t& amount_out,
+                               crypto::asset_id& asset_id_out,
+                               rct::key& amount_mask_out,
+                               rct::key& asset_blinding_mask_out);
   struct subaddress_receive_info
   {
     subaddress_index index;
@@ -207,6 +232,10 @@ namespace cryptonote
   bool parse_and_validate_block_from_blob(const std::string_view b_blob, block& b, crypto::hash &block_hash);
   bool get_inputs_money_amount(const transaction& tx, uint64_t& money);
   uint64_t get_outs_money_amount(const transaction& tx);
+  // Key image of any spending input (txin_to_key or, HF21+, txin_zc_input).
+  // Throws if `in` is neither (txin_gen/txin_to_script/txin_to_scripthash
+  // never appear in a spending tx's vin).
+  const crypto::key_image& get_input_key_image(const txin_v& in);
   bool check_inputs_types_supported(const transaction& tx);
   bool check_outs_valid(const transaction& tx);
   bool parse_amount(uint64_t& amount, std::string_view str_amount);

@@ -121,8 +121,15 @@ struct output_data_t
   uint64_t           unlock_time;  //!< the output's unlock time (or height)
   uint64_t           height;       //!< the height of the block which created the output
   rct::key           commitment;   //!< the output's amount commitment (for spend verification)
+  crypto::asset_id blinded_asset_id; //!< null for native outputs, blinded asset id for confidential asset outputs
 };
 #pragma pack(pop)
+
+enum class output_distribution_type : uint8_t
+{
+  native = 1,
+  asset = 2,
+};
 
 #pragma pack(push, 1)
 struct tx_data_t
@@ -1782,7 +1789,7 @@ public:
    */
   virtual std::map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>> get_output_histogram(const std::vector<uint64_t> &amounts, bool unlocked, uint64_t recent_cutoff, uint64_t min_count,cryptonote::network_type nettype) const = 0;
 
-  virtual bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, std::vector<uint64_t> &distribution, uint64_t &base) const = 0;
+  virtual bool get_output_distribution(uint64_t amount, uint64_t from_height, uint64_t to_height, std::vector<uint64_t> &distribution, uint64_t &base, output_distribution_type output_type = output_distribution_type::native, std::vector<uint64_t> *output_indices = nullptr) const = 0;
 
   /**
    * @brief is BlockchainDB in read-only mode?
@@ -1822,6 +1829,12 @@ public:
   /// Removes stored serialized proof mn data associated with the given pubkey.  Returns true if
   /// found, false if not found.
   virtual bool remove_master_node_proof(const crypto::public_key &pubkey) = 0;
+
+  virtual void set_asset_history(const crypto::asset_id &asset_id, const std::string &data) = 0;
+  virtual bool get_asset_history(const crypto::asset_id &asset_id, std::string &data) const = 0;
+  virtual bool remove_asset_history(const crypto::asset_id& asset_id) = 0;
+  virtual bool asset_exists(const crypto::asset_id &asset_id) const = 0;
+  virtual std::vector<crypto::asset_id> get_all_asset_ids() const = 0;
 
   // This function accepts an empty timestamps/difficulties array to fill, or
   // a prior timestamps/difficulties array that was filled by a previous call to

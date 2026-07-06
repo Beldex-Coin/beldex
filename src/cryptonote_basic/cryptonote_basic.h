@@ -92,6 +92,30 @@ namespace cryptonote
     crypto::public_key key;
   };
 
+  // Confidential asset output (HF21+).
+  // Carries a blinded asset ID and a Pedersen amount commitment; the plaintext
+  // amount and asset identity are only recoverable by the recipient.
+  struct tx_out_zarcanum
+  {
+    crypto::public_key stealth_address   = crypto::null_pkey; // one-time stealth address
+    crypto::public_key concealing_point  = crypto::null_pkey; // Q = q*G; receiver uses for key recovery
+    crypto::public_key amount_commitment = crypto::null_pkey; // C = amount*asset_id + mask*G
+    crypto::asset_id   blinded_asset_id  = crypto::null_aid; // T = asset_id + r*X
+    uint64_t           encrypted_amount  = 0;                 // amount XOR H_s("enc"||derivation||idx)
+    uint8_t            mix_attr          = 0;
+    uint8_t            version           = 0;
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(stealth_address)
+      FIELD(concealing_point)
+      FIELD(amount_commitment)
+      FIELD(blinded_asset_id)
+      VARINT_FIELD(encrypted_amount)
+      FIELD(mix_attr)
+      FIELD(version)
+    END_SERIALIZE()
+  };
+
 
   /* inputs */
 
@@ -145,10 +169,30 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Confidential-asset/ZC input scaffold. This variant is introduced so tx construction and
+  // verification code can progressively adopt CA-specific signing/proof logic without changing
+  // legacy txin_to_key semantics.
+  struct txin_zc_input
+  {
+    std::vector<uint64_t> key_offsets;
+    crypto::key_image k_image;
+    crypto::public_key asset_id = crypto::null_pkey;
+    crypto::public_key amount_commitment = crypto::null_pkey;
+    crypto::public_key blinded_asset_id = crypto::null_pkey;
 
-  using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key>;
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(key_offsets)
+      FIELD(k_image)
+      FIELD(asset_id)
+      FIELD(amount_commitment)
+      FIELD(blinded_asset_id)
+    END_SERIALIZE()
+  };
 
-  using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key>;
+
+  using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key, txin_zc_input>;
+
+  using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key, tx_out_zarcanum>;
 
   //typedef std::pair<uint64_t, txout> out_t;
   struct tx_out
@@ -183,7 +227,7 @@ namespace cryptonote
     txversion version;
     txtype type;
 
-    bool is_transfer() const { return type == txtype::standard || type == txtype::stake || type == txtype::beldex_name_system || type == txtype::coin_burn; }
+    bool is_transfer() const { return type == txtype::standard || type == txtype::stake || type == txtype::beldex_name_system || type == txtype::coin_burn || type == txtype::deploy_new_asset || type == txtype::emit_asset || type == txtype::update_asset; }
 
     // not used after version 2, but remains for compatibility
     uint64_t unlock_time;  //number of block (or time), used as a limitation like: spend this tx not early then block/time
@@ -244,6 +288,12 @@ namespace cryptonote
     std::vector<std::vector<crypto::signature>> signatures; //count signatures  always the same as inputs count
     rct::rctSig rct_signatures;
 
+    // Confidential asset proofs (HF21+). Empty for non-asset transactions.
+    // Contains: zc_asset_surjection_proof, zc_balance_proof,
+    //           asset_operation_proof, asset_operation_ownership_proof,
+    //           ZC_sig (one per ZC input being spent).
+    std::vector<rct::asset_proof_v> asset_proofs;
+
     // hash cache
     mutable crypto::hash hash;
     mutable size_t blob_size;
@@ -252,6 +302,12 @@ namespace cryptonote
 
     std::atomic<unsigned int> unprunable_size;
     std::atomic<unsigned int> prefix_size;
+
+    // Returns true if any output is a tx_out_zarcanum (confidential asset).
+    bool has_zarcanum_outputs() const {
+      return std::any_of(vout.begin(), vout.end(),
+        [](const tx_out& o){ return std::holds_alternative<tx_out_zarcanum>(o.target); });
+    }
 
     transaction() { set_null(); }
     transaction(const transaction &t);
@@ -332,8 +388,29 @@ namespace cryptonote
           {
             ar.tag("rctsig_prunable");
             auto obj = ar.begin_object();
-            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, vin.size(), vout.size(),
-                vin.size() > 0 && std::holds_alternative<txin_to_key>(vin[0]) ? var::get<txin_to_key>(vin[0]).key_offsets.size() - 1 : 0);
+            size_t mixin = 0;
+            if (!vin.empty())
+            {
+              if (std::holds_alternative<txin_to_key>(vin[0]))
+                mixin = var::get<txin_to_key>(vin[0]).key_offsets.size() - 1;
+              else if (std::holds_alternative<txin_zc_input>(vin[0]))
+                mixin = var::get<txin_zc_input>(vin[0]).key_offsets.size() - 1;
+            }
+            // HF21: zarcanum (txin_zc_input) inputs are proven via their own
+            // ZC_sig in asset_proofs, not via the native CLSAGs/pseudoOuts
+            // arrays here -- those are sized to the native-only input count.
+            size_t native_inputs = 0;
+            for (const auto& in : vin)
+              if (std::holds_alternative<txin_to_key>(in))
+                ++native_inputs;
+            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, native_inputs, vout.size(), mixin);
+          }
+
+          // HF21: confidential asset proofs (present only when has_zarcanum_outputs() or for update_asset txs)
+          if (!asset_proofs.empty() || has_zarcanum_outputs() || type == txtype::update_asset)
+          {
+            ar.tag("asset_proofs");
+            serialization::value(ar, asset_proofs);
           }
         }
       }
@@ -533,7 +610,8 @@ namespace cryptonote
   constexpr txtype transaction_prefix::get_max_type_for_hf(hf hf_version)
   {
     txtype result = txtype::standard;
-    if      (hf_version >= hf::hf18_bns)              result = txtype::coin_burn;
+    if      (hf_version >= feature::CONFIDENTIAL_ASSETS) result = txtype::update_asset;
+    else if (hf_version >= hf::hf18_bns)              result = txtype::coin_burn;
     else if (hf_version >= hf::hf16)                  result = txtype::beldex_name_system;
     else if (hf_version >= hf::hf15_flash)            result = txtype::stake;
     else if (hf_version >= hf::hf11_infinite_staking) result = txtype::key_image_unlock;
@@ -564,6 +642,9 @@ namespace cryptonote
       case txtype::stake:                   return "stake";
       case txtype::beldex_name_system:      return "beldex_name_system";
       case txtype::coin_burn:               return "coin_burn";
+      case txtype::deploy_new_asset:        return "deploy_new_asset";
+      case txtype::emit_asset:              return "emit_asset";
+      case txtype::update_asset:            return "update_asset";
       default: assert(false);               return "xx_unhandled_type";
     }
   }
@@ -611,8 +692,10 @@ VARIANT_TAG(cryptonote::txin_gen, "gen", 0xff);
 VARIANT_TAG(cryptonote::txin_to_script, "script", 0x0);
 VARIANT_TAG(cryptonote::txin_to_scripthash, "scripthash", 0x1);
 VARIANT_TAG(cryptonote::txin_to_key, "key", 0x2);
+VARIANT_TAG(cryptonote::txin_zc_input, "zc_input", 0x3);
 VARIANT_TAG(cryptonote::txout_to_script, "script", 0x0);
 VARIANT_TAG(cryptonote::txout_to_scripthash, "scripthash", 0x1);
 VARIANT_TAG(cryptonote::txout_to_key, "key", 0x2);
+VARIANT_TAG(cryptonote::tx_out_zarcanum, "zarcanum", 0x3);
 VARIANT_TAG(cryptonote::transaction, "tx", 0xcc);
 VARIANT_TAG(cryptonote::block, "block", 0xbb);

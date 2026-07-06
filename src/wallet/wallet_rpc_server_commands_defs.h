@@ -102,6 +102,17 @@ namespace tools::wallet_rpc {
       KV_MAP_SERIALIZABLE
     };
 
+    // HF21: per-asset balance entry
+    struct asset_balance_entry
+    {
+      std::string asset_id;           // Hex-encoded asset pubkey
+      std::string ticker;             // Asset ticker symbol (e.g. "TKN")
+      uint64_t    balance;            // Total balance (atomic units of the asset)
+      uint64_t    unlocked_balance;   // Spendable balance
+
+      KV_MAP_SERIALIZABLE
+    };
+
     struct per_subaddress_info
     {
       uint32_t account_index;       // Index of the account in the wallet.
@@ -113,9 +124,11 @@ namespace tools::wallet_rpc {
       uint64_t num_unspent_outputs; // Number of unspent outputs available for the subaddress.
       uint64_t blocks_to_unlock;    // The number of blocks remaining for the balance to unlock
       uint64_t time_to_unlock;      // Timestamp of expected unlock
+      std::vector<asset_balance_entry> asset_balances; // HF21: per-asset balances for this subaddress
 
       KV_MAP_SERIALIZABLE
     };
+
 
     struct response
     {
@@ -125,6 +138,8 @@ namespace tools::wallet_rpc {
       std::vector<per_subaddress_info> per_subaddress; // Balance information for each subaddress in an account.
       uint64_t blocks_to_unlock;                       // The number of blocks remaining for the balance to unlock
       uint64_t   time_to_unlock;                       // Timestamp of expected unlock
+      // HF21: per-asset balances (empty for wallets with no confidential asset outputs)
+      std::vector<asset_balance_entry> asset_balances;
 
       KV_MAP_SERIALIZABLE
     };
@@ -2585,7 +2600,133 @@ This command is only required if the open wallet is one of the owners of a BNS r
       KV_MAP_SERIALIZABLE
     };
   };
-  
+
+  // HF21: Deploy a new confidential asset on-chain.
+  struct DEPLOY_NEW_ASSET : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("deploy_new_asset"); }
+    static constexpr const char* description =
+        "Deploy a new confidential asset. Pass the path to a JSON descriptor file containing: "
+        "ticker, full_name, total_max_supply, current_supply, decimal_point, hidden_supply, meta_info.";
+
+    struct request
+    {
+      std::string json_filename;              // Path to the asset JSON descriptor file
+      uint32_t account_index = 0;             // Account to use for fees
+      uint32_t priority = 0;                  // Transaction priority
+      std::set<uint32_t> subaddr_indices;     // (Optional) Subaddresses to use for fees
+      bool get_tx_hex = false;                // (Optional) Return TX as hex
+      bool get_tx_key = false;                // (Optional) Return TX key
+      bool do_not_relay = false;              // (Optional) Don't broadcast to network
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      std::string asset_id;       // Hex-encoded calculated asset ID
+      std::string tx_hash;        // Transaction hash of the deploy tx
+      std::string tx_key;         // Transaction key (if requested)
+      std::string tx_hex;         // Transaction hex blob (if requested)
+      std::string ticker;         // Confirmed ticker from descriptor
+      std::string full_name;      // Full name from descriptor
+      uint64_t tx_fee = 0;        // Fee paid in this transaction
+
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
+  BELDEX_RPC_DOC_INTROSPECT
+  // HF21: Get a list of assets created by the wallet
+  struct GET_OWNED_ASSETS : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("get_owned_assets"); }
+
+    struct request {
+      std::string owner;          // Optional wallet address or spend public key hex to filter by owner
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct asset_info {
+      std::string asset_id;        // Hex-encoded asset public key
+      std::string full_name;       // Asset full name
+      std::string ticker;          // Asset ticker symbol
+      uint64_t max_supply;
+      uint64_t current_supply;
+      uint8_t  decimal_point;
+      std::string meta_info;
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response {
+      std::vector<asset_info> assets;
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
+  // HF21: Emit additional tokens for an existing confidential asset.
+  struct EMIT_ASSET : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("emit_asset"); }
+
+    struct request
+    {
+      std::string asset_id;        // Hex-encoded asset ID
+      uint64_t amount;             // Amount to mint (in atomic units)
+      uint32_t priority;           // Transaction priority
+      uint32_t account_index;      // (Optional) Index of the account to pay for the transaction fees. (defaults to 0)
+      std::set<uint32_t> subaddr_indices; // (Optional) List of subaddresses to pay for the transaction fees.
+      bool do_not_relay;           // (Optional) If true, the newly created transaction will not be relayed to the network.
+      bool get_tx_hex;             // (Optional) Return the transaction as hex string.
+      bool get_tx_metadata;        // (Optional) Return transaction metadata.
+      bool get_tx_key;             // (Optional) Return the transaction key.
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      std::string tx_hash;
+      std::string tx_key;
+      uint64_t fee;
+      std::string tx_blob;
+      std::string tx_metadata;
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
+  // HF21: Update an existing confidential asset metadata.
+  struct UPDATE_ASSET : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("update_asset"); }
+
+    struct request
+    {
+      std::string asset_id;        // Hex-encoded asset ID
+      std::string json_filename;   // Path to the asset JSON descriptor file containing metadata to update
+      uint32_t priority;           // Transaction priority
+      uint32_t account_index;      // (Optional) Index of the account to pay for the transaction fees. (defaults to 0)
+      std::set<uint32_t> subaddr_indices; // (Optional) List of subaddresses to pay for the transaction fees.
+      bool do_not_relay;           // (Optional) If true, the newly created transaction will not be relayed to the network.
+      bool get_tx_hex;             // (Optional) Return the transaction as hex string.
+      bool get_tx_metadata;        // (Optional) Return transaction metadata.
+      bool get_tx_key;             // (Optional) Return the transaction key.
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      std::string tx_hash;
+      std::string tx_key;
+      uint64_t fee;
+      std::string tx_blob;
+      std::string tx_metadata;
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
   /// List of all supported rpc command structs to allow compile-time enumeration of all supported
   /// RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   /// a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2690,7 +2831,11 @@ This command is only required if the open wallet is one of the owners of a BNS r
     BNS_ADD_KNOWN_NAMES,
     BNS_DECRYPT_VALUE,
     BNS_ENCRYPT_VALUE,
-    COIN_BURN
+    COIN_BURN,
+    DEPLOY_NEW_ASSET,
+    GET_OWNED_ASSETS,
+    EMIT_ASSET,
+    UPDATE_ASSET
   >;
 
 }

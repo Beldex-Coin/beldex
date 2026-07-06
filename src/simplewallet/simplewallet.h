@@ -191,6 +191,11 @@ namespace cryptonote
     bool bns_lookup(std::vector<std::string> args);
 
     bool coin_burn(std::vector<std::string> args);
+    bool deploy_new_asset(const std::vector<std::string>& args);  // HF21
+    bool get_asset_info(const std::string& asset_id_hex, nlohmann::json& info_res);
+    bool assets_by_owner(const std::vector<std::string>& args);
+    bool emit_asset(const std::vector<std::string>& args);        // HF21
+    bool update_asset(const std::vector<std::string>& args);
 
     enum class sweep_type_t { stake, register_stake, all_or_below, single };
     bool sweep_main_internal(sweep_type_t sweep_type, std::vector<tools::wallet2::pending_tx> &ptx_vector, cryptonote::address_parse_info const &dest, bool flash);

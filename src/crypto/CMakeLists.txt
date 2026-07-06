@@ -29,6 +29,7 @@
 
 add_library(cncrypto
   aesb.c
+  asset_proofs.cpp
   blake256.c
   chacha.c
   crypto-ops-data.c
