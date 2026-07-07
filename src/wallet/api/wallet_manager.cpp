@@ -255,6 +255,16 @@ uint64_t WalletManagerImpl::blockchainTargetHeight()
 }
 
 EXPORT
+uint64_t WalletManagerImpl::networkDifficulty()
+{
+    auto res = get_info(m_http_client);
+    if (!res)
+        return 0;
+
+    return res["difficulty"];
+}
+
+EXPORT
 uint64_t WalletManagerImpl::blockTarget()
 {
     auto res = get_info(m_http_client);
@@ -287,6 +297,11 @@ void WalletManagerFactory::setLogCategories(const std::string &categories)
     mlog_set_log(categories.c_str());
 }
 
-
+EXPORT
+bool WalletManagerImpl::setProxy(const std::string &address)
+{
+    m_http_client.set_proxy(address);
+    return true;
+}
 
 }

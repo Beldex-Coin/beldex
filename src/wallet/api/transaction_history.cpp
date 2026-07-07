@@ -271,4 +271,21 @@ void TransactionHistoryImpl::refresh()
      
 }
 
+EXPORT
+void TransactionHistoryImpl::setTxNote(const std::string &txid, const std::string &note)
+{
+    crypto::hash htxid;
+    if (!tools::hex_to_type(txid, htxid))
+    {
+        // failed to parse txid, just return
+        return;
+    }
+
+    // directly set the note
+    m_wallet->wallet()->set_tx_note(htxid, note);
+
+    // refresh API transaction history view
+    refresh();
+}
+
 } // namespace
