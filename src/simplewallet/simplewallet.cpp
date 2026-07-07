@@ -7518,7 +7518,7 @@ bool simple_wallet::bns_by_owner(const std::vector<std::string>& args)
     std::string_view name;
     std::string value_bchat, value_wallet, value_belnet, value_eth;
 
-    if (auto got = cache.find(entry["name_hash"]); got != cache.end())
+    if (auto got = cache.find(entry["name_hash"].get<std::string>()); got != cache.end())
     {
       name = got->second.name;
 

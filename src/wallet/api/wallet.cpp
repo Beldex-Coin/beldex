@@ -1149,10 +1149,10 @@ std::vector<stakeInfo>* WalletImpl::listCurrentStakes() const
         {
             if(contributor["address"] == address){
                 auto &info = stakes->emplace_back();
-                info.mn_pubkey = node_info["master_node_pubkey"];
-                info.stake = contributor["amount"];
+                info.mn_pubkey = node_info["master_node_pubkey"].get<std::string>();
+                info.stake = contributor["amount"].get<uint64_t>();
                 if(node_info["requested_unlock_height"] !=0)
-                    info.unlock_height = node_info["requested_unlock_height"];
+                    info.unlock_height = node_info["requested_unlock_height"].get<uint64_t>();
                 info.decommissioned = !node_info["active"] && node_info["funded"];
                 info.awaiting = !node_info["funded"];
             }
@@ -2533,7 +2533,7 @@ std::vector<bnsInfo>* WalletImpl::MyBns() const
     {
         std::string_view name;
         std::string value_bchat, value_wallet, value_belnet, value_eth;
-        if (auto got = cache.find(entry["name_hash"]); got != cache.end())
+        if (auto got = cache.find(entry["name_hash"].get<std::string>()); got != cache.end())
         {
             name = got->second.name;
             auto decrypt_value = [&](std::string_view key, bns::mapping_type type, std::string& out) {
@@ -2557,24 +2557,29 @@ std::vector<bnsInfo>* WalletImpl::MyBns() const
         }
 
         auto &info = my_bns->emplace_back();
-        info.name_hash = entry["name_hash"];
+        info.name_hash = entry["name_hash"].get<std::string>();
         info.name = name.empty() ? "(none)" : std::string(name);
         info.value_bchat = value_bchat.empty() ? "(none)" : value_bchat;
         info.value_wallet = value_wallet.empty() ? "(none)" : value_wallet;
         info.value_belnet = value_belnet.empty() ? "(none)" : value_belnet;
         info.value_eth_addr = value_eth.empty() ? "(none)" : value_eth;
-        info.owner = entry["owner"];
+        info.owner = entry["owner"].get<std::string>();
         if (entry.contains("backup_owner") && !entry["backup_owner"].is_null())
-            info.backup_owner =  entry["backup_owner"];
+            info.backup_owner = entry["backup_owner"].get<std::string>();
         else
             info.backup_owner = "(none)";
-        info.update_height = entry["update_height"];
-        info.expiration_height = entry["expiration_height"];
+        info.update_height = entry["update_height"].get<uint64_t>();
+        info.expiration_height = entry["expiration_height"].get<uint64_t>();
     
-        info.encrypted_bchat_value = entry["encrypted_bchat_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_bchat_value"];
-        info.encrypted_wallet_value = entry["encrypted_wallet_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_wallet_value"];
-        info.encrypted_belnet_value = entry["encrypted_belnet_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_belnet_value"];
-        info.encrypted_eth_addr_value = entry["encrypted_eth_addr_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_eth_addr_value"];
+        auto tmp = entry["encrypted_bchat_value"].get<std::string>();
+        info.encrypted_bchat_value = tmp.empty() ? "(none)" : tmp;
+        auto wallet_val = entry["encrypted_wallet_value"].get<std::string>();
+        info.encrypted_wallet_value = wallet_val.empty() ? "(none)" : wallet_val;
+        auto belnet_val = entry["encrypted_belnet_value"].get<std::string>();
+        info.encrypted_belnet_value = belnet_val.empty() ? "(none)" : belnet_val;
+        auto eth_addr_val = entry["encrypted_eth_addr_value"].get<std::string>();
+        info.encrypted_eth_addr_value = eth_addr_val.empty() ? "(none)" : eth_addr_val;
+
     }
     return my_bns;
 }
