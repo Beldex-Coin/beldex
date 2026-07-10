@@ -39,6 +39,7 @@
 #include "integer_overflow.h"
 #include "ring_signature_1.h"
 #include "beldex_tests.h"
+#include "gateway_tests.h"
 #include "tx_validation.h"
 #include "v2_tests.h"
 #include "rct.h"

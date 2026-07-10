@@ -48,7 +48,8 @@ enum struct pay_type
   master_node,
   governance,
   bns,
-  coin_burn
+  coin_burn,
+  gateway // HF22 gateway address register/update
 };
 
 inline const char *pay_type_string(pay_type type)
@@ -64,6 +65,7 @@ inline const char *pay_type_string(pay_type type)
     case pay_type::master_node: return "mnode";
     case pay_type::governance:   return "gov";
     case pay_type::coin_burn:   return "burn";
+    case pay_type::gateway:     return "gateway";
     default: assert(false);      return "xxxxx";
   }
 }
@@ -75,6 +77,8 @@ inline pay_type pay_type_from_tx(const cryptonote::transaction tx)
     case cryptonote::txtype::stake: return wallet::pay_type::stake;
     case cryptonote::txtype::beldex_name_system: return wallet::pay_type::bns;
     case cryptonote::txtype::coin_burn: return wallet::pay_type::coin_burn;
+    case cryptonote::txtype::register_gateway_address:
+    case cryptonote::txtype::update_gateway_address: return wallet::pay_type::gateway;
     default: return wallet::pay_type::out;
   }
 }

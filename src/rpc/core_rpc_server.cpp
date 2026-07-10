@@ -67,6 +67,7 @@
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_basic/account.h"
 #include "cryptonote_basic/cryptonote_basic_impl.h"
+#include "cryptonote_core/gateway_utils.h"
 #include "cryptonote_core/uptime_proof.h"
 #include "net/parse.h"
 #include "crypto/hash.h"
@@ -705,6 +706,30 @@ namespace cryptonote::rpc {
       void operator()(const tx_extra_merge_mining_tag& x) { set("mm_depth", x.depth); set("mm_root", x.merkle_root); }
       void operator()(const tx_extra_additional_pub_keys& x) { set("additional_pubkeys", x.data); }
       void operator()(const tx_extra_burn& x) { set("burn_amount", x.amount); }
+      void operator()(const tx_extra_gateway_descriptor_operation& x) {
+        json gw{
+            {"version", x.version},
+            {"op_type", x.op_type == gateway_descriptor_op_type::register_address ? "register" : "update"},
+            {"address_id", tools::type_to_hex(x.address_id)},
+            {"descriptor", {
+                {"version", x.descriptor.version},
+                {"meta_info", x.descriptor.meta_info},
+            }},
+        };
+
+        var::visit([&](const auto& key) {
+          using key_t = std::decay_t<decltype(key)>;
+          if constexpr (std::is_same_v<key_t, crypto::public_key>)
+            gw["descriptor"]["owner_key_type"] = "beldex";
+          else if constexpr (std::is_same_v<key_t, crypto::eth_public_key>)
+            gw["descriptor"]["owner_key_type"] = "eth";
+          else if constexpr (std::is_same_v<key_t, crypto::eddsa_public_key>)
+            gw["descriptor"]["owner_key_type"] = "eddsa";
+          gw["descriptor"]["owner_key"] = tools::type_to_hex(key);
+        }, x.descriptor.owner_key);
+
+        set("gateway_descriptor", std::move(gw));
+      }
       void operator()(const tx_extra_master_node_winner& x) { set("mn_winner", x.m_master_node_key); }
       void operator()(const tx_extra_master_node_pubkey& x) { set("mn_pubkey", x.m_master_node_key); }
       void operator()(const tx_extra_security_signature& x) { set("security_sig", tools::type_to_hex(x.m_security_signature)); }
@@ -3552,6 +3577,55 @@ namespace cryptonote::rpc {
     owners_to_names.response["entries"] = entries;
     owners_to_names.response["status"] = STATUS_OK;
     return;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GET_GATEWAY_INFO& cmd, rpc_context context)
+  {
+    crypto::public_key gw_id;
+    if (!tools::hex_to_type(cmd.request.gateway_id, gw_id))
+      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_id (expected 64-char hex)"};
+
+    auto& db = m_core.get_blockchain_storage().get_db();
+    cryptonote::gateway_account_data acct;
+    const bool exists = cryptonote::load_gateway_account(db, gw_id, acct) && !acct.descriptor_history.empty();
+
+    cmd.response["registered"] = exists;
+    cmd.response["address"]    = cryptonote::get_gateway_address_as_str(m_core.get_nettype(), gw_id);
+    if (exists)
+    {
+      const auto& okey = acct.latest_descriptor().owner_key;
+      cmd.response["owner_key_type"] = okey.index();
+      cmd.response["owner_key"] = std::visit([](const auto& k) { return tools::type_to_hex(k); }, okey);
+      cmd.response["meta_info"]  = acct.latest_descriptor().meta_info;
+
+      auto balances = json::array();
+      for (const auto& b : acct.balances)
+        balances.push_back(json{{"asset_id", tools::type_to_hex(b.asset_id)}, {"amount", b.amount}});
+      cmd.response["balances"] = std::move(balances);
+    }
+    cmd.response["status"] = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GET_ALL_GATEWAYS& cmd, rpc_context context)
+  {
+    auto& db = m_core.get_blockchain_storage().get_db();
+    const auto ids = db.get_all_gateway_ids();
+
+    const uint64_t from  = cmd.request.from;
+    const uint64_t count = cmd.request.count ? cmd.request.count : ids.size();
+
+    const auto nettype = m_core.get_nettype();
+    auto gateways = json::array();
+    for (uint64_t i = from; i < ids.size() && i < from + count; ++i)
+      gateways.push_back(json{
+          {"gateway_id", tools::type_to_hex(ids[i])},
+          {"address",    cryptonote::get_gateway_address_as_str(nettype, ids[i])}});
+
+    cmd.response["gateways"] = std::move(gateways);
+    cmd.response["total"]    = ids.size();
+    cmd.response["status"]   = STATUS_OK;
   }
 
   //------------------------------------------------------------------------------------------------------------------------------

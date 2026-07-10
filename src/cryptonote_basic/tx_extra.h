@@ -63,6 +63,7 @@ constexpr uint8_t
   TX_EXTRA_TAG_MASTER_NODE_STATE_CHANGE  = 0x78,
   TX_EXTRA_TAG_BURN                       = 0x79,
   TX_EXTRA_TAG_BELDEX_NAME_SYSTEM           = 0x7A,
+  TX_EXTRA_TAG_GATEWAY_DESCRIPTOR_OPERATION = 0x7C, // HF22 (0x7B reserved for CA asset op)
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
@@ -545,6 +546,30 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Gateway address descriptor operation (HF22), carried in tx_extra.
+  //  - register: `address_id` is the registrant's view_pub_key and becomes the
+  //    gateway account id. No ownership proof required; the tx must burn at
+  //    least GATEWAY_ADDRESS_REGISTRATION_FEE.
+  //  - update:   `address_id` identifies an existing gateway; the tx carries a
+  //    gateway_ownership_proof (in transaction::gateway_proofs) verified against
+  //    the latest descriptor's owner key.
+  enum class gateway_descriptor_op_type : uint8_t { register_address, update_address, _count };
+
+  struct tx_extra_gateway_descriptor_operation
+  {
+    uint8_t version = 0;
+    gateway_descriptor_op_type op_type = gateway_descriptor_op_type::register_address;
+    crypto::public_key address_id{}; // register: == view_pub_key (new id); update: existing id
+    gateway_descriptor_base descriptor{};
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      ENUM_FIELD(op_type, op_type < gateway_descriptor_op_type::_count)
+      FIELD(address_id)
+      FIELD(descriptor)
+    END_SERIALIZE()
+  };
+
   struct tx_extra_beldex_name_system
   {
     uint8_t                 version = 0;
@@ -642,6 +667,7 @@ namespace cryptonote
       tx_extra_tx_key_image_proofs,
       tx_extra_tx_key_image_unlock,
       tx_extra_burn,
+      tx_extra_gateway_descriptor_operation,
       tx_extra_merge_mining_tag,
       tx_extra_mysterious_minergate,
       tx_extra_padding,
@@ -668,5 +694,6 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_secret_key,               cryptonote:
 BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_proofs,         cryptonote::TX_EXTRA_TAG_TX_KEY_IMAGE_PROOFS);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_unlock,         cryptonote::TX_EXTRA_TAG_TX_KEY_IMAGE_UNLOCK);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_burn,                        cryptonote::TX_EXTRA_TAG_BURN);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_descriptor_operation, cryptonote::TX_EXTRA_TAG_GATEWAY_DESCRIPTOR_OPERATION);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_beldex_name_system,            cryptonote::TX_EXTRA_TAG_BELDEX_NAME_SYSTEM);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_security_signature,            cryptonote::TX_EXTRA_TAG_SECURITY_SIGNATURE);

@@ -72,6 +72,11 @@ namespace boost
   {
     a & reinterpret_cast<char (&)[sizeof(crypto::key_image)]>(x);
   }
+  template <class Archive>
+  inline void serialize(Archive &a, crypto::asset_id &x, const boost::serialization::version_type ver)
+  {
+    a & reinterpret_cast<char (&)[sizeof(crypto::asset_id)]>(x);
+  }
 
   template <class Archive>
   inline void serialize(Archive &a, crypto::signature &x, const boost::serialization::version_type ver)
@@ -110,6 +115,16 @@ namespace boost
   }
 
   template <class Archive>
+  inline void serialize(Archive &a, cryptonote::tx_out_gateway &x, const boost::serialization::version_type ver)
+  {
+    a & x.version;
+    a & x.gateway_addr;
+    a & x.asset_id;
+    a & x.amount;
+    a & x.payment_id;
+  }
+
+  template <class Archive>
   inline void serialize(Archive &a, cryptonote::txin_gen &x, const boost::serialization::version_type ver)
   {
     a & x.height;
@@ -138,6 +153,15 @@ namespace boost
     a & x.amount;
     a & x.key_offsets;
     a & x.k_image;
+  }
+
+  template <class Archive>
+  inline void serialize(Archive &a, cryptonote::txin_gateway &x, const boost::serialization::version_type ver)
+  {
+    a & x.version;
+    a & x.gateway_addr;
+    a & x.asset_id;
+    a & x.amount;
   }
 
   template <class Archive>

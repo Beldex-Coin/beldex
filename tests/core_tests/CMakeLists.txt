@@ -38,6 +38,7 @@ add_executable(core_tests
   double_spend.cpp
   integer_overflow.cpp
   beldex_tests.cpp
+  gateway_tests.cpp
   multisig.cpp
   rct.cpp
   ring_signature_1.cpp

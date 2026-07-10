@@ -57,6 +57,8 @@
 #include "common/command_line.h"
 #include "common/threadpool.h"
 #include "crypto/crypto.h"
+#include "crypto/eth_signature.h"
+#include "crypto/eddsa_signature.h"
 #include "serialization/binary_utils.h"
 #include "serialization/string.h"
 #include "serialization/boost_std_variant.h"
@@ -267,7 +269,8 @@ namespace {
       found_money += transfers[idx].amount();
     if (found_money != needed_money)
       ++outputs; // change
-    if (outputs < ((tx_params.tx_type == cryptonote::txtype::beldex_name_system || tx_params.tx_type == cryptonote::txtype::coin_burn) ? 1 : 2))
+    if (outputs < ((tx_params.tx_type == cryptonote::txtype::beldex_name_system || tx_params.tx_type == cryptonote::txtype::coin_burn
+                    || tx_params.tx_type == cryptonote::txtype::register_gateway_address || tx_params.tx_type == cryptonote::txtype::update_gateway_address) ? 1 : 2))
       ++outputs; // extra 0 dummy output
     return outputs;
   }
@@ -1681,6 +1684,10 @@ void wallet2::check_acc_out_precomp(const tx_out &o, const crypto::key_derivatio
   hw::device &hwdev = m_account.get_device();
   std::unique_lock hwdev_lock{hwdev};
   hwdev.set_mode(hw::device::mode::TRANSACTION_PARSE);
+  // Gateway deposit outputs (tx_out_gateway, HF22) are transparent and never
+  // belong to a scanning wallet; skip them without flagging a scan error.
+  if (std::holds_alternative<tx_out_gateway>(o.target))
+     return;
   if (!std::holds_alternative<txout_to_key>(o.target))
   {
      tx_scan_info.error = true;
@@ -6406,6 +6413,7 @@ std::string wallet2::transfers_to_csv(const std::vector<wallet::transfer_view> &
       break;
     case wallet::pay_type::stake:
     case wallet::pay_type::bns:
+    case wallet::pay_type::gateway:
       running_balance -= transfer.fee;
       break;
     case wallet::pay_type::out:
@@ -8950,6 +8958,69 @@ std::vector<wallet2::pending_tx> wallet2::bns_create_buy_mapping_tx(bns::mapping
   return result;
 }
 
+std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypto::public_key& gateway_id,
+                                                                    const cryptonote::gateway_owner_key_v& owner_key,
+                                                                    const std::string& meta_info,
+                                                                    std::string *reason,
+                                                                    uint32_t priority,
+                                                                    uint32_t account_index,
+                                                                    std::set<uint32_t> subaddr_indices)
+{
+  auto hf_version = get_hard_fork_version();
+  if (!hf_version)
+  {
+    if (reason) *reason = ERR_MSG_NETWORK_VERSION_QUERY_FAILED;
+    return {};
+  }
+  if (*hf_version < hf::hf22_gateway_addresses)
+  {
+    if (reason) *reason = "gateway addresses are only available from hardfork 22";
+    return {};
+  }
+
+  // The gateway id must be a valid public key (DH key for deposit decryption).
+  if (!crypto::check_key(gateway_id))
+  {
+    if (reason) *reason = "invalid gateway id: not a valid public key";
+    return {};
+  }
+
+  // The owner key must be valid for whichever of the three types was supplied.
+  const bool owner_ok = std::visit([](const auto& k) -> bool {
+    using T = std::decay_t<decltype(k)>;
+    if constexpr (std::is_same_v<T, crypto::public_key>)          return crypto::check_key(k);
+    else if constexpr (std::is_same_v<T, crypto::eth_public_key>) return crypto::check_eth_public_key(k);
+    else                                                          return crypto::check_eddsa_public_key(k);
+  }, owner_key);
+  if (!owner_ok)
+  {
+    if (reason) *reason = "invalid gateway owner key for its type";
+    return {};
+  }
+
+  cryptonote::tx_extra_gateway_descriptor_operation op{};
+  op.op_type              = cryptonote::gateway_descriptor_op_type::register_address;
+  op.address_id           = gateway_id;
+  op.descriptor.owner_key = owner_key;
+  op.descriptor.meta_info = meta_info;
+
+  std::vector<uint8_t> extra;
+  cryptonote::add_gateway_descriptor_operation_to_tx_extra(extra, op);
+
+  // The registration fee is burned; construct_params folds it into burn_fixed.
+  beldex_construct_tx_params tx_params =
+      wallet2::construct_params(*hf_version, txtype::register_gateway_address, priority, cryptonote::GATEWAY_ADDRESS_REGISTRATION_FEE);
+
+  return create_transactions_2({} /*dsts*/,
+                               cryptonote::TX_OUTPUT_DECOYS,
+                               0 /*unlock_at_block*/,
+                               priority,
+                               extra,
+                               account_index,
+                               subaddr_indices,
+                               tx_params);
+}
+
 std::optional<bns::mapping_years> wallet2::bns_validate_years(std::string_view map_years, std::string *reason)
 {
   if (!map_years.empty())
@@ -9969,7 +10040,8 @@ void wallet2::transfer_selected_rct(std::vector<cryptonote::tx_destination_entry
   // throw if total amount overflows uint64_t
   for(auto& dt: dsts)
   {
-    THROW_WALLET_EXCEPTION_IF(0 == dt.amount && tx_params.tx_type != txtype::beldex_name_system && tx_params.tx_type != txtype::coin_burn, error::zero_destination);
+    THROW_WALLET_EXCEPTION_IF(0 == dt.amount && tx_params.tx_type != txtype::beldex_name_system && tx_params.tx_type != txtype::coin_burn
+                              && tx_params.tx_type != txtype::register_gateway_address && tx_params.tx_type != txtype::update_gateway_address, error::zero_destination);
     needed_money += dt.amount;
     LOG_PRINT_L2("transfer: adding " << print_money(dt.amount) << ", for a total of " << print_money (needed_money));
     THROW_WALLET_EXCEPTION_IF(needed_money < dt.amount, error::tx_sum_overflow, dsts, fee, m_nettype);
@@ -10123,7 +10195,8 @@ void wallet2::transfer_selected_rct(std::vector<cryptonote::tx_destination_entry
   bool update_splitted_dsts                                   = true;
   if (change_dts.amount == 0)
   {
-    if (splitted_dsts.size() == 1 || tx.type == txtype::beldex_name_system || tx.type == txtype::coin_burn)
+    if (splitted_dsts.size() == 1 || tx.type == txtype::beldex_name_system || tx.type == txtype::coin_burn
+        || tx.type == txtype::register_gateway_address || tx.type == txtype::update_gateway_address)
     {
       // If the change is 0, send it to a random address, to avoid confusing
       // the sender with a 0 amount output. We send a 0 amount in order to avoid
@@ -10152,7 +10225,8 @@ void wallet2::transfer_selected_rct(std::vector<cryptonote::tx_destination_entry
     // NOTE: If BNS, there's already a dummy destination entry in there that
     // we placed in (for fake calculating the TX fees and parts) that we
     // repurpose for change after the fact.
-    if (tx_params.tx_type == txtype::beldex_name_system || tx_params.tx_type == txtype::coin_burn)
+    if (tx_params.tx_type == txtype::beldex_name_system || tx_params.tx_type == txtype::coin_burn
+        || tx_params.tx_type == txtype::register_gateway_address || tx_params.tx_type == txtype::update_gateway_address)
     {
       assert(splitted_dsts.size() == 1);
       splitted_dsts.back() = change_dts;
@@ -10931,12 +11005,22 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
 
   // check the type is burn or not
   bool const is_burn_tx = (tx_params.tx_type == txtype::coin_burn);
-    LOG_PRINT_L0("is_burn_tx:" << is_burn_tx);  
+    LOG_PRINT_L0("is_burn_tx:" << is_burn_tx);
   if (is_burn_tx)
   {
     THROW_WALLET_EXCEPTION_IF(dsts.size() != 0, error::wallet_internal_error, "Burn txs must not have any destinations set, has: " + std::to_string(dsts.size()));
     THROW_WALLET_EXCEPTION_IF(priority == 5, error::wallet_internal_error, "Can not request a flash TX for coin_burn transactions");
     dsts.emplace_back(0, account_public_address{} /*address*/, false /*is_subaddress*/); // NOTE: Create a dummy dest that gets repurposed into the change output.
+  }
+
+  // Gateway register/update (HF22) txs, like BNS/burn, carry no transfer
+  // destination: they burn/pay a fee and produce only a change output.
+  bool const is_gateway_op_tx = (tx_params.tx_type == txtype::register_gateway_address ||
+                                 tx_params.tx_type == txtype::update_gateway_address);
+  if (is_gateway_op_tx)
+  {
+    THROW_WALLET_EXCEPTION_IF(dsts.size() != 0, error::wallet_internal_error, "gateway register/update txs must not have any destinations set, has: " + std::to_string(dsts.size()));
+    dsts.emplace_back(0, account_public_address{} /*address*/, false /*is_subaddress*/); // dummy dest -> change output
   }
 
   if(m_light_wallet) {
@@ -11088,7 +11172,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   needed_money = 0;
   for(auto& dt: dsts)
   {
-    THROW_WALLET_EXCEPTION_IF(0 == dt.amount && !(is_bns_tx || is_burn_tx), error::zero_destination);
+    THROW_WALLET_EXCEPTION_IF(0 == dt.amount && !(is_bns_tx || is_burn_tx || is_gateway_op_tx), error::zero_destination);
     needed_money += dt.amount;
     LOG_PRINT_L2("transfer: adding " << print_money(dt.amount) << ", for a total of " << print_money (needed_money));
     THROW_WALLET_EXCEPTION_IF(needed_money < dt.amount, error::tx_sum_overflow, dsts, 0, m_nettype);
@@ -11096,7 +11180,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
 
 
   // throw if attempting a transaction with no money
-  THROW_WALLET_EXCEPTION_IF(needed_money == 0 && !(is_bns_tx || is_burn_tx), error::zero_destination);
+  THROW_WALLET_EXCEPTION_IF(needed_money == 0 && !(is_bns_tx || is_burn_tx || is_gateway_op_tx), error::zero_destination);
 
   std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> unlocked_balance_per_subaddr = unlocked_balance_per_subaddress(subaddr_account, false);
   std::map<uint32_t, uint64_t> balance_per_subaddr = balance_per_subaddress(subaddr_account, false);
@@ -11110,7 +11194,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   // early out if we know we can't make it anyway
   // we could also check for being within FEE_PER_KB, but if the fee calculation
   // ever changes, this might be missed, so let this go through
-  const uint64_t min_outputs = (tx_params.tx_type == cryptonote::txtype::beldex_name_system || tx_params.tx_type == cryptonote::txtype::coin_burn) ? 1 : 2; // if bns, only request the change output
+  const uint64_t min_outputs = (is_bns_tx || is_burn_tx || is_gateway_op_tx) ? 1 : 2; // fee-only txs (bns/burn/gateway) request only the change output
   {
     uint64_t min_fee = (
         base_fee.first * estimate_rct_tx_size(1, fake_outs_count, min_outputs, extra.size(), clsag, bulletproof_plus) +
@@ -11606,6 +11690,11 @@ bool wallet2::sanity_check(const std::vector<wallet2::pending_tx> &ptx_vector, s
   for (size_t i = 0; i < dsts.size(); ++i)
   {
     const cryptonote::tx_destination_entry& d = dsts[i];
+    // Gateway deposits (HF22) pay a transparent tx_out_gateway, not a stealth
+    // output to a wallet address, so they can't be verified by tx-proof here;
+    // their amount is enforced by the consensus balance equation instead.
+    if (d.is_gateway)
+      continue;
     const bool dest_is_subtractable = subtract_fee_from_outputs.count(i);
     const uint64_t fee_deduction = dest_is_subtractable ? subtractable_fee_deduction : 0;
     const uint64_t required_amount = d.amount - std::min(fee_deduction, d.amount);

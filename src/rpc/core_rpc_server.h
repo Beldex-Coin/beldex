@@ -194,6 +194,8 @@ namespace cryptonote::rpc {
     void invoke(GET_OUTPUT_HISTOGRAM& get_output_histogram, rpc_context context);
     void invoke(BNS_OWNERS_TO_NAMES& bns_owners_to_names, rpc_context context);
     void invoke(BNS_NAMES_TO_OWNERS& bns_names_to_owners, rpc_context context);
+    void invoke(GET_GATEWAY_INFO& get_gateway_info, rpc_context context);
+    void invoke(GET_ALL_GATEWAYS& get_all_gateways, rpc_context context);
     void invoke(BNS_RESOLVE& resolve, rpc_context context);
     void invoke(BNS_LOOKUP& lookup, rpc_context context);
     void invoke(BNS_VALUE_DECRYPT& value_decrypt, rpc_context context);

@@ -133,8 +133,13 @@ namespace rct {
     rctSig genRctSimple(const key & message, const ctkeyV & inSk, const keyV & destinations, const std::vector<xmr_amount> & inamounts, const std::vector<xmr_amount> & outamounts, xmr_amount txnFee, const ctkeyM & mixRing, const keyV &amount_keys, const std::vector<multisig_kLRki> *kLRki, multisig_out *msout, const std::vector<unsigned int> & index, ctkeyV &outSk, const RCTConfig &rct_config, hw::device &hwdev);
     bool verRct(const rctSig & rv, bool semantics);
     inline bool verRct(const rctSig & rv) { return verRct(rv, true) && verRct(rv, false); }
-    bool verRctSemanticsSimple(const rctSig & rv);
-    bool verRctSemanticsSimple(const std::vector<const rctSig*> & rv);
+    // gateway_offset (HF22): an optional per-tx transparent commitment
+    // Σgw_out·H − Σgw_in·H added to the output side of the balance check, so
+    // sum(pseudoOuts) == sum(outPk) + fee·H + gateway_offset. Defaults to the
+    // identity point (no gateway constructs). The batched form takes a vector
+    // parallel to rvv (empty => all identity).
+    bool verRctSemanticsSimple(const rctSig & rv, const key* gateway_offset = nullptr);
+    bool verRctSemanticsSimple(const std::vector<const rctSig*> & rv, const std::vector<key>* gateway_offsets = nullptr);
     bool verRctNonSemanticsSimple(const rctSig & rv);
     inline bool verRctSimple(const rctSig & rv) { return verRctSemanticsSimple(rv) && verRctNonSemanticsSimple(rv); }
     xmr_amount decodeRct(const rctSig & rv, const key & sk, unsigned int i, key & mask, hw::device &hwdev);

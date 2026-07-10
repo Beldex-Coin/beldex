@@ -253,10 +253,11 @@ const char* const LMDB_HF_STARTING_HEIGHTS = "hf_starting_heights";
 const char* const LMDB_HF_VERSIONS = "hf_versions";
 const char* const LMDB_MASTER_NODE_DATA = "master_node_data";
 const char* const LMDB_MASTER_NODE_LATEST = "master_node_proofs"; // contains the latest data sent with a proof: time, aux keys, ip, ports
+const char* const LMDB_GATEWAY_ACCOUNTS = "gateway_accounts"; // HF22: gateway_addr -> serialized gateway_account_data
 
 const char* const LMDB_PROPERTIES = "properties";
 
-constexpr unsigned int LMDB_DB_COUNT = 23; // Should agree with the number of db's above
+constexpr unsigned int LMDB_DB_COUNT = 24; // Should agree with the number of db's above
 
 const char zerokey[8] = {0};
 const MDB_val zerokval = { sizeof(zerokey), (void *)zerokey };
@@ -398,6 +399,7 @@ void setup_rcursor(const MDB_dbi& db, MDB_cursor*& cursor, MDB_txn* txn, bool* r
 #define m_cur_txpool_blob	m_cursors->txpool_blob
 #define m_cur_alt_blocks	m_cursors->alt_blocks
 #define m_cur_hf_versions	m_cursors->hf_versions
+#define m_cur_gateway_accounts	m_cursors->gateway_accounts
 #define m_cur_properties	m_cursors->properties
 
 namespace cryptonote
@@ -1529,6 +1531,8 @@ void BlockchainLMDB::open(const fs::path& filename, cryptonote::network_type net
 
   lmdb_db_open(txn, LMDB_MASTER_NODE_LATEST, MDB_CREATE, m_master_node_proofs, "Failed to open db handle for m_master_node_proofs");
 
+  lmdb_db_open(txn, LMDB_GATEWAY_ACCOUNTS, MDB_CREATE, m_gateway_accounts, "Failed to open db handle for m_gateway_accounts");
+
   lmdb_db_open(txn, LMDB_PROPERTIES, MDB_CREATE, m_properties, "Failed to open db handle for m_properties");
 
   mdb_set_dupsort(txn, m_spent_keys, compare_hash32);
@@ -1548,6 +1552,7 @@ void BlockchainLMDB::open(const fs::path& filename, cryptonote::network_type net
   mdb_set_compare(txn, m_txpool_blob, compare_hash32);
   mdb_set_compare(txn, m_alt_blocks, compare_hash32);
   mdb_set_compare(txn, m_master_node_proofs, compare_hash32);
+  mdb_set_compare(txn, m_gateway_accounts, compare_hash32);
   mdb_set_compare(txn, m_properties, compare_string);
 
   if (!(mdb_flags & MDB_RDONLY))
@@ -1711,6 +1716,8 @@ void BlockchainLMDB::reset()
     throw0(DB_ERROR(lmdb_error("Failed to drop m_hf_versions: ", result).c_str()));
   if (auto result = mdb_drop(txn, m_master_node_data, 0))
     throw0(DB_ERROR(lmdb_error("Failed to drop m_master_node_data: ", result).c_str()));
+  if (auto result = mdb_drop(txn, m_gateway_accounts, 0))
+    throw0(DB_ERROR(lmdb_error("Failed to drop m_gateway_accounts: ", result).c_str()));
   if (auto result = mdb_drop(txn, m_properties, 0))
     throw0(DB_ERROR(lmdb_error("Failed to drop m_properties: ", result).c_str()));
 
@@ -6313,6 +6320,123 @@ bool BlockchainLMDB::remove_master_node_proof(const crypto::public_key& pubkey)
   if (result)
     throw0(DB_ERROR(lmdb_error("Error remove master node proof", result)));
   return true;
+}
+
+// -------- Gateway accounts (HF22) ----------------------------------------
+// Blob store keyed by the 32-byte gateway address id. Mirrors the CA branch's
+// asset_histories table. (De)serialization of gateway_account_data lives in
+// cryptonote_core/gateway_utils.
+
+void BlockchainLMDB::set_gateway_account(const crypto::public_key& gateway_addr, const std::string& data)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_BLOCK_PREFIX(0);
+  mdb_txn_cursors *m_cursors = &m_wcursors;
+  setup_cursor(m_gateway_accounts, m_cur_gateway_accounts, *txn_ptr);
+
+  MDB_val key{sizeof(gateway_addr), (void*)&gateway_addr};
+  MDB_val_sized(blob, data);
+  int result = mdb_cursor_put(m_cur_gateway_accounts, &key, &blob, 0);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to write gateway account to db transaction: ", result)));
+
+  TXN_BLOCK_POSTFIX_SUCCESS();
+}
+
+bool BlockchainLMDB::get_gateway_account(const crypto::public_key& gateway_addr, std::string& data) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(gateway_accounts);
+
+  MDB_val k{sizeof(gateway_addr), (void*)&gateway_addr};
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_gateway_accounts, &k, &v, MDB_SET_KEY);
+  if (result != MDB_SUCCESS)
+  {
+    if (result == MDB_NOTFOUND)
+      return false;
+    throw0(DB_ERROR(lmdb_error("DB error attempting to get gateway account", result).c_str()));
+  }
+
+  data.assign(reinterpret_cast<const char*>(v.mv_data), v.mv_size);
+  return true;
+}
+
+bool BlockchainLMDB::remove_gateway_account(const crypto::public_key& gateway_addr)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_BLOCK_PREFIX(0);
+  mdb_txn_cursors *m_cursors = &m_wcursors;
+  setup_cursor(m_gateway_accounts, m_cur_gateway_accounts, *txn_ptr);
+
+  MDB_val key{sizeof(gateway_addr), (void*)&gateway_addr};
+  int result = mdb_cursor_get(m_cur_gateway_accounts, &key, nullptr, MDB_SET_KEY);
+  if (result == MDB_NOTFOUND)
+    return false;
+  if (result != MDB_SUCCESS)
+    throw0(DB_ERROR(lmdb_error("Error finding gateway account to remove: ", result)));
+
+  result = mdb_cursor_del(m_cur_gateway_accounts, 0);
+  if (result != MDB_SUCCESS)
+    throw0(DB_ERROR(lmdb_error("Error removing gateway account: ", result)));
+
+  TXN_BLOCK_POSTFIX_SUCCESS();
+  return true;
+}
+
+bool BlockchainLMDB::gateway_exists(const crypto::public_key& gateway_addr) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(gateway_accounts);
+
+  MDB_val key{sizeof(gateway_addr), (void*)&gateway_addr};
+  MDB_val value{};
+  int result = mdb_cursor_get(m_cur_gateway_accounts, &key, &value, MDB_SET_KEY);
+  if (result == MDB_NOTFOUND)
+    return false;
+  if (result != MDB_SUCCESS)
+    throw0(DB_ERROR(lmdb_error("Error checking gateway existence: ", result)));
+
+  return true;
+}
+
+std::vector<crypto::public_key> BlockchainLMDB::get_all_gateway_ids() const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(gateway_accounts);
+
+  std::vector<crypto::public_key> result;
+  MDB_val key{}, value{};
+  MDB_cursor_op op = MDB_FIRST;
+  while (true)
+  {
+    int get_result = mdb_cursor_get(m_cur_gateway_accounts, &key, &value, op);
+    op = MDB_NEXT;
+
+    if (get_result == MDB_NOTFOUND)
+      break;
+    if (get_result != MDB_SUCCESS)
+      throw0(DB_ERROR(lmdb_error("Failed to enumerate gateways: ", get_result)));
+    if (key.mv_size != sizeof(crypto::public_key))
+      throw0(DB_ERROR("Invalid key size in gateway accounts table"));
+
+    result.push_back(*static_cast<const crypto::public_key*>(key.mv_data));
+  }
+
+  return result;
 }
 
 

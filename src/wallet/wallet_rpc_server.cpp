@@ -2080,7 +2080,7 @@ namespace tools
       {
         res.in.push_back(std::move(entry));
       }
-      else if (entry.pay_type == wallet::pay_type::out || entry.pay_type == wallet::pay_type::stake || entry.pay_type == wallet::pay_type::bns || entry.pay_type == wallet::pay_type::coin_burn)
+      else if (entry.pay_type == wallet::pay_type::out || entry.pay_type == wallet::pay_type::stake || entry.pay_type == wallet::pay_type::bns || entry.pay_type == wallet::pay_type::coin_burn || entry.pay_type == wallet::pay_type::gateway)
       {
         res.out.push_back(std::move(entry));
       }
@@ -3191,6 +3191,67 @@ namespace {
       req.name,
       name_hash_str};
     m_wallet->set_bns_cache_record(detail);
+
+    fill_response(         ptx_vector,
+                           req.get_tx_key,
+                           res.tx_key,
+                           res.amount,
+                           res.amounts_by_dest,
+                           res.fee,
+                           res.multisig_txset,
+                           res.unsigned_txset,
+                           req.do_not_relay,
+                           false /*flash*/,
+                           res.tx_hash,
+                           req.get_tx_hex,
+                           res.tx_blob,
+                           req.get_tx_metadata,
+                           res.tx_metadata,
+                           res.spent_key_images);
+
+    return res;
+  }
+
+  GATEWAY_REGISTER_ADDRESS::response wallet_rpc_server::invoke(GATEWAY_REGISTER_ADDRESS::request&& req)
+  {
+    require_open();
+    GATEWAY_REGISTER_ADDRESS::response res{};
+
+    crypto::public_key gateway_id;
+    if (!tools::hex_to_type(req.gateway_id, gateway_id))
+      throw wallet_rpc_error{error_code::WRONG_KEY, "Invalid gateway_id (expected 64-char hex)"};
+
+    cryptonote::gateway_owner_key_v owner_key;
+    if (req.owner_key_type == "schnorr" || req.owner_key_type == "ed25519")
+    {
+      crypto::public_key pk;
+      if (!tools::hex_to_type(req.owner_key, pk))
+        throw wallet_rpc_error{error_code::WRONG_KEY, "Invalid schnorr owner_key (expected 64-char hex)"};
+      owner_key = pk;
+    }
+    else if (req.owner_key_type == "eth")
+    {
+      crypto::eth_public_key pk;
+      if (!tools::hex_to_type(req.owner_key, pk))
+        throw wallet_rpc_error{error_code::WRONG_KEY, "Invalid eth owner_key (expected 66-char hex / 33-byte compressed)"};
+      owner_key = pk;
+    }
+    else if (req.owner_key_type == "eddsa")
+    {
+      crypto::eddsa_public_key pk;
+      if (!tools::hex_to_type(req.owner_key, pk))
+        throw wallet_rpc_error{error_code::WRONG_KEY, "Invalid eddsa owner_key (expected 64-char hex)"};
+      owner_key = pk;
+    }
+    else
+      throw wallet_rpc_error{error_code::WRONG_KEY, "owner_key_type must be one of: schnorr, eth, eddsa"};
+
+    std::string reason;
+    std::vector<wallet2::pending_tx> ptx_vector =
+        m_wallet->create_gateway_register_tx(gateway_id, owner_key, req.meta_info, &reason,
+                                             req.priority, req.account_index, req.subaddr_indices);
+    if (ptx_vector.empty())
+      throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "Failed to create gateway registration transaction: " + reason};
 
     fill_response(         ptx_vector,
                            req.get_tx_key,

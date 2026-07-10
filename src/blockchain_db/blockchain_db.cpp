@@ -139,6 +139,15 @@ void BlockchainDB::add_transaction(const crypto::hash& blk_hash, const std::pair
   // we need the index
   for (uint64_t i = 0; i < tx.vout.size(); ++i)
   {
+    // Gateway deposit outputs (tx_out_gateway, HF22) are transparent and are not
+    // spendable RCT outputs, so they are not indexed in the output tables (and
+    // have no rct_signatures.outPk entry). They are constructed last in vout.
+    if (std::holds_alternative<cryptonote::tx_out_gateway>(tx.vout[i].target))
+    {
+      amount_output_indices[i] = 0;
+      continue;
+    }
+
     uint64_t unlock_time = 0;
     if (tx.version >= cryptonote::txversion::v3_per_output_unlock_times)
     {

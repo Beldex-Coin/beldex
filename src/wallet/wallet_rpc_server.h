@@ -159,6 +159,7 @@ namespace tools
     wallet_rpc::CAN_REQUEST_STAKE_UNLOCK::response        invoke(wallet_rpc::CAN_REQUEST_STAKE_UNLOCK::request&& req);
     wallet_rpc::REQUEST_STAKE_UNLOCK::response            invoke(wallet_rpc::REQUEST_STAKE_UNLOCK::request&& req);
     wallet_rpc::BNS_BUY_MAPPING::response                 invoke(wallet_rpc::BNS_BUY_MAPPING::request&& req);
+    wallet_rpc::GATEWAY_REGISTER_ADDRESS::response        invoke(wallet_rpc::GATEWAY_REGISTER_ADDRESS::request&& req);
     wallet_rpc::BNS_RENEW_MAPPING::response               invoke(wallet_rpc::BNS_RENEW_MAPPING::request&& req);
     wallet_rpc::BNS_UPDATE_MAPPING::response              invoke(wallet_rpc::BNS_UPDATE_MAPPING::request&& req);
     wallet_rpc::BNS_MAKE_UPDATE_SIGNATURE::response       invoke(wallet_rpc::BNS_MAKE_UPDATE_SIGNATURE::request&& req);

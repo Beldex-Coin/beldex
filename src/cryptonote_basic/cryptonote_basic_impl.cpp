@@ -220,6 +220,52 @@ namespace cryptonote {
     return tools::base58::encode_addr(integrated_address_prefix, t_serializable_object_to_blob(iadr));
   }
   //-----------------------------------------------------------------------
+  std::string get_gateway_address_as_str(network_type nettype, const crypto::public_key& gateway_id)
+  {
+    uint64_t prefix = get_config(nettype).PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX;
+    std::string blob(reinterpret_cast<const char*>(&gateway_id), sizeof(gateway_id));
+    return tools::base58::encode_addr(prefix, blob);
+  }
+  //-----------------------------------------------------------------------
+  std::string get_integrated_gateway_address_as_str(network_type nettype, const crypto::public_key& gateway_id, uint64_t payment_id)
+  {
+    uint64_t prefix = get_config(nettype).PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX;
+    std::string blob(reinterpret_cast<const char*>(&gateway_id), sizeof(gateway_id));
+    blob.append(reinterpret_cast<const char*>(&payment_id), sizeof(payment_id));
+    return tools::base58::encode_addr(prefix, blob);
+  }
+  //-----------------------------------------------------------------------
+  bool get_gateway_address_from_str(gateway_address_parse_info& info, network_type nettype, std::string_view str)
+  {
+    auto& conf = get_config(nettype);
+    const uint64_t gw_prefix  = conf.PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX;
+    const uint64_t igw_prefix = conf.PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX;
+
+    blobdata data;
+    uint64_t prefix{0};
+    if (!tools::base58::decode_addr(str, prefix, data))
+      return false;
+
+    info = {};
+    if (prefix == gw_prefix)
+    {
+      if (data.size() != sizeof(info.gateway_id))
+        return false;
+      std::memcpy(&info.gateway_id, data.data(), sizeof(info.gateway_id));
+      return true;
+    }
+    if (prefix == igw_prefix)
+    {
+      if (data.size() != sizeof(info.gateway_id) + sizeof(info.payment_id))
+        return false;
+      std::memcpy(&info.gateway_id, data.data(), sizeof(info.gateway_id));
+      std::memcpy(&info.payment_id, data.data() + sizeof(info.gateway_id), sizeof(info.payment_id));
+      info.has_payment_id = true;
+      return true;
+    }
+    return false;
+  }
+  //-----------------------------------------------------------------------
   bool is_coinbase(const transaction& tx)
   {
     return tx.vin.size() == 1 && std::holds_alternative<txin_gen>(tx.vin[0]);

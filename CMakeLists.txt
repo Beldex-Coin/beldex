@@ -755,11 +755,16 @@ if (${BOOST_IGNORE_SYSTEM_PATHS} STREQUAL "ON")
   set(Boost_NO_SYSTEM_PATHS TRUE)
 endif()
 
+if(APPLE)
+  # Homebrew installations under /opt/homebrew and /usr/local can leave mismatched
+  # BoostConfig packages behind; use FindBoost's library/header discovery instead.
+  set(Boost_NO_BOOST_CMAKE ON)
+endif()
+
 set(OLD_LIB_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
 if(STATIC)
   if(MINGW)
     set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
-    set(Boost_NO_BOOST_CMAKE ON)
   endif()
 
   set(Boost_USE_STATIC_LIBS ON)

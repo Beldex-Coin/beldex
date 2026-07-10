@@ -132,7 +132,15 @@ namespace cryptonote
       rct::rctSig &rv = tx.rct_signatures;
       if (rv.type == rct::RCTType::Null)
         return true;
-      if (rv.outPk.size() != tx.vout.size())
+      // Gateway deposit outputs (tx_out_gateway, HF22) are transparent and carry
+      // no RCT commitment, so outPk covers the RCT (txout_to_key) outputs only.
+      // They are constructed last in vout, so the first outPk.size() outputs are
+      // exactly the RCT ones.
+      size_t rct_output_count = 0;
+      for (const auto& o : tx.vout)
+        if (std::holds_alternative<txout_to_key>(o.target))
+          ++rct_output_count;
+      if (rv.outPk.size() != rct_output_count)
       {
         LOG_PRINT_L1("Failed to parse transaction from blob, bad outPk size in tx " << get_transaction_hash(tx));
         return false;
@@ -165,12 +173,12 @@ namespace cryptonote
             return false;
           }
           const size_t max_outputs = rct::n_bulletproof_plus_max_amounts(rv.p.bulletproofs_plus[0]);
-          if (max_outputs < tx.vout.size())
+          if (max_outputs < rv.outPk.size()) // RCT outputs only (gateway outputs excluded)
           {
             LOG_PRINT_L1("Failed to parse transaction from blob, bad bulletproofs_plus max outputs in tx " << get_transaction_hash(tx));
             return false;
           }
-          const size_t n_amounts = tx.vout.size();
+          const size_t n_amounts = rv.outPk.size();
           CHECK_AND_ASSERT_MES(n_amounts == rv.outPk.size(), false, "Internal error filling out V");
           rv.p.bulletproofs_plus[0].V.resize(n_amounts);
           for (size_t i = 0; i < n_amounts; ++i)
@@ -189,12 +197,12 @@ namespace cryptonote
             return false;
           }
           const size_t max_outputs = 1 << (rv.p.bulletproofs[0].L.size() - 6);
-          if (max_outputs < tx.vout.size())
+          if (max_outputs < rv.outPk.size()) // RCT outputs only (gateway outputs excluded)
           {
             LOG_PRINT_L1("Failed to parse transaction from blob, bad bulletproofs max outputs in tx " << get_transaction_hash(tx));
             return false;
           }
-          const size_t n_amounts = tx.vout.size();
+          const size_t n_amounts = rv.outPk.size();
           CHECK_AND_ASSERT_MES(n_amounts == rv.outPk.size(), false, "Internal error filling out V");
           rv.p.bulletproofs[0].V.resize(n_amounts);
           for (size_t i = 0; i < n_amounts; ++i)
@@ -482,7 +490,21 @@ namespace cryptonote
     CHECK_AND_ASSERT_MES(tx.rct_signatures.type >= rct::RCTType::Bulletproof2,
         std::numeric_limits<uint64_t>::max(), "get_pruned_transaction_weight does not support older range proof types");
     CHECK_AND_ASSERT_MES(!tx.vin.empty(), std::numeric_limits<uint64_t>::max(), "empty vin");
-    CHECK_AND_ASSERT_MES(std::holds_alternative<cryptonote::txin_to_key>(tx.vin[0]), std::numeric_limits<uint64_t>::max(), "empty vin");
+
+    // Gateway inputs (txin_gateway, HF22) carry no CLSAG/pseudoOut, so the
+    // deterministic CLSAG/pseudoOut weight below is sized to the native
+    // (txin_to_key) input count only -- matching the RCT prunable serializer.
+    // Pre-HF22 txs have only native inputs, so this equals vin.size().
+    size_t native_inputs = 0;
+    const cryptonote::txin_to_key* first_native = nullptr;
+    for (const auto& in : tx.vin)
+      if (std::holds_alternative<cryptonote::txin_to_key>(in))
+      {
+        if (!first_native)
+          first_native = &var::get<cryptonote::txin_to_key>(in);
+        ++native_inputs;
+      }
+    CHECK_AND_ASSERT_MES(first_native != nullptr, std::numeric_limits<uint64_t>::max(), "no native (txin_to_key) input");
 
     // get pruned data size
     uint64_t weight = serialization::dump_binary(const_cast<transaction&>(tx)).size();
@@ -498,16 +520,16 @@ namespace cryptonote
     uint64_t extra = 32 * ((rct::is_rct_bulletproof_plus(tx.rct_signatures.type) ? 6 : 9) + 2 * nrl) + 2;
     weight += extra;
 
-    // calculate deterministic CLSAG/MLSAG data size
-    const size_t ring_size = var::get<cryptonote::txin_to_key>(tx.vin[0]).key_offsets.size();
+    // calculate deterministic CLSAG/MLSAG data size (native inputs only)
+    const size_t ring_size = first_native->key_offsets.size();
     if (rct::is_rct_clsag(tx.rct_signatures.type))
-      extra = tx.vin.size() * (ring_size + 2) * 32;
+      extra = native_inputs * (ring_size + 2) * 32;
     else
-      extra = tx.vin.size() * (ring_size * (1 + 1) * 32 + 32 /* cc */);
+      extra = native_inputs * (ring_size * (1 + 1) * 32 + 32 /* cc */);
     weight += extra;
 
-    // calculate deterministic pseudoOuts size
-    extra =  32 * (tx.vin.size());
+    // calculate deterministic pseudoOuts size (native inputs only)
+    extra =  32 * native_inputs;
     weight += extra;
 
     // clawback
@@ -955,6 +977,14 @@ namespace cryptonote
     return result;
   }
   //---------------------------------------------------------------
+  bool add_gateway_descriptor_operation_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_gateway_descriptor_operation& op)
+  {
+    tx_extra_field field = op;
+    bool result = add_tx_extra_field_to_tx_extra(tx_extra, field);
+    CHECK_AND_NO_ASSERT_MES_L1(result, false, "failed to serialize gateway descriptor operation");
+    return result;
+  }
+  //---------------------------------------------------------------
   bool get_inputs_money_amount(const transaction& tx, uint64_t& money)
   {
     money = 0;
@@ -999,6 +1029,11 @@ namespace cryptonote
 
     for(const tx_out& out: tx.vout)
     {
+      // Gateway deposit outputs (tx_out_gateway, HF22) are transparent; their
+      // fields (gateway id, asset id, amount) are validated in gateway_utils.
+      if (std::holds_alternative<tx_out_gateway>(out.target))
+        continue;
+
       CHECK_AND_ASSERT_MES(std::holds_alternative<txout_to_key>(out.target), false, "wrong variant type: "
         << tools::type_name(tools::variant_type(out.target)) << ", expected " << tools::type_name<txout_to_key>()
         << ", in transaction id=" << get_transaction_hash(tx));
@@ -1116,6 +1151,9 @@ namespace cryptonote
     size_t i = 0;
     for(const tx_out& o:  tx.vout)
     {
+      // Gateway deposit outputs (HF22) are transparent and never belong to a
+      // scanning account; skip them (keeping the output index in sync).
+      if (std::holds_alternative<tx_out_gateway>(o.target)) { i++; continue; }
       CHECK_AND_ASSERT_MES(std::holds_alternative<txout_to_key>(o.target), false, "wrong type id in transaction out" );
       if(is_out_to_acc(acc, var::get<txout_to_key>(o.target), tx_pub_key, additional_tx_pub_keys, i))
       {
@@ -1296,12 +1334,27 @@ namespace cryptonote
     else
     {
       serialization::binary_string_archiver ba;
-      size_t mixin = 0;
-      if (t.vin.size() > 0 && std::holds_alternative<txin_to_key>(t.vin[0]))
-        mixin = var::get<txin_to_key>(t.vin[0]).key_offsets.size() - 1;
+      // Gateway inputs/outputs (HF22) are excluded from the RCT CLSAG/range-proof
+      // arrays; size the prunable serialization to the native input / RCT output
+      // counts (matching the tx serializer), and read the ring size from the
+      // first native input. Behaviour-preserving pre-HF22.
+      size_t native_inputs = 0;
+      const txin_to_key* first_native = nullptr;
+      for (const auto& in : t.vin)
+        if (std::holds_alternative<txin_to_key>(in))
+        {
+          if (!first_native)
+            first_native = &var::get<txin_to_key>(in);
+          ++native_inputs;
+        }
+      size_t rct_outputs = 0;
+      for (const auto& o : t.vout)
+        if (!std::holds_alternative<tx_out_gateway>(o.target))
+          ++rct_outputs;
+      size_t mixin = first_native ? first_native->key_offsets.size() - 1 : 0;
       try {
         const_cast<transaction&>(t).rct_signatures.p.serialize_rctsig_prunable(
-                ba, t.rct_signatures.type, t.vin.size(), t.vout.size(), mixin);
+                ba, t.rct_signatures.type, native_inputs, rct_outputs, mixin);
       } catch (const std::exception& e) {
         LOG_ERROR("Failed to serialize rct signatures (prunable): " << e.what());
         return false;
@@ -1387,8 +1440,16 @@ namespace cryptonote
     {
       transaction &tt = const_cast<transaction&>(t);
       serialization::binary_string_archiver ba;
+      size_t native_inputs = 0;
+      for (const auto& in : t.vin)
+        if (std::holds_alternative<txin_to_key>(in))
+          ++native_inputs;
+      size_t rct_outputs = 0;
+      for (const auto& o : t.vout)
+        if (!std::holds_alternative<tx_out_gateway>(o.target))
+          ++rct_outputs;
       try {
-        tt.rct_signatures.serialize_rctsig_base(ba, t.vin.size(), t.vout.size());
+        tt.rct_signatures.serialize_rctsig_base(ba, native_inputs, rct_outputs);
       } catch (const std::exception& e) {
         LOG_ERROR("Failed to serialize rct signatures base: " << e.what());
         return false;

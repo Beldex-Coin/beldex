@@ -592,6 +592,33 @@ namespace cryptonote
     return addr.m_view_public_key;
   }
   //---------------------------------------------------------------
+  // Encrypt an integrated-address payment id for a gateway deposit (HF22):
+  //   d    = 8·r·V_gw                       (r = tx secret key, V_gw = gateway id)
+  //   h    = Hs(d, out_index)
+  //   mask = Hs(GW_OUT_PID_MASK ‖ h)
+  //   out.payment_id = payment_id ^ mask[8..15]
+  // Only the gateway owner (view secret) can recompute the mask and recover the
+  // customer payment id. Returns 0 for a plain (non-integrated) gateway address.
+  static uint64_t encrypt_gateway_payment_id(uint64_t payment_id, const crypto::secret_key& tx_key,
+                                             const crypto::public_key& gateway_id, size_t output_index)
+  {
+    if (payment_id == 0)
+      return 0;
+    crypto::key_derivation derivation;
+    if (!crypto::generate_key_derivation(gateway_id, tx_key, derivation))
+      return payment_id; // gateway_id validity is checked before construction
+    crypto::ec_scalar h;
+    crypto::derivation_to_scalar(derivation, output_index, h);
+    std::string buf;
+    buf.reserve(hashkey::GW_OUT_PID_MASK.size() + sizeof(h));
+    buf.append(hashkey::GW_OUT_PID_MASK);
+    buf.append(reinterpret_cast<const char*>(&h), sizeof(h));
+    const crypto::hash mask = crypto::cn_fast_hash(buf.data(), buf.size());
+    uint64_t mask_u64;
+    std::memcpy(&mask_u64, mask.data + 8, sizeof(mask_u64)); // bytes 8..15 (Zano m_u64[1] parity)
+    return payment_id ^ mask_u64;
+  }
+  //---------------------------------------------------------------
   bool construct_tx_with_tx_key(const account_keys& sender_account_keys, const std::unordered_map<crypto::public_key, subaddress_index>& subaddresses, std::vector<tx_source_entry>& sources, std::vector<tx_destination_entry>& destinations, const std::optional<tx_destination_entry>& change_addr, const std::vector<uint8_t> &extra, transaction& tx, uint64_t unlock_time, const crypto::secret_key &tx_key, const std::vector<crypto::secret_key> &additional_tx_keys, const rct::RCTConfig &rct_config, rct::multisig_out *msout, bool shuffle_outs, beldex_construct_tx_params const &tx_params)
   {
     hw::device &hwdev = sender_account_keys.get_device();
@@ -685,6 +712,13 @@ namespace cryptonote
       if (destinations.size() > 2)
         add_dummy_payment_id = false;
 
+      // Gateway deposits (HF22) carry the payment id inside the tx_out_gateway
+      // output (DH-encrypted); a tx-wide payment id is redundant and forbidden by
+      // consensus, so never add the dummy for a tx with gateway outputs.
+      if (std::any_of(destinations.begin(), destinations.end(),
+                      [](const tx_destination_entry& d){ return d.is_gateway; }))
+        add_dummy_payment_id = false;
+
       if (add_dummy_payment_id)
       {
         // if we have neither long nor short payment id, add a dummy short one,
@@ -773,6 +807,13 @@ namespace cryptonote
       std::shuffle(destinations.begin(), destinations.end(), crypto::random_device{});
     }
 
+    // Gateway deposit outputs (HF22) are transparent and are NOT part of the RCT
+    // outPk/outSk arrays. Keep them last in the output order so the RCT outputs
+    // occupy vout[0..k-1] and align 1:1 with rct_signatures.outPk (and so the
+    // sender's own scan of the change output uses the correct index).
+    std::stable_partition(destinations.begin(), destinations.end(),
+        [](const tx_destination_entry& d){ return !d.is_gateway; });
+
     // sort ins by their key image
     std::vector<size_t> ins_order(sources.size());
     for (size_t n = 0; n < sources.size(); ++n)
@@ -815,6 +856,16 @@ namespace cryptonote
     if (need_additional_txkeys)
       CHECK_AND_ASSERT_MES(destinations.size() == additional_tx_keys.size(), false, "Wrong amount of additional tx keys");
 
+    // Gateway deposit (HF22): a gateway output uses the main tx key (r) for its
+    // DH-encrypted payment id and contributes no additional pubkey, so mixing it
+    // with additional-tx-key destinations would misalign the per-output key
+    // indexing. Disallow that combination (a deposit's change goes to the main
+    // address, so this never triggers for normal deposits).
+    const bool has_gateway_out = std::any_of(destinations.begin(), destinations.end(),
+        [](const tx_destination_entry& d){ return d.is_gateway; });
+    CHECK_AND_ASSERT_MES(!(has_gateway_out && need_additional_txkeys), false,
+        "gateway deposit cannot be combined with subaddress destinations that require additional tx keys");
+
     uint64_t summary_outs_money = 0;
     //fill outputs
     size_t output_index = 0;
@@ -823,6 +874,26 @@ namespace cryptonote
     bool found_change_already = false;
     for(const tx_destination_entry& dst_entr: destinations)
     {
+      // Gateway deposit: emit a transparent tx_out_gateway, no stealth ephemeral
+      // key, and exclude it from the RCT output set (handled below).
+      if (dst_entr.is_gateway)
+      {
+        if (tx.version >= txversion::v3_per_output_unlock_times)
+          tx.output_unlock_times.push_back(unlock_time);
+
+        tx_out out;
+        out.amount = 0; // outer amount hidden like RCT; the real (plaintext) amount is in tx_out_gateway
+        tx_out_gateway gw{};
+        gw.gateway_addr = dst_entr.gateway_id;
+        gw.asset_id     = crypto::null_aid;
+        gw.amount       = dst_entr.amount;
+        gw.payment_id   = encrypt_gateway_payment_id(dst_entr.gateway_payment_id, tx_key, dst_entr.gateway_id, output_index);
+        out.target      = gw;
+        tx.vout.push_back(out);
+        output_index++;
+        summary_outs_money += dst_entr.amount;
+        continue;
+      }
       crypto::public_key out_eph_public_key;
 
       bool this_dst_is_change_addr = false;
@@ -1009,6 +1080,16 @@ namespace cryptonote
               }
           }
           for (size_t i = 0; i < tx.vout.size(); ++i) {
+              // Gateway deposit outputs (HF22) are transparent: they have no RCT
+              // commitment/range proof, so they are excluded from dest_keys and
+              // outamounts. Their amount is still counted in amount_out so the
+              // fee (amount_in - amount_out) stays the real fee; the resulting
+              // a·H commitment imbalance is what the consensus gateway_offset
+              // (verRctSemanticsSimple) accounts for.
+              if (const auto* gw = std::get_if<tx_out_gateway>(&tx.vout[i].target)) {
+                  amount_out += gw->amount;
+                  continue;
+              }
               dest_keys.push_back(rct::pk2rct(var::get<txout_to_key>(tx.vout[i].target).key));
               outamounts.push_back(tx.vout[i].amount);
               amount_out += tx.vout[i].amount;
@@ -1082,7 +1163,13 @@ namespace cryptonote
 
           memwipe(inSk.data(), inSk.size() * sizeof(rct::ctkey));
 
-          CHECK_AND_ASSERT_MES(tx.vout.size() == outSk.size(), false, "outSk size does not match vout");
+          // outSk/outPk cover the RCT outputs only; gateway outputs (transparent)
+          // are excluded, so compare against the RCT output count, not vout.size().
+          size_t rct_out_count = 0;
+          for (const auto& o : tx.vout)
+            if (!std::holds_alternative<tx_out_gateway>(o.target))
+              ++rct_out_count;
+          CHECK_AND_ASSERT_MES(rct_out_count == outSk.size(), false, "outSk size does not match RCT outputs");
 
           MCINFO("construct_tx",
                  "transaction_created: " << get_transaction_hash(tx) << "\n" << obj_to_json_str(tx) << "\n");

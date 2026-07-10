@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include <map>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -696,6 +697,17 @@ namespace cryptonote
 
     //! container for spent key images from the transactions in the pool
     key_images_container m_spent_key_images;
+
+    //! HF22: cumulative pending gateway withdrawal amounts per (gateway, asset)
+    //! for pool txs (gateway inputs have no key image), and pending register ops.
+    //! Prevents pool-level overdraw / duplicate registration.
+    std::map<std::pair<crypto::public_key, crypto::asset_id>, uint64_t> m_gateway_pending_spends;
+    std::set<crypto::public_key> m_gateway_pending_registers;
+
+    //! Track / untrack a pool tx's gateway withdrawals and register op. insert
+    //! returns false (with reason) if it would overdraw or duplicate a register.
+    bool insert_gateway_spends(const transaction_prefix& tx, std::string& reason);
+    void remove_gateway_spends(const transaction_prefix& tx);
 
     //TODO: this time should be a named constant somewhere, not hard-coded
     //! interval on which to check for stale/"stuck" transactions

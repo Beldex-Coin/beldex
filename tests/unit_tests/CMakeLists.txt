@@ -87,6 +87,9 @@ add_executable(unit_tests
   vercmp.cpp
   ringdb.cpp
   wipeable_string.cpp
+  gateway_eddsa.cpp
+  gateway_eth.cpp
+  gateway_address_prefix.cpp
   aligned.cpp)
 
 target_link_libraries(unit_tests

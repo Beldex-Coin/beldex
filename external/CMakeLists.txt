@@ -65,6 +65,24 @@ add_subdirectory(randomx EXCLUDE_FROM_ALL)
 add_subdirectory(fmt)
 add_subdirectory(date EXCLUDE_FROM_ALL)
 
+# bitcoin-core/secp256k1 for gateway ETH-style ECDSA owner keys (HF22). Only the
+# core ECDSA path is needed (verify a 64-byte compact sig against a 33-byte
+# compressed pubkey), so all optional modules, tests and benchmarks are off.
+set(SECP256K1_DISABLE_SHARED ON CACHE BOOL "" FORCE)
+set(SECP256K1_INSTALL OFF CACHE BOOL "" FORCE)
+set(SECP256K1_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SECP256K1_BUILD_EXHAUSTIVE_TESTS OFF CACHE BOOL "" FORCE)
+set(SECP256K1_BUILD_CTIME_TESTS OFF CACHE BOOL "" FORCE)
+set(SECP256K1_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+set(SECP256K1_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SECP256K1_ENABLE_MODULE_ECDH OFF CACHE BOOL "" FORCE)
+set(SECP256K1_ENABLE_MODULE_RECOVERY OFF CACHE BOOL "" FORCE)
+set(SECP256K1_ENABLE_MODULE_SCHNORRSIG OFF CACHE BOOL "" FORCE)
+set(SECP256K1_ENABLE_MODULE_MUSIG OFF CACHE BOOL "" FORCE)
+set(SECP256K1_ENABLE_MODULE_ELLSWIFT OFF CACHE BOOL "" FORCE)
+set(SECP256K1_ENABLE_MODULE_EXTRAKEYS OFF CACHE BOOL "" FORCE)
+add_subdirectory(secp256k1 EXCLUDE_FROM_ALL)
+
 set(JSON_MultipleHeaders ON CACHE BOOL "") # Allows multi-header nlohmann use
 add_subdirectory(nlohmann-json)
 

@@ -257,6 +257,7 @@ namespace
   const char* USAGE_PRINT_LOCKED_STAKES("print_locked_stakes [key_images]");
 
   const char* USAGE_BNS_BUY_MAPPING("bns_buy_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] <name>");
+  const char* USAGE_REGISTER_GATEWAY_ADDRESS("register_gateway_address [index=<N1>[,<N2>,...]] [<priority>] <gateway_id_hex> <owner_type: schnorr|eth|eddsa> <owner_key_hex> [meta]");
   const char* USAGE_BNS_RENEW_MAPPING("bns_renew_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] <name>");
   const char* USAGE_BNS_UPDATE_MAPPING("bns_update_mapping [index=<N1>[,<N2>,...]] [<priority>] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] [signature=<hex_signature>] <name>");
 
@@ -3138,6 +3139,11 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
                            tr(USAGE_BNS_BUY_MAPPING),
                            tr(tools::wallet_rpc::BNS_BUY_MAPPING::description));
 
+  m_cmd_binder.set_handler("register_gateway_address",
+                           [this](const auto& x) { return register_gateway_address(x); },
+                           tr(USAGE_REGISTER_GATEWAY_ADDRESS),
+                           tr("Register a gateway address (HF22). Burns the registration fee and stores the owner key on-chain. Args: <gateway_id_hex> <owner_pubkey_hex> [meta]."));
+
   m_cmd_binder.set_handler("bns_renew_mapping",
                            [this](const auto& x) { return bns_renew_mapping(x); },
                            tr(USAGE_BNS_RENEW_MAPPING),
@@ -5980,6 +5986,27 @@ bool simple_wallet::transfer_main(Transfer transfer_type, const std::vector<std:
     LOG_PRINT_L0("has_uri" << has_uri);
     if (i + 1 < local_args.size())
     {
+      // Gateway deposit (HF22): a gwB…/gwiB… destination is paid out as a
+      // transparent tx_out_gateway. The (optional) integrated payment id is
+      // encrypted into the output; no tx-wide payment id is used.
+      cryptonote::gateway_address_parse_info gw_info{};
+      if (cryptonote::get_gateway_address_from_str(gw_info, m_wallet->nettype(), local_args[i]))
+      {
+        if (!cryptonote::parse_amount(de.amount, local_args[i + 1]) || 0 == de.amount)
+        {
+          fail_msg_writer() << tr("amount is wrong: ") << local_args[i] << ' ' << local_args[i + 1] <<
+            ", " << tr("expected number from 0 to ") << print_money(std::numeric_limits<uint64_t>::max());
+          return false;
+        }
+        de.is_gateway         = true;
+        de.gateway_id         = gw_info.gateway_id;
+        de.gateway_payment_id = gw_info.has_payment_id ? gw_info.payment_id : 0;
+        de.original           = local_args[i];
+        i += 2;
+        dsts.push_back(de);
+        continue;
+      }
+
       r = cryptonote::get_account_address_from_str(info, m_wallet->nettype(), local_args[i]);
       if (!r && m_wallet->is_trusted_daemon())
       {
@@ -6826,6 +6853,99 @@ bool simple_wallet::bns_buy_mapping(std::vector<std::string> args)
     return true;
   }
 
+  return true;
+}
+//----------------------------------------------------------------------------------------------------
+bool simple_wallet::register_gateway_address(std::vector<std::string> args)
+{
+  uint32_t priority = 0;
+  std::set<uint32_t> subaddr_indices = {};
+  if (!parse_subaddr_indices_and_priority(*m_wallet, args, subaddr_indices, priority, m_current_subaddress_account)) return false;
+
+  if (args.size() < 3 || args.size() > 4)
+  {
+    PRINT_USAGE(USAGE_REGISTER_GATEWAY_ADDRESS);
+    return true;
+  }
+
+  crypto::public_key gateway_id;
+  if (!tools::hex_to_type(args[0], gateway_id))
+  {
+    fail_msg_writer() << tr("Invalid gateway id (expected 64-char hex)");
+    return true;
+  }
+
+  // Owner key: one of the three supported types.
+  const std::string& owner_type = args[1];
+  cryptonote::gateway_owner_key_v owner_key;
+  if (owner_type == "schnorr" || owner_type == "ed25519")
+  {
+    crypto::public_key pk;
+    if (!tools::hex_to_type(args[2], pk)) { fail_msg_writer() << tr("Invalid schnorr owner key (expected 64-char hex)"); return true; }
+    owner_key = pk;
+  }
+  else if (owner_type == "eth")
+  {
+    crypto::eth_public_key pk;
+    if (!tools::hex_to_type(args[2], pk)) { fail_msg_writer() << tr("Invalid eth owner key (expected 66-char hex / 33-byte compressed secp256k1)"); return true; }
+    owner_key = pk;
+  }
+  else if (owner_type == "eddsa")
+  {
+    crypto::eddsa_public_key pk;
+    if (!tools::hex_to_type(args[2], pk)) { fail_msg_writer() << tr("Invalid eddsa owner key (expected 64-char hex)"); return true; }
+    owner_key = pk;
+  }
+  else
+  {
+    fail_msg_writer() << tr("owner_type must be one of: schnorr, eth, eddsa");
+    return true;
+  }
+  const std::string meta = args.size() == 4 ? args[3] : std::string{};
+
+  SCOPED_WALLET_UNLOCK();
+  std::string reason;
+  std::vector<tools::wallet2::pending_tx> ptx_vector;
+  try
+  {
+    ptx_vector = m_wallet->create_gateway_register_tx(gateway_id, owner_key, meta, &reason, priority, m_current_subaddress_account, subaddr_indices);
+    if (ptx_vector.empty())
+    {
+      fail_msg_writer() << reason;
+      return true;
+    }
+
+    std::vector<cryptonote::address_parse_info> dsts;
+    cryptonote::address_parse_info info = {};
+    info.address       = m_wallet->get_subaddress({m_current_subaddress_account, 0});
+    info.is_subaddress = m_current_subaddress_account != 0;
+    dsts.push_back(info);
+
+    const std::string gateway_address = cryptonote::get_gateway_address_as_str(m_wallet->nettype(), gateway_id);
+
+    std::cout << std::endl << tr("Registering gateway address") << std::endl << std::endl;
+    fmt::print(fmt::format(tr("Gateway addr: {}\n"), gateway_address));
+    fmt::print(fmt::format(tr("Gateway id  : {}\n"), args[0]));
+    fmt::print(fmt::format(tr("Owner type  : {}\n"), owner_type));
+    fmt::print(fmt::format(tr("Owner key   : {}\n"), args[2]));
+    fmt::print(fmt::format(tr("Meta        : {}\n"), meta.empty() ? "(none)" : meta));
+    fmt::print(fmt::format(tr("Fee burned  : {}\n"), print_money(cryptonote::GATEWAY_ADDRESS_REGISTRATION_FEE)));
+    if (!confirm_and_send_tx(dsts, ptx_vector, priority == tools::tx_priority_flash))
+      return false;
+
+    tools::success_msg_writer() << tr("Gateway address registered: ") << gateway_address;
+  }
+  catch (const std::exception &e)
+  {
+    handle_transfer_exception(std::current_exception(), m_wallet->is_trusted_daemon());
+    return true;
+  }
+  catch (...)
+  {
+    LOG_ERROR("unknown error");
+    fail_msg_writer() << tr("unknown error");
+    return true;
+  }
   return true;
 }
 //----------------------------------------------------------------------------------------------------

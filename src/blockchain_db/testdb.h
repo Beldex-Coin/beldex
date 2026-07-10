@@ -173,6 +173,12 @@ public:
   void set_master_node_proof(const crypto::public_key &pubkey, const master_nodes::proof_info &proof) override { }
   bool remove_master_node_proof(const crypto::public_key &pubkey) override { return false; }
 
+  void set_gateway_account(const crypto::public_key& gateway_addr, const std::string& data) override { }
+  bool get_gateway_account(const crypto::public_key& gateway_addr, std::string& data) const override { return false; }
+  bool remove_gateway_account(const crypto::public_key& gateway_addr) override { return false; }
+  bool gateway_exists(const crypto::public_key& gateway_addr) const override { return false; }
+  std::vector<crypto::public_key> get_all_gateway_ids() const override { return {}; }
+
   virtual void add_alt_block(const crypto::hash &blkid, const cryptonote::alt_block_data_t &data, const cryptonote::blobdata &blob, const cryptonote::blobdata *checkpoint) override {}
   virtual bool get_alt_block(const crypto::hash &blkid, alt_block_data_t *data, cryptonote::blobdata *blob, cryptonote::blobdata *checkpoint) const override { return false; }
   virtual void remove_alt_block(const crypto::hash &blkid) override {}

@@ -2660,12 +2660,62 @@ namespace cryptonote::rpc {
     } request;
   };
 
+  /// RPC: gateway/get_gateway_info
+  ///
+  /// Returns the current consensus state of a gateway account (HF22): its latest
+  /// descriptor (owner key + meta) and materialized balances. This is the
+  /// "instant sync" API — balances are read straight from the node, no scanning.
+  ///
+  /// Inputs:
+  /// - `gateway_id` -- 64-char hex of the gateway address id (registrant view pubkey).
+  ///
+  /// Output:
+  /// - `registered` -- whether the gateway exists on-chain.
+  /// - `address` -- the base58 gateway address (gwB…) for this id.
+  /// - `owner_key_type` -- 0 = Schnorr/ed25519, 1 = eth secp256k1, 2 = eddsa.
+  /// - `owner_key` -- hex of the latest owner key.
+  /// - `meta_info` -- descriptor meta string.
+  /// - `balances` -- list of {asset_id (hex), amount}.
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GET_GATEWAY_INFO : PUBLIC
+  {
+    static constexpr auto names() { return NAMES("get_gateway_info"); }
+    struct request_parameters
+    {
+      std::string gateway_id;
+    } request;
+  };
+
+  /// RPC: gateway/get_all_gateways
+  ///
+  /// Paginated list of all registered gateway address ids (HF22).
+  ///
+  /// Inputs:
+  /// - `from` -- pagination offset (default 0).
+  /// - `count` -- max ids to return (0 = all).
+  ///
+  /// Output:
+  /// - `gateways` -- list of {gateway_id (hex), address (gwB…)} objects.
+  /// - `total` -- total number of registered gateways.
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GET_ALL_GATEWAYS : PUBLIC
+  {
+    static constexpr auto names() { return NAMES("get_all_gateways"); }
+    struct request_parameters
+    {
+      uint64_t from = 0;
+      uint64_t count = 0;
+    } request;
+  };
+
   // List of all supported rpc command structs to allow compile-time enumeration of all supported
   // RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   // a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
   // <TYPE>::response.  The <TYPE>::request has to be unique (for overload resolution);
   // <TYPE>::response does not.
   using core_rpc_types = tools::type_list<
+    GET_GATEWAY_INFO,
+    GET_ALL_GATEWAYS,
     BANNED,
     FLUSH_CACHE,
     FLUSH_TRANSACTION_POOL,

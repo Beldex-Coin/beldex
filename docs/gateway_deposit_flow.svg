@@ -1,0 +1,45 @@
+<svg width="680" viewBox="0 0 680 700" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Gateway deposit flow: Zano vs Beldex</title>
+<desc>Side-by-side flowcharts comparing a gateway deposit in Zano HF6 and the Beldex HF22 plan, from address decoding to the exchange crediting the user.</desc>
+<style>
+text{font-family:Helvetica,Arial,sans-serif}
+.th{font-size:14px;font-weight:500}.ts{font-size:12px;font-weight:400}
+.pu rect{fill:#EEEDFE;stroke:#534AB7;stroke-width:0.5}.pu .th{fill:#3C3489}.pu .ts{fill:#534AB7}
+.gy rect{fill:#F1EFE8;stroke:#5F5E5A;stroke-width:0.5}.gy .th{fill:#444441}.gy .ts{fill:#5F5E5A}
+.te rect{fill:#E1F5EE;stroke:#0F6E56;stroke-width:0.5}.te .th{fill:#085041}.te .ts{fill:#0F6E56}
+.hd{fill:#2C2C2A;font-size:14px;font-weight:500}.lg{fill:#5F5E5A;font-size:12px}
+.arr{stroke:#888780;stroke-width:1.5;fill:none}
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="hd" x="180" y="52" text-anchor="middle">Zano (HF6, mainnet)</text>
+<text class="hd" x="500" y="52" text-anchor="middle">Beldex (HF22 plan)</text>
+<g class="pu"><rect x="45" y="66" width="270" height="56" rx="4"/><text class="th" x="180" y="88" text-anchor="middle">Decode deposit address</text><text class="ts" x="180" y="106" text-anchor="middle">gwiZ &#8594; gateway id + pid</text></g>
+<g class="pu"><rect x="365" y="66" width="270" height="56" rx="4"/><text class="th" x="500" y="88" text-anchor="middle">Decode deposit address</text><text class="ts" x="500" y="106" text-anchor="middle">gwiB &#8594; gateway id + pid</text></g>
+<line class="arr" x1="180" y1="122" x2="180" y2="146" marker-end="url(#arrow)"/>
+<line class="arr" x1="500" y1="122" x2="500" y2="146" marker-end="url(#arrow)"/>
+<g class="gy"><rect x="45" y="150" width="270" height="56" rx="4"/><text class="th" x="180" y="172" text-anchor="middle">Select and sign inputs</text><text class="ts" x="180" y="190" text-anchor="middle">Zarcanum ring, ZC_sig</text></g>
+<g class="gy"><rect x="365" y="150" width="270" height="56" rx="4"/><text class="th" x="500" y="172" text-anchor="middle">Select and sign inputs</text><text class="ts" x="500" y="190" text-anchor="middle">CLSAG ring, key images</text></g>
+<line class="arr" x1="180" y1="206" x2="180" y2="230" marker-end="url(#arrow)"/>
+<line class="arr" x1="500" y1="206" x2="500" y2="230" marker-end="url(#arrow)"/>
+<g class="pu"><rect x="45" y="234" width="270" height="56" rx="4"/><text class="th" x="180" y="256" text-anchor="middle">Build gateway output</text><text class="ts" x="180" y="274" text-anchor="middle">plain amount, encrypted pid</text></g>
+<g class="pu"><rect x="365" y="234" width="270" height="56" rx="4"/><text class="th" x="500" y="256" text-anchor="middle">Build gateway output</text><text class="ts" x="500" y="274" text-anchor="middle">same, asset_id = null_aid</text></g>
+<line class="arr" x1="180" y1="290" x2="180" y2="314" marker-end="url(#arrow)"/>
+<line class="arr" x1="500" y1="290" x2="500" y2="314" marker-end="url(#arrow)"/>
+<g class="gy"><rect x="45" y="318" width="270" height="56" rx="4"/><text class="th" x="180" y="340" text-anchor="middle">Build change output</text><text class="ts" x="180" y="358" text-anchor="middle">BP+ range + surjection</text></g>
+<g class="gy"><rect x="365" y="318" width="270" height="56" rx="4"/><text class="th" x="500" y="340" text-anchor="middle">Build change output</text><text class="ts" x="500" y="358" text-anchor="middle">BP+ range proof</text></g>
+<line class="arr" x1="180" y1="374" x2="180" y2="398" marker-end="url(#arrow)"/>
+<line class="arr" x1="500" y1="374" x2="500" y2="398" marker-end="url(#arrow)"/>
+<g class="pu"><rect x="45" y="402" width="270" height="56" rx="4"/><text class="th" x="180" y="424" text-anchor="middle">Balance verification</text><text class="ts" x="180" y="442" text-anchor="middle">double-Schnorr proof object</text></g>
+<g class="pu"><rect x="365" y="402" width="270" height="56" rx="4"/><text class="th" x="500" y="424" text-anchor="middle">Balance verification</text><text class="ts" x="500" y="442" text-anchor="middle">sum check only, no proof</text></g>
+<line class="arr" x1="180" y1="458" x2="180" y2="482" marker-end="url(#arrow)"/>
+<line class="arr" x1="500" y1="458" x2="500" y2="482" marker-end="url(#arrow)"/>
+<g class="te"><rect x="45" y="486" width="270" height="56" rx="4"/><text class="th" x="180" y="508" text-anchor="middle">Block apply</text><text class="ts" x="180" y="526" text-anchor="middle">account balance += amount</text></g>
+<g class="te"><rect x="365" y="486" width="270" height="56" rx="4"/><text class="th" x="500" y="508" text-anchor="middle">Block apply</text><text class="ts" x="500" y="526" text-anchor="middle">LMDB m_gateway_accounts +=</text></g>
+<line class="arr" x1="180" y1="542" x2="180" y2="566" marker-end="url(#arrow)"/>
+<line class="arr" x1="500" y1="542" x2="500" y2="566" marker-end="url(#arrow)"/>
+<g class="te"><rect x="45" y="570" width="270" height="56" rx="4"/><text class="th" x="180" y="592" text-anchor="middle">Exchange credits user</text><text class="ts" x="180" y="610" text-anchor="middle">RPC read + decrypt pid</text></g>
+<g class="te"><rect x="365" y="570" width="270" height="56" rx="4"/><text class="th" x="500" y="592" text-anchor="middle">Exchange credits user</text><text class="ts" x="500" y="610" text-anchor="middle">same RPC surface, no scan</text></g>
+<g class="pu"><rect x="45" y="652" width="12" height="12" rx="2"/></g><text class="lg" x="63" y="662">gateway-specific code</text>
+<g class="gy"><rect x="225" y="652" width="12" height="12" rx="2"/></g><text class="lg" x="243" y="662">existing machinery, unchanged</text>
+<g class="te"><rect x="445" y="652" width="12" height="12" rx="2"/></g><text class="lg" x="463" y="662">account state / service side</text>
+</svg>

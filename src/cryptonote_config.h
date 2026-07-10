@@ -58,6 +58,11 @@ inline constexpr size_t   TX_BULLETPROOF_MAX_OUTPUTS           = 16;
 inline constexpr size_t   TX_BULLETPROOF_PLUS_MAX_OUTPUTS      = 16;
 inline constexpr uint64_t PUBLIC_ADDRESS_TEXTBLOB_VER          = 0;
 
+// Gateway address (HF22) registration fee, burned via the coin_burn /
+// TX_EXTRA_TAG_BURN machinery. 100 BDX (COIN = 10^9 atomic units). Spelled as a
+// literal here because beldex_economy.h (which defines COIN) includes this file.
+inline constexpr uint64_t GATEWAY_ADDRESS_REGISTRATION_FEE     = UINT64_C(100000000000); // 100 * pow(10, 9)
+
 inline constexpr uint64_t FINAL_SUBSIDY_PER_MINUTE             = 500000000; // 3 * pow(10, 7)
 
 inline constexpr uint64_t BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW    = 11;
@@ -117,6 +122,10 @@ namespace hashkey {
   inline constexpr std::string_view CLSAG_ROUND = "CLSAG_round"sv;
   inline constexpr std::string_view CLSAG_AGG_0 = "CLSAG_agg_0"sv;
   inline constexpr std::string_view CLSAG_AGG_1 = "CLSAG_agg_1"sv;
+  // Gateway address (HF22) domain separators.
+  inline constexpr std::string_view GW_INPUT_SIG    = "gateway_input_sig"sv;    // withdrawal input signature message
+  inline constexpr std::string_view GW_OWNERSHIP    = "gateway_ownership"sv;    // descriptor-update ownership proof message
+  inline constexpr std::string_view GW_OUT_PID_MASK = "gateway_out_pid_mask"sv; // integrated-address payment-id encryption mask
 }
 
 // Maximum allowed stake contribution, as a fraction of the available contribution room.  This
@@ -205,6 +214,7 @@ enum class hf : uint8_t
     hf19_enhance_bns, // provided EVM address in BNS
     hf20_bulletproof_plus,
     hf21_bulletproof_plus,
+    hf22_gateway_addresses, // Account-model gateway addresses for exchanges/bridges/DEXes
 
     _next,
     none = 0
@@ -236,6 +246,7 @@ namespace feature {
   constexpr auto CLSAG                        = hf::hf15_flash;
   constexpr auto PROOF_BTENC                  = hf::hf18_bns;
   constexpr auto BULLETPROOF_PLUS             = hf::hf20_bulletproof_plus;
+  constexpr auto GATEWAY_ADDRESSES            = hf::hf22_gateway_addresses;
 }
 
 enum network_type : uint8_t
@@ -315,6 +326,12 @@ namespace config
   inline constexpr uint64_t PUBLIC_ADDRESS_BASE58_PREFIX = 0xd1;
   inline constexpr uint64_t PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX = 19;
   inline constexpr uint64_t PUBLIC_SUBADDRESS_BASE58_PREFIX = 42;
+  // Gateway address (HF22) prefixes. The numeric tag drives the leading base58
+  // glyphs; these were computed so every mainnet gateway address renders with a
+  // provably-stable `gwB…` / `gwiB…` prefix (the first base58 block is
+  // varint(tag)+pubkey-prefix, and fixed-width base58 preserves order).
+  inline constexpr uint64_t PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX = 0x606e; // gwB…
+  inline constexpr uint64_t PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX = 0x9276e; // gwiB…
   inline constexpr uint16_t P2P_DEFAULT_PORT = 19090;
   inline constexpr uint16_t RPC_DEFAULT_PORT = 19091;
   inline constexpr uint16_t ZMQ_RPC_DEFAULT_PORT = 19092;
@@ -346,6 +363,10 @@ namespace config
     inline constexpr uint64_t PUBLIC_ADDRESS_BASE58_PREFIX = 53;
     inline constexpr uint64_t PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX = 54;
     inline constexpr uint64_t PUBLIC_SUBADDRESS_BASE58_PREFIX = 63;
+    // Gateway address (HF22) prefixes — render `gwT…` / `gwiT…` (network-distinct
+    // from mainnet to prevent cross-network address confusion).
+    inline constexpr uint64_t PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX = 0xf63ee; // gwT…
+    inline constexpr uint64_t PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX = 0x11276e; // gwiT…
     inline constexpr uint16_t P2P_DEFAULT_PORT = 29090;
     inline constexpr uint16_t RPC_DEFAULT_PORT = 29091;
     inline constexpr uint16_t ZMQ_RPC_DEFAULT_PORT = 29092;
@@ -375,6 +396,10 @@ namespace config
     inline constexpr uint64_t PUBLIC_ADDRESS_BASE58_PREFIX = 24; // ~ dV1 .. dV3
     inline constexpr uint64_t PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX = 25; // ~ dVA .. dVC
     inline constexpr uint64_t PUBLIC_SUBADDRESS_BASE58_PREFIX = 36; // ~dVa .. dVc
+    // Gateway address (HF22) prefixes — render `gwD…` / `gwiD…` (network-distinct
+    // from mainnet to prevent cross-network address confusion).
+    inline constexpr uint64_t PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX = 0x60ee; // gwD…
+    inline constexpr uint64_t PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX = 0xa276e; // gwiD…
     inline constexpr uint16_t P2P_DEFAULT_PORT = 39090;
     inline constexpr uint16_t RPC_DEFAULT_PORT = 39091;
     inline constexpr uint16_t ZMQ_RPC_DEFAULT_PORT = 39092;
@@ -412,6 +437,8 @@ namespace config
     uint64_t PUBLIC_ADDRESS_BASE58_PREFIX;
     uint64_t PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX;
     uint64_t PUBLIC_SUBADDRESS_BASE58_PREFIX;
+    uint64_t PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX;
+    uint64_t PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX;
     uint16_t P2P_DEFAULT_PORT;
     uint16_t RPC_DEFAULT_PORT;
     uint16_t ZMQ_RPC_DEFAULT_PORT;
@@ -441,6 +468,8 @@ namespace config
     config::PUBLIC_ADDRESS_BASE58_PREFIX,
     config::PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX,
     config::PUBLIC_SUBADDRESS_BASE58_PREFIX,
+    config::PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX,
+    config::PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX,
     config::P2P_DEFAULT_PORT,
     config::RPC_DEFAULT_PORT,
     config::ZMQ_RPC_DEFAULT_PORT,
@@ -464,6 +493,8 @@ namespace config
     config::testnet::PUBLIC_ADDRESS_BASE58_PREFIX,
     config::testnet::PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX,
     config::testnet::PUBLIC_SUBADDRESS_BASE58_PREFIX,
+    config::testnet::PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX,
+    config::testnet::PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX,
     config::testnet::P2P_DEFAULT_PORT,
     config::testnet::RPC_DEFAULT_PORT,
     config::testnet::ZMQ_RPC_DEFAULT_PORT,
@@ -487,6 +518,8 @@ namespace config
     config::devnet::PUBLIC_ADDRESS_BASE58_PREFIX,
     config::devnet::PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX,
     config::devnet::PUBLIC_SUBADDRESS_BASE58_PREFIX,
+    config::devnet::PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX,
+    config::devnet::PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX,
     config::devnet::P2P_DEFAULT_PORT,
     config::devnet::RPC_DEFAULT_PORT,
     config::devnet::ZMQ_RPC_DEFAULT_PORT,
@@ -510,6 +543,8 @@ namespace config
     config::PUBLIC_ADDRESS_BASE58_PREFIX,
     config::PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX,
     config::PUBLIC_SUBADDRESS_BASE58_PREFIX,
+    config::PUBLIC_GATEWAY_ADDRESS_BASE58_PREFIX,
+    config::PUBLIC_INTEGRATED_GATEWAY_ADDRESS_BASE58_PREFIX,
     config::P2P_DEFAULT_PORT,
     config::RPC_DEFAULT_PORT,
     config::ZMQ_RPC_DEFAULT_PORT,

@@ -130,6 +130,13 @@ int main(int argc, char* argv[])
     GENERATE_AND_PLAY(beldex_name_system_update_mapping_replay);
     GENERATE_AND_PLAY(beldex_name_system_wrong_burn);
     GENERATE_AND_PLAY(beldex_name_system_wrong_version);
+    GENERATE_AND_PLAY(beldex_gateway_register);
+    GENERATE_AND_PLAY(beldex_gateway_register_insufficient_fee);
+    GENERATE_AND_PLAY(beldex_gateway_register_duplicate);
+    GENERATE_AND_PLAY(beldex_gateway_register_pre_hf22);
+    GENERATE_AND_PLAY(beldex_gateway_update);
+    GENERATE_AND_PLAY(beldex_gateway_update_wrong_key);
+    GENERATE_AND_PLAY(beldex_gateway_register_reorg);
     GENERATE_AND_PLAY(beldex_master_nodes_alt_quorums);
     GENERATE_AND_PLAY(beldex_master_nodes_checkpoint_quorum_size);
     GENERATE_AND_PLAY(beldex_master_nodes_gen_nodes);

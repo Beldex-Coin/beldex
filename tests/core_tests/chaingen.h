@@ -1332,7 +1332,9 @@ public:
     uint64_t change_amount;
 
     constexpr size_t nmix = 9;
-    if (m_tx_params.tx_type == cryptonote::txtype::beldex_name_system) // BNS txes only have change
+    if (m_tx_params.tx_type == cryptonote::txtype::beldex_name_system ||
+        m_tx_params.tx_type == cryptonote::txtype::register_gateway_address ||
+        m_tx_params.tx_type == cryptonote::txtype::update_gateway_address) // fee/burn + change only, no transfer
     {
       fill_tx_sources_and_multi_destinations(
           m_events, m_head, m_from, m_to, nullptr /*amounts*/, 0 /*num_amounts*/, m_fee, nmix, sources, destinations, true /*add change*/, &change_amount);

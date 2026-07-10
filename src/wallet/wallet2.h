@@ -1410,6 +1410,15 @@ private:
 
     std::vector<pending_tx> bns_create_buy_mapping_tx(bns::mapping_years mapping_years, std::string const *owner, std::string const *backup_owner, std::string name, std::string const *value_bchat, std::string const *value_wallet, std::string const *value_belnet, std::string const *value_eth_addr, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {});
 
+    // Gateway address (HF22) registration: builds a tx that burns
+    // GATEWAY_ADDRESS_REGISTRATION_FEE and carries a register descriptor op in
+    // tx_extra. `gateway_id` is the on-chain id (a view pubkey; the registrant
+    // must know its secret to decrypt deposits). `owner_key` is the owner key
+    // that authorizes spends/updates — any of the three supported types (native
+    // Schnorr `crypto::public_key`, secp256k1 `eth_public_key`, RFC-8032
+    // `eddsa_public_key`); it is validated for its type before building the tx.
+    std::vector<pending_tx> create_gateway_register_tx(const crypto::public_key& gateway_id, const cryptonote::gateway_owner_key_v& owner_key, const std::string& meta_info, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {});
+
     // signature: (Optional) If set, use the signature given, otherwise by default derive the signature from the wallet spend key as an ed25519 key.
     //            The signature is derived from the hash of the previous txid blob and previous value blob of the mapping. By default this is signed using the wallet's spend key as an ed25519 keypair.
     std::vector<pending_tx> bns_create_update_mapping_tx(std::string name, std::string const *value_bchat, std::string const *value_wallet, std::string const *value_belnet, std::string const *value_eth_addr, std::string const *owner, std::string const *backup_owner, std::string const *signature, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {}, nlohmann::json *response = {});

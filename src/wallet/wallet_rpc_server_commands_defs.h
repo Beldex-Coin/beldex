@@ -2300,6 +2300,38 @@ For more information on updating and signing see the BNS_UPDATE_MAPPING document
   };
 
   BELDEX_RPC_DOC_INTROSPECT
+  // Register a gateway address (HF22).
+  struct GATEWAY_REGISTER_ADDRESS : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("register_gateway_address"); }
+
+    static constexpr const char *description =
+R"(Register a gateway address (HF22). Builds a transaction that burns the gateway
+registration fee and stores the descriptor (owner key + meta) on-chain. The
+gateway is thereafter operated via the owner key.)";
+
+    struct request
+    {
+      std::string        gateway_id;       // 64-char hex gateway address id (registrant view pubkey).
+      std::string        owner_key_type;   // Owner key type: "schnorr" (native), "eth" (secp256k1), or "eddsa".
+      std::string        owner_key;        // Hex owner key (64 for schnorr/eddsa, 66 for eth-compressed).
+      std::string        meta_info;        // (Optional) descriptor meta string.
+
+      uint32_t           account_index;    // (Optional) Transfer from this account index. (Defaults to 0)
+      std::set<uint32_t> subaddr_indices;  // (Optional) Transfer from this set of subaddresses. (Defaults to 0)
+      uint32_t           priority;         // Set a priority for the transaction. Accepted values are: 0-4.
+      bool               get_tx_key;       // (Optional) Return the transaction key after sending.
+      bool               do_not_relay;     // (Optional) If true, do not relay the transaction. (Defaults to false)
+      bool               get_tx_hex;       // Return the transaction as hex string after sending (Defaults to false)
+      bool               get_tx_metadata;  // Return the metadata needed to relay the transaction. (Defaults to false)
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    using response = BNS_BUY_MAPPING::response;
+  };
+
+  BELDEX_RPC_DOC_INTROSPECT
   // Renew an active belnet BNS registration
   struct BNS_RENEW_MAPPING : RESTRICTED
   {
@@ -2682,6 +2714,7 @@ This command is only required if the open wallet is one of the owners of a BNS r
     SET_LOG_LEVEL,
     SET_LOG_CATEGORIES,
     BNS_BUY_MAPPING,
+    GATEWAY_REGISTER_ADDRESS,
     BNS_UPDATE_MAPPING,
     BNS_RENEW_MAPPING,
     BNS_MAKE_UPDATE_SIGNATURE,

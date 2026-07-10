@@ -34,6 +34,8 @@ add_library(cncrypto
   crypto-ops-data.c
   crypto-ops.c
   crypto.cpp
+  eddsa_signature.cpp
+  eth_signature.cpp
   groestl.c
   hash-extra-blake.c
   hash-extra-groestl.c
@@ -66,6 +68,7 @@ target_link_libraries(cncrypto
     Boost::thread
     sodium
   PRIVATE
+    secp256k1
     extra)
 
 if (CMAKE_CXX_COMPILER_ID MATCHES Clang OR CMAKE_CXX_COMPILER_ID STREQUAL GNU)

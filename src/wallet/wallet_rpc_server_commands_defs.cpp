@@ -1179,6 +1179,21 @@ KV_SERIALIZE_MAP_CODE_BEGIN(BNS_BUY_MAPPING::request)
 KV_SERIALIZE_MAP_CODE_END()
 
 
+KV_SERIALIZE_MAP_CODE_BEGIN(GATEWAY_REGISTER_ADDRESS::request)
+  KV_SERIALIZE    (gateway_id);
+  KV_SERIALIZE    (owner_key_type);
+  KV_SERIALIZE    (owner_key);
+  KV_SERIALIZE    (meta_info);
+  KV_SERIALIZE_OPT(account_index,   (uint32_t)0);
+  KV_SERIALIZE    (subaddr_indices);
+  KV_SERIALIZE_OPT(priority,        (uint32_t)0);
+  KV_SERIALIZE    (get_tx_key)
+  KV_SERIALIZE_OPT(do_not_relay,    false)
+  KV_SERIALIZE_OPT(get_tx_hex,      false)
+  KV_SERIALIZE_OPT(get_tx_metadata, false)
+KV_SERIALIZE_MAP_CODE_END()
+
+
 KV_SERIALIZE_MAP_CODE_BEGIN(BNS_BUY_MAPPING::response)
   KV_SERIALIZE(tx_hash)
   KV_SERIALIZE(tx_key)

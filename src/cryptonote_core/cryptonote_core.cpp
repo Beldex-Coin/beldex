@@ -48,6 +48,7 @@ extern "C" {
 #include <sqlite3.h>
 
 #include "cryptonote_core.h"
+#include "gateway_utils.h"
 #include "uptime_proof.h"
 #include "common/file.h"
 #include "common/sha256sum.h"
@@ -1226,6 +1227,7 @@ namespace cryptonote
     }
 
     std::vector<const rct::rctSig*> rvv;
+    std::vector<rct::key> rvv_gateway_offsets; // HF22: parallel to rvv
     for (size_t n = 0; n < tx_info.size(); ++n)
     {
       if (!tx_info[n].result || tx_info[n].already_have)
@@ -1244,12 +1246,21 @@ namespace cryptonote
       const rct::rctSig &rv = tx_info[n].tx.rct_signatures;
       switch (rv.type) {
         case rct::RCTType::Null:
+        {
+          // HF22: a pure-gateway tx (only gateway in/out) carries no RCT. Verify
+          // its plain-arithmetic balance instead of rejecting.
+          uint64_t gw_fee = 0;
+          std::string gw_reason;
+          if (cryptonote::tx_has_gateway_constructs(tx_info[n].tx) &&
+              cryptonote::verify_pure_gateway_balance(tx_info[n].tx, gw_fee, gw_reason))
+            break;
           // coinbase should not come here, so we reject for all other types
-          MERROR_VER("Unexpected Null rctSig type");
+          MERROR_VER("Unexpected Null rctSig type" << (gw_reason.empty() ? "" : (": " + gw_reason)));
           set_semantics_failed(tx_info[n].tx_hash);
           tx_info[n].tvc.m_verifivation_failed = true;
           tx_info[n].result = false;
           break;
+        }
         case rct::RCTType::Simple:
           if (!rct::verRctSemanticsSimple(rv))
           {
@@ -1282,6 +1293,7 @@ namespace cryptonote
             break;
           }
           rvv.push_back(&rv); // delayed batch verification
+          rvv_gateway_offsets.push_back(cryptonote::gateway_balance_offset(tx_info[n].tx)); // HF22 (identity if none)
           break;
         case rct::RCTType::BulletproofPlus:
           if (!is_canonical_bulletproof_plus_layout(rv.p.bulletproofs_plus))
@@ -1293,6 +1305,7 @@ namespace cryptonote
             break;
           }
           rvv.push_back(&rv); // delayed batch verification
+          rvv_gateway_offsets.push_back(cryptonote::gateway_balance_offset(tx_info[n].tx)); // HF22 (identity if none)
           break;
         default:
           MERROR_VER("Unknown rct type: " << (int)rv.type);
@@ -1302,7 +1315,7 @@ namespace cryptonote
           break;
       }
     }
-    if (!rvv.empty() && !rct::verRctSemanticsSimple(rvv))
+    if (!rvv.empty() && !rct::verRctSemanticsSimple(rvv, &rvv_gateway_offsets))
     {
       LOG_PRINT_L1("One transaction among this group has bad semantics, verifying one at a time");
       const bool assumed_bad = rvv.size() == 1; // if there's only one tx, it must be the bad one
@@ -1312,7 +1325,8 @@ namespace cryptonote
           continue;
         if (tx_info[n].tx.rct_signatures.type != rct::RCTType::Bulletproof && tx_info[n].tx.rct_signatures.type != rct::RCTType::Bulletproof2 && tx_info[n].tx.rct_signatures.type != rct::RCTType::CLSAG && tx_info[n].tx.rct_signatures.type != rct::RCTType::BulletproofPlus)
           continue;
-        if (assumed_bad || !rct::verRctSemanticsSimple(tx_info[n].tx.rct_signatures))
+        rct::key gw_off = cryptonote::gateway_balance_offset(tx_info[n].tx);
+        if (assumed_bad || !rct::verRctSemanticsSimple(tx_info[n].tx.rct_signatures, &gw_off))
         {
           set_semantics_failed(tx_info[n].tx_hash);
           tx_info[n].tvc.m_verifivation_failed = true;
@@ -1625,7 +1639,14 @@ namespace cryptonote
 
     if (tx.version >= txversion::v2_ringct)
     {
-      if (tx.rct_signatures.outPk.size() != tx.vout.size())
+      // Gateway deposit outputs (tx_out_gateway, HF22) are transparent and are not
+      // part of the confidential RCT outputs, so outPk covers the RCT
+      // (txout_to_key) outputs only. Compare against that count, not vout.size().
+      size_t rct_outputs = 0;
+      for (const auto& o : tx.vout)
+        if (!std::holds_alternative<tx_out_gateway>(o.target))
+          ++rct_outputs;
+      if (tx.rct_signatures.outPk.size() != rct_outputs)
       {
         MERROR_VER("tx with mismatched vout/outPk count, rejected for tx id= " << get_transaction_hash(tx));
         return false;

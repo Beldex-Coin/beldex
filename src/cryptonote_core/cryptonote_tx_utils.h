@@ -171,6 +171,13 @@ namespace cryptonote
     bool is_subaddress;
     bool is_integrated;
 
+    // Gateway deposit (HF22): when is_gateway, this destination is paid out as a
+    // transparent tx_out_gateway (to gateway_id, with the encrypted
+    // gateway_payment_id) rather than a normal stealth output. addr is unused.
+    bool is_gateway = false;
+    crypto::public_key gateway_id{};
+    uint64_t gateway_payment_id = 0;
+
     tx_destination_entry() : amount(0), addr{}, is_subaddress(false), is_integrated(false) { }
     tx_destination_entry(uint64_t a, const account_public_address &ad, bool is_subaddress) : amount(a), addr(ad), is_subaddress(is_subaddress), is_integrated(false) { }
     tx_destination_entry(const std::string &o, uint64_t a, const account_public_address &ad, bool is_subaddress) : original(o), amount(a), addr(ad), is_subaddress(is_subaddress), is_integrated(false) { }
@@ -201,6 +208,9 @@ namespace cryptonote
       FIELD(addr)
       FIELD(is_subaddress)
       FIELD(is_integrated)
+      FIELD(is_gateway)
+      FIELD(gateway_id)
+      VARINT_FIELD(gateway_payment_id)
     END_SERIALIZE()
   };
 
@@ -261,7 +271,7 @@ namespace cryptonote
 }
 
 BOOST_CLASS_VERSION(cryptonote::tx_source_entry, 1)
-BOOST_CLASS_VERSION(cryptonote::tx_destination_entry, 2)
+BOOST_CLASS_VERSION(cryptonote::tx_destination_entry, 3)
 
 namespace boost
 {
@@ -298,6 +308,14 @@ namespace boost
       }
       a & x.original;
       a & x.is_integrated;
+      if (ver < 3)
+      {
+        x.is_gateway = false;
+        return;
+      }
+      a & x.is_gateway;
+      a & x.gateway_id;
+      a & x.gateway_payment_id;
     }
   }
 }

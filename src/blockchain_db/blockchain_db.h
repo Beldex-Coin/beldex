@@ -1823,6 +1823,15 @@ public:
   /// found, false if not found.
   virtual bool remove_master_node_proof(const crypto::public_key &pubkey) = 0;
 
+  // Gateway accounts (HF22). Keyed by the gateway address id (== registrant's
+  // view_pub_key); the value is a serialized cryptonote::gateway_account_data
+  // blob. The DB layer is blob-agnostic; (de)serialization lives in gateway_utils.
+  virtual void set_gateway_account(const crypto::public_key& gateway_addr, const std::string& data) = 0;
+  virtual bool get_gateway_account(const crypto::public_key& gateway_addr, std::string& data) const = 0;
+  virtual bool remove_gateway_account(const crypto::public_key& gateway_addr) = 0;
+  virtual bool gateway_exists(const crypto::public_key& gateway_addr) const = 0;
+  virtual std::vector<crypto::public_key> get_all_gateway_ids() const = 0;
+
   // This function accepts an empty timestamps/difficulties array to fill, or
   // a prior timestamps/difficulties array that was filled by a previous call to
   // this same function in which case it will optimally insert and remove the

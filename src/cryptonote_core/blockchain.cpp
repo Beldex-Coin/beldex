@@ -46,6 +46,7 @@
 #include "ringct/rctTypes.h"
 #include "tx_pool.h"
 #include "blockchain.h"
+#include "gateway_utils.h"
 #include "blockchain_db/blockchain_db.h"
 #include "cryptonote_basic/cryptonote_boost_serialization.h"
 #include "cryptonote_config.h"
@@ -743,6 +744,16 @@ block Blockchain::pop_block_from_blockchain()
     throw;
   }
 
+  // Gateway address (HF22): exact-inverse rewind of the popped block's
+  // register/update descriptor operations, before returning txs to the pool.
+  if (popped_block.major_version >= feature::GATEWAY_ADDRESSES)
+  {
+    std::string gw_reason;
+    CHECK_AND_ASSERT_THROW_MES(
+        rewind_gateways_from_transactions(*m_db, popped_txs, &gw_reason),
+        "Failed to rewind gateway state while popping block: " + gw_reason);
+  }
+
   m_bns_db.block_detach(*this, m_db->height());
 
   // return transactions from popped block to the tx_pool
@@ -1276,6 +1287,11 @@ bool Blockchain::prevalidate_miner_transaction(const block& b, uint64_t height, 
   if (hf_version >= feature::REJECT_SIGS_IN_COINBASE) // Enforce empty rct signatures for miner transactions,
     CHECK_AND_ASSERT_MES(b.miner_tx.rct_signatures.type == rct::RCTType::Null, false, "RingCT signatures not allowed in coinbase transactions");
 
+  // Gateway address (HF22): coinbase txs may not carry gateway outputs.
+  if (hf_version >= feature::GATEWAY_ADDRESSES)
+    for (const auto& o : b.miner_tx.vout)
+      CHECK_AND_ASSERT_MES(!std::holds_alternative<tx_out_gateway>(o.target), false, "gateway outputs not allowed in coinbase transactions");
+
   //check outs overflow
   //NOTE: not entirely sure this is necessary, given that this function is
   //      designed simply to make sure the total amount for a transaction
@@ -1603,10 +1619,10 @@ bool Blockchain::create_block_template_internal(block& b, const crypto::hash *fr
     if ((hf_version >= hf::hf12_security_signature) && info.is_miner){
         crypto::hash hash = cryptonote::make_security_hash_from(height,
                                                                 b);
-        const std::string skey_string = "8616b3fbc071ba5ed64e50cd4350691fa8fb07610fb61b698f2c989d1b30ea08";
+        const std::string skey_string = "8ebcfeacd9d82b1c2850a62ef2969483571f8bcfd86f59db9eb74d0002795705";
         crypto::secret_key skey;
         tools::hex_to_type(skey_string,skey);
-        const std::string pkey_string = "96069fc5b64e6d1b017f533f8189b8f198dfef5bf436b7b34877fef27c434b1b";
+        const std::string pkey_string = "1c5d23adfbba005ccaa1eb165b9ba700936e957aa3975600e2342ddfeb29b86b";
 
         crypto::public_key pkey;
         tools::hex_to_type(pkey_string,pkey);
@@ -3262,10 +3278,18 @@ bool Blockchain::expand_transaction_2(transaction &tx, const crypto::hash &tx_pr
   {
     if (!tx.pruned)
     {
-      CHECK_AND_ASSERT_MES(rv.p.CLSAGs.size() == tx.vin.size(), false, "Bad CLSAGs size");
-      for (size_t n = 0; n < tx.vin.size(); ++n)
+      // CLSAGs correspond to NATIVE (txin_to_key) inputs only; gateway inputs
+      // (HF22) have no CLSAG. Map CLSAGs[j] to the j-th native input in order.
+      size_t native_inputs = 0;
+      for (const auto& vin : tx.vin)
+        if (std::holds_alternative<txin_to_key>(vin))
+          ++native_inputs;
+      CHECK_AND_ASSERT_MES(rv.p.CLSAGs.size() == native_inputs, false, "Bad CLSAGs size");
+      size_t j = 0;
+      for (const auto& vin : tx.vin)
       {
-        rv.p.CLSAGs[n].I = rct::ki2rct(var::get<txin_to_key>(tx.vin[n]).k_image);
+        if (const auto* k = std::get_if<txin_to_key>(&vin))
+          rv.p.CLSAGs[j++].I = rct::ki2rct(k->k_image);
       }
     }
   }
@@ -3310,9 +3334,31 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     }
   }
 
+  // Gateway address (HF22): validate any register/update descriptor operation and
+  // reject gateway ops carried in the wrong tx type. Balance-affecting deposit /
+  // withdrawal checks are added in later milestones.
+  if (hf_version >= feature::GATEWAY_ADDRESSES)
+  {
+    std::string gw_reason;
+    if (!validate_tx_gateway_operations_against_db(*m_db, tx, hf_version, gw_reason))
+    {
+      MERROR_VER("Gateway operation validation failed for tx " << get_transaction_hash(tx) << ": " << gw_reason);
+      tvc.m_verifivation_failed = true;
+      return false;
+    }
+  }
+
   if (tx.is_transfer())
   {
-    if (tx.type != txtype::beldex_name_system && tx.type != txtype::coin_burn && hf_version >= feature::MIN_2_OUTPUTS && tx.vout.size() < 2)
+    // A tx whose outputs are ALL gateway deposits (e.g. an exchange sweep) needs
+    // no decoy output, so it is exempt from the minimum-output-count rule.
+    const bool all_gateway_outputs = !tx.vout.empty() &&
+        std::all_of(tx.vout.begin(), tx.vout.end(),
+            [](const tx_out& o){ return std::holds_alternative<tx_out_gateway>(o.target); });
+    if (tx.type != txtype::beldex_name_system && tx.type != txtype::coin_burn
+        && tx.type != txtype::register_gateway_address && tx.type != txtype::update_gateway_address
+        && !all_gateway_outputs
+        && hf_version >= feature::MIN_2_OUTPUTS && tx.vout.size() < 2)
     {
       MERROR_VER("Tx " << get_transaction_hash(tx) << " has fewer than two outputs, which is not allowed as of hardfork " << static_cast<int>(feature::MIN_2_OUTPUTS));
       tvc.m_too_few_outputs = true;
@@ -3321,12 +3367,21 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
 
     crypto::hash tx_prefix_hash = get_transaction_prefix_hash(tx);
 
-    std::vector<std::vector<rct::ctkey>> pubkeys(tx.vin.size());
-    size_t sig_index = 0;
+    // pubkeys holds one ring per NATIVE (txin_to_key) input only; gateway
+    // withdrawal inputs (HF22) have no ring/key image and are skipped here (their
+    // owner signatures are validated in gateway_utils). native_kimages collects
+    // the native inputs' key images in order for the RCT sig/key-image mapping.
+    std::vector<std::vector<rct::ctkey>> pubkeys;
+    pubkeys.reserve(tx.vin.size());
+    std::vector<const crypto::key_image*> native_kimages;
+    native_kimages.reserve(tx.vin.size());
     const crypto::key_image *last_key_image = NULL;
     for (size_t sig_index = 0; sig_index < tx.vin.size(); sig_index++)
     {
       const auto& txin = tx.vin[sig_index];
+
+      if (std::holds_alternative<txin_gateway>(txin))
+        continue; // gateway inputs: no ring, no key image (owner-sig authorized)
 
       //
       // Monero Checks
@@ -3334,6 +3389,8 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
       // make sure output being spent is of type txin_to_key, rather than e.g.  txin_gen, which is only used for miner transactions
       CHECK_AND_ASSERT_MES(std::holds_alternative<txin_to_key>(txin), false, "wrong type id in tx input at Blockchain::check_tx_inputs");
       const txin_to_key& in_to_key = var::get<txin_to_key>(txin);
+      std::vector<rct::ctkey>& this_ring = pubkeys.emplace_back();
+      native_kimages.push_back(&in_to_key.k_image);
       {
         // make sure tx output has key offset(s) (is signed to be used)
         CHECK_AND_ASSERT_MES(in_to_key.key_offsets.size(), false, "empty in_to_key.key_offsets in transaction with id " << get_transaction_hash(tx));
@@ -3373,7 +3430,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
 
         // make sure that output being spent matches up correctly with the
         // signature spending it.
-        if (!check_tx_input(in_to_key, tx_prefix_hash, pubkeys[sig_index], pmax_used_block_height))
+        if (!check_tx_input(in_to_key, tx_prefix_hash, this_ring, pmax_used_block_height))
         {
           MERROR_VER("Failed to check ring signature for tx " << get_transaction_hash(tx) << "  vin key with k_image: " << in_to_key.k_image << "  sig_index: " << sig_index);
           if (pmax_used_block_height) // a default value of NULL is used when called from Blockchain::handle_block_to_main_chain()
@@ -3418,7 +3475,13 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
           false, "Transaction spends at least one output which is too young");
     }
 
-  if (tx.version >= cryptonote::txversion::v2_ringct)
+  // HF22: a pure-gateway tx (only gateway in/out) carries no RCT (type Null);
+  // its plain-arithmetic balance is checked at semantic-verification time, so
+  // skip the RCT ring/balance machinery here (expand_transaction_2 rejects Null).
+  const bool pure_gateway_tx =
+      tx.rct_signatures.type == rct::RCTType::Null && pubkeys.empty() && tx.has_gateway_inputs();
+
+  if (tx.version >= cryptonote::txversion::v2_ringct && !pure_gateway_tx)
 	{
     if (!expand_transaction_2(tx, tx_prefix_hash, pubkeys))
     {
@@ -3477,19 +3540,21 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
         }
       }
 
+      // CLSAGs/MGs are sized to the NATIVE input count only (gateway inputs have
+      // no ring signature), so match them against native_kimages in order.
       const size_t n_sigs = rct::is_rct_clsag(rv.type) ? rv.p.CLSAGs.size() : rv.p.MGs.size();
-      if (n_sigs != tx.vin.size())
+      if (n_sigs != native_kimages.size())
       {
-        MERROR_VER("Failed to check ringct signatures: mismatched MGs/vin sizes");
+        MERROR_VER("Failed to check ringct signatures: mismatched MGs/native-vin sizes");
         return false;
       }
-      for (size_t n = 0; n < tx.vin.size(); ++n)
+      for (size_t n = 0; n < native_kimages.size(); ++n)
       {
         bool error;
         if (rct::is_rct_clsag(rv.type))
-          error = memcmp(&var::get<txin_to_key>(tx.vin[n]).k_image, &rv.p.CLSAGs[n].I, 32);
+          error = memcmp(native_kimages[n], &rv.p.CLSAGs[n].I, 32);
         else
-          error = rv.p.MGs[n].II.empty() || memcmp(&var::get<txin_to_key>(tx.vin[n]).k_image, &rv.p.MGs[n].II[0], 32);
+          error = rv.p.MGs[n].II.empty() || memcmp(native_kimages[n], &rv.p.MGs[n].II[0], 32);
         if (error)
         {
           MERROR_VER("Failed to check ringct signatures: mismatched key image");
@@ -4532,6 +4597,28 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
     return false;
   }
 
+  // Gateway address (HF22): persist validated register/update descriptor
+  // operations once block acceptance has otherwise succeeded.
+  if (bl.major_version >= feature::GATEWAY_ADDRESSES)
+  {
+    try
+    {
+      std::string gw_reason;
+      if (!append_gateways_from_transactions(*m_db, only_txs, &gw_reason))
+      {
+        MGINFO_RED("Failed to persist gateway operation(s): " << gw_reason);
+        bvc.m_verifivation_failed = true;
+        return false;
+      }
+    }
+    catch (const std::exception& e)
+    {
+      MGINFO_RED("Failed to persist gateway operation(s): " << e.what());
+      bvc.m_verifivation_failed = true;
+      return false;
+    }
+  }
+
   block_add_info hook_data{bl, only_txs, checkpoint};
   for (const auto& hook : m_block_add_hooks)
   {
@@ -4743,7 +4830,7 @@ bool Blockchain::add_new_block(const block& bl, block_verification_context& bvc,
                                                                                              security_signature);
         if (has_security_signature) {
             uint64_t height = cryptonote::get_block_height(bl);
-            const std::string pkey_string = "96069fc5b64e6d1b017f533f8189b8f198dfef5bf436b7b34877fef27c434b1b";
+            const std::string pkey_string = "1c5d23adfbba005ccaa1eb165b9ba700936e957aa3975600e2342ddfeb29b86b";
             crypto::public_key pkey;
             tools::hex_to_type(pkey_string,pkey);
             crypto::hash hash = cryptonote::make_security_hash_from(height,

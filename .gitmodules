@@ -40,3 +40,6 @@
 [submodule "external/Catch2"]
 	path = external/Catch2
 	url = https://github.com/catchorg/Catch2
+[submodule "external/secp256k1"]
+	path = external/secp256k1
+	url = https://github.com/bitcoin-core/secp256k1

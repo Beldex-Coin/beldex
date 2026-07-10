@@ -1479,10 +1479,12 @@ namespace rct {
 
     //ver RingCT simple
     //assumes only post-rct style inputs (at least for max anonymity)
-    bool verRctSemanticsSimple(const std::vector<const rctSig*> & rvv) {
+    bool verRctSemanticsSimple(const std::vector<const rctSig*> & rvv, const std::vector<key>* gateway_offsets) {
       try
       {
         PERF_TIMER(verRctSemanticsSimple);
+        CHECK_AND_ASSERT_MES(!gateway_offsets || gateway_offsets->size() == rvv.size(), false,
+            "gateway_offsets size does not match rvv");
 
         tools::threadpool& tpool = tools::threadpool::getInstance();
         tools::threadpool::waiter waiter;
@@ -1530,9 +1532,11 @@ namespace rct {
         }
 
         results.resize(max_non_bp_proofs);
+        size_t rv_index = 0;
         for (const rctSig *rvp: rvv)
         {
           const rctSig &rv = *rvp;
+          const size_t this_index = rv_index++;
 
           const bool bulletproof = is_rct_bulletproof(rv.type);
           const bool bulletproof_plus = is_rct_bulletproof_plus(rv.type);
@@ -1546,6 +1550,11 @@ namespace rct {
           DP(sumOutpks);
           const key txnFeeKey = scalarmultH(d2h(rv.txnFee));
           addKeys(sumOutpks, txnFeeKey, sumOutpks);
+
+          // HF22: fold in the transparent gateway commitment Σgw_out·H − Σgw_in·H
+          // so the native balance equation accounts for gateway deposits/withdrawals.
+          if (gateway_offsets)
+            addKeys(sumOutpks, (*gateway_offsets)[this_index], sumOutpks);
 
           key sumPseudoOuts = addKeys(pseudoOuts);
           DP(sumPseudoOuts);
@@ -1607,8 +1616,13 @@ namespace rct {
       }
     }
 
-    bool verRctSemanticsSimple(const rctSig & rv)
+    bool verRctSemanticsSimple(const rctSig & rv, const key* gateway_offset)
     {
+      if (gateway_offset)
+      {
+        std::vector<key> offsets{*gateway_offset};
+        return verRctSemanticsSimple(std::vector<const rctSig*>(1, &rv), &offsets);
+      }
       return verRctSemanticsSimple(std::vector<const rctSig*>(1, &rv));
     }
 

@@ -33,8 +33,10 @@
 #include <vector>
 #include <sstream>
 #include <atomic>
+#include <algorithm>
 #include "serialization/variant.h"
 #include "serialization/vector.h"
+#include "serialization/string.h"
 #include "serialization/binary_archive.h"
 #include "serialization/crypto.h"
 #include "epee/serialization/keyvalue_serialization.h" // eepe named serialization
@@ -92,6 +94,33 @@ namespace cryptonote
     crypto::public_key key;
   };
 
+  // Gateway address (HF22): the on-chain identity of a gateway account. It is
+  // the registrant's view_pub_key — both the account id and the DH key used to
+  // decrypt integrated-address payment ids.
+  using gateway_address_id = crypto::public_key;
+
+  // Gateway deposit output (HF22). Transparent: destination, asset and amount
+  // are all visible; the payment_id is encrypted (XOR with a mask derived from
+  // the DH shared secret 8·r·V_gw) so only the gateway owner can map deposits
+  // to customers. asset_id == crypto::null_aid means native BDX (permanent
+  // sentinel; HF22 consensus rejects any non-null asset_id).
+  struct tx_out_gateway
+  {
+    uint8_t version = 0;
+    gateway_address_id gateway_addr;
+    crypto::asset_id asset_id;   // null_aid = native BDX
+    uint64_t amount = 0;         // PLAINTEXT
+    uint64_t payment_id = 0;     // ENCRYPTED (integrated addresses); 0 otherwise
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(version)
+      FIELD(gateway_addr)
+      FIELD(asset_id)
+      VARINT_FIELD(amount)
+      VARINT_FIELD(payment_id)
+    END_SERIALIZE()
+  };
+
 
   /* inputs */
 
@@ -145,10 +174,131 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Gateway withdrawal input (HF22). Authorized by a plain owner signature over
+  // the tx prefix hash (carried in transaction::gateway_proofs), NOT a ring
+  // signature — there is no key image and no decoys. Balance sufficiency is
+  // checked against the gateway's on-chain balance. asset_id == null_aid =
+  // native BDX (HF22 rejects non-null).
+  struct txin_gateway
+  {
+    uint8_t version = 0;
+    gateway_address_id gateway_addr;
+    crypto::asset_id asset_id;   // null_aid = native BDX
+    uint64_t amount = 0;
 
-  using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key>;
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(version)
+      FIELD(gateway_addr)
+      FIELD(asset_id)
+      VARINT_FIELD(amount)
+    END_SERIALIZE()
+  };
 
-  using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key>;
+
+  // NOTE: gateway takes variant tag 0x4 in both variants; 0x3 is reserved for
+  // the confidential-asset branch (txin_zc_input / tx_out_zarcanum). See
+  // docs/GATEWAY_ADDRESS_PLAN.md §6.
+  using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key, txin_gateway>;
+
+  using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key, tx_out_gateway>;
+
+  // ---- Gateway address (HF22) owner keys, descriptors and proofs ----------
+  // The gateway owner key authorizes spends and descriptor updates. All three
+  // custody types ship at HF22; verification dispatches on the stored owner-key
+  // alternative and requires the matching signature alternative.
+  //   0 = Beldex-native ed25519 + plain Schnorr
+  //   1 = secp256k1 compressed, ETH-style compact ECDSA
+  //   2 = RFC-8032 Ed25519 (EdDSA)
+  using gateway_owner_key_v = std::variant<crypto::public_key,
+                                           crypto::eth_public_key,
+                                           crypto::eddsa_public_key>;
+  using gateway_owner_sig_v = std::variant<crypto::signature /*Schnorr*/,
+                                           crypto::eth_signature,
+                                           crypto::eddsa_signature>;
+
+  // Append-only descriptor record for a gateway account. Stored in tx_extra on
+  // register/update and mirrored into the consensus DB (latest entry is
+  // authoritative for spend/update validation).
+  struct gateway_descriptor_base
+  {
+    uint8_t version = 0;
+    gateway_owner_key_v owner_key;
+    std::string meta_info;
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(version)
+      FIELD(owner_key)
+      FIELD(meta_info)
+    END_SERIALIZE()
+  };
+
+  // One per txin_gateway (withdrawal): owner signature over
+  // H(GW_INPUT_SIG || tx prefix hash for this input). Order-matched to the
+  // gateway inputs.
+  struct gateway_input_sig
+  {
+    gateway_owner_sig_v sig;
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(sig)
+    END_SERIALIZE()
+  };
+
+  // Ownership proof for an update_gateway_address tx: owner signature over
+  // H(GW_OWNERSHIP || tx_id), verified against the latest descriptor's owner key.
+  struct gateway_ownership_proof
+  {
+    gateway_owner_sig_v sig;
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(sig)
+    END_SERIALIZE()
+  };
+
+  // Gateway proof vector element. Tags 0xc0+ so the vector can later be unified
+  // with the CA branch's asset_proofs (0xb0-0xb5) without collision.
+  using gateway_proof_v = std::variant<gateway_input_sig, gateway_ownership_proof>;
+
+  // Per-asset gateway balance. A vector (not a std::map) because the generic
+  // container serializer doesn't support std::map, and HF22 only ever stores the
+  // single null_aid (native BDX) entry anyway. Kept asset-keyed for the CA fork.
+  struct gateway_balance_entry
+  {
+    crypto::asset_id asset_id; // null_aid = native BDX
+    uint64_t amount = 0;
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(asset_id)
+      VARINT_FIELD(amount)
+    END_SERIALIZE()
+  };
+
+  // Consensus state for one gateway account, stored in the DB keyed by the
+  // gateway address id. descriptor_history is append-only (latest entry is
+  // authoritative for spend/update validation); balances is materialized with
+  // exact-inverse rewind (deposits/withdrawals are unbounded, so no replay).
+  struct gateway_account_data
+  {
+    uint8_t version = 0;
+    std::vector<gateway_descriptor_base> descriptor_history;
+    std::vector<gateway_balance_entry> balances;
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(version)
+      FIELD(descriptor_history)
+      FIELD(balances)
+    END_SERIALIZE()
+
+    // Latest (authoritative) descriptor. Callers must ensure history is non-empty.
+    const gateway_descriptor_base& latest_descriptor() const { return descriptor_history.back(); }
+
+    // Balance for an asset (0 if absent).
+    uint64_t balance_for(const crypto::asset_id& aid) const {
+      for (const auto& b : balances)
+        if (b.asset_id == aid) return b.amount;
+      return 0;
+    }
+  };
 
   //typedef std::pair<uint64_t, txout> out_t;
   struct tx_out
@@ -183,7 +333,7 @@ namespace cryptonote
     txversion version;
     txtype type;
 
-    bool is_transfer() const { return type == txtype::standard || type == txtype::stake || type == txtype::beldex_name_system || type == txtype::coin_burn; }
+    bool is_transfer() const { return type == txtype::standard || type == txtype::stake || type == txtype::beldex_name_system || type == txtype::coin_burn || type == txtype::register_gateway_address || type == txtype::update_gateway_address; }
 
     // not used after version 2, but remains for compatibility
     uint64_t unlock_time;  //number of block (or time), used as a limitation like: spend this tx not early then block/time
@@ -244,6 +394,12 @@ namespace cryptonote
     std::vector<std::vector<crypto::signature>> signatures; //count signatures  always the same as inputs count
     rct::rctSig rct_signatures;
 
+    // Gateway proofs (HF22). Present only for txs that contain gateway inputs
+    // (one gateway_input_sig per txin_gateway) or that are update_gateway_address
+    // txs (one gateway_ownership_proof). Empty otherwise. Prunable, like CLSAGs.
+    // Mirrors how the CA branch adds transaction::asset_proofs.
+    std::vector<gateway_proof_v> gateway_proofs;
+
     // hash cache
     mutable crypto::hash hash;
     mutable size_t blob_size;
@@ -252,6 +408,12 @@ namespace cryptonote
 
     std::atomic<unsigned int> unprunable_size;
     std::atomic<unsigned int> prefix_size;
+
+    // True if any input is a gateway withdrawal (txin_gateway).
+    bool has_gateway_inputs() const {
+      return std::any_of(vin.begin(), vin.end(),
+        [](const txin_v& i){ return std::holds_alternative<txin_gateway>(i); });
+    }
 
     transaction() { set_null(); }
     transaction(const transaction &t);
@@ -319,10 +481,36 @@ namespace cryptonote
       {
         if (!vin.empty())
         {
+          // Gateway inputs (txin_gateway, HF22) carry no CLSAG/pseudoOut: the RCT
+          // pseudoOuts/CLSAG arrays are sized to the native (txin_to_key) input
+          // count only. Pre-HF22 txs have only native inputs, so this equals
+          // vin.size() and the change is behavior-preserving. (When the CA branch
+          // merges, txin_zc_input is likewise neither native nor counted here.)
+          size_t native_inputs = 0;
+          const txin_to_key* first_native = nullptr;
+          for (const auto& in : vin)
+          {
+            if (std::holds_alternative<txin_to_key>(in))
+            {
+              if (!first_native)
+                first_native = &var::get<txin_to_key>(in);
+              ++native_inputs;
+            }
+          }
+
+          // Gateway deposit outputs (tx_out_gateway, HF22) are transparent and are
+          // NOT part of the RCT outPk/ecdhInfo/range-proof arrays, so the RCT
+          // output count excludes them. Pre-HF22 txs have no gateway outputs, so
+          // this equals vout.size() and the change is behavior-preserving.
+          size_t rct_outputs = 0;
+          for (const auto& o : vout)
+            if (!std::holds_alternative<tx_out_gateway>(o.target))
+              ++rct_outputs;
+
           {
             ar.tag("rct_signatures");
             auto obj = ar.begin_object();
-            rct_signatures.serialize_rctsig_base(ar, vin.size(), vout.size());
+            rct_signatures.serialize_rctsig_base(ar, native_inputs, rct_outputs);
           }
 
           if constexpr (Binary)
@@ -332,8 +520,20 @@ namespace cryptonote
           {
             ar.tag("rctsig_prunable");
             auto obj = ar.begin_object();
-            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, vin.size(), vout.size(),
-                vin.size() > 0 && std::holds_alternative<txin_to_key>(vin[0]) ? var::get<txin_to_key>(vin[0]).key_offsets.size() - 1 : 0);
+            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, native_inputs, rct_outputs,
+                first_native ? first_native->key_offsets.size() - 1 : 0);
+          }
+
+          // Gateway proofs (HF22). Presence is fully determined by deterministic
+          // fields available on both read and write (gateway inputs / tx type),
+          // so read and write stay symmetric without relying on the vector state.
+          // Present when the tx has gateway withdrawal inputs (one input sig
+          // each) or is an update_gateway_address tx (one ownership proof).
+          // Prunable region, like the RCT prunable data above.
+          if (has_gateway_inputs() || type == txtype::update_gateway_address)
+          {
+            ar.tag("gateway_proofs");
+            serialization::value(ar, gateway_proofs);
           }
         }
       }
@@ -350,9 +550,21 @@ namespace cryptonote
       {
         if (!vin.empty())
         {
+          // Gateway inputs/outputs (HF22) are not part of the RCT CLSAG/outPk
+          // arrays; size them to the native input / RCT output counts (matching
+          // the full serializer above). Behaviour-preserving pre-HF22.
+          size_t native_inputs = 0;
+          for (const auto& in : vin)
+            if (std::holds_alternative<txin_to_key>(in))
+              ++native_inputs;
+          size_t rct_outputs = 0;
+          for (const auto& o : vout)
+            if (!std::holds_alternative<tx_out_gateway>(o.target))
+              ++rct_outputs;
+
           ar.tag("rct_signatures");
           auto obj = ar.begin_object();
-          rct_signatures.serialize_rctsig_base(ar, vin.size(), vout.size());
+          rct_signatures.serialize_rctsig_base(ar, native_inputs, rct_outputs);
         }
       }
       if (Archive::is_deserializer)
@@ -533,7 +745,8 @@ namespace cryptonote
   constexpr txtype transaction_prefix::get_max_type_for_hf(hf hf_version)
   {
     txtype result = txtype::standard;
-    if      (hf_version >= hf::hf18_bns)              result = txtype::coin_burn;
+    if      (hf_version >= hf::hf22_gateway_addresses) result = txtype::update_gateway_address;
+    else if (hf_version >= hf::hf18_bns)              result = txtype::coin_burn;
     else if (hf_version >= hf::hf16)                  result = txtype::beldex_name_system;
     else if (hf_version >= hf::hf15_flash)            result = txtype::stake;
     else if (hf_version >= hf::hf11_infinite_staking) result = txtype::key_image_unlock;
@@ -564,6 +777,8 @@ namespace cryptonote
       case txtype::stake:                   return "stake";
       case txtype::beldex_name_system:      return "beldex_name_system";
       case txtype::coin_burn:               return "coin_burn";
+      case txtype::register_gateway_address: return "register_gateway_address";
+      case txtype::update_gateway_address:  return "update_gateway_address";
       default: assert(false);               return "xx_unhandled_type";
     }
   }
@@ -611,8 +826,24 @@ VARIANT_TAG(cryptonote::txin_gen, "gen", 0xff);
 VARIANT_TAG(cryptonote::txin_to_script, "script", 0x0);
 VARIANT_TAG(cryptonote::txin_to_scripthash, "scripthash", 0x1);
 VARIANT_TAG(cryptonote::txin_to_key, "key", 0x2);
+VARIANT_TAG(cryptonote::txin_gateway, "gateway", 0x4);
 VARIANT_TAG(cryptonote::txout_to_script, "script", 0x0);
 VARIANT_TAG(cryptonote::txout_to_scripthash, "scripthash", 0x1);
 VARIANT_TAG(cryptonote::txout_to_key, "key", 0x2);
+VARIANT_TAG(cryptonote::tx_out_gateway, "gateway", 0x4);
 VARIANT_TAG(cryptonote::transaction, "tx", 0xcc);
 VARIANT_TAG(cryptonote::block, "block", 0xbb);
+
+// Gateway owner-key variant (gateway_owner_key_v). These global tags are owned
+// by the gateway feature; no other variant uses these crypto types.
+VARIANT_TAG(crypto::public_key,        "schnorr_key", 0x0);
+VARIANT_TAG(crypto::eth_public_key,    "eth_key",     0x1);
+VARIANT_TAG(crypto::eddsa_public_key,  "eddsa_key",   0x2);
+// Gateway owner-signature variant (gateway_owner_sig_v).
+VARIANT_TAG(crypto::signature,         "schnorr_sig", 0x0);
+VARIANT_TAG(crypto::eth_signature,     "eth_sig",     0x1);
+VARIANT_TAG(crypto::eddsa_signature,   "eddsa_sig",   0x2);
+// Gateway proof variant (gateway_proof_v). Tags 0xc0+ leave room for the CA
+// branch's asset_proofs (0xb0-0xb5) so the two can later be unified.
+VARIANT_TAG(cryptonote::gateway_input_sig,       "gw_input_sig",   0xc0);
+VARIANT_TAG(cryptonote::gateway_ownership_proof, "gw_owner_proof", 0xc1);

@@ -78,7 +78,7 @@ bool gen_double_spend_in_tx::generate(std::vector<test_event_entry>& events) con
       DEFINE_TESTS_ERROR_CONTEXT("check_block_and_txpool_unaffected");
       uint64_t top_height;
       crypto::hash top_hash;
-      c.get_blockchain_top(top_height, top_hash);
+      std::tie(top_height, top_hash) = c.get_blockchain_top();
       CHECK_TEST_CONDITION(top_height == expected_height);
       CHECK_TEST_CONDITION_MSG(c.get_pool().get_transactions_count() == 0, "The double spend TX should not be added to the pool");
       return true;
@@ -103,7 +103,7 @@ bool gen_double_spend_in_tx::generate(std::vector<test_event_entry>& events) con
       DEFINE_TESTS_ERROR_CONTEXT("check_block_and_txpool_unaffected_even_if_kept_by_block");
       uint64_t top_height;
       crypto::hash top_hash;
-      c.get_blockchain_top(top_height, top_hash);
+      std::tie(top_height, top_hash) = c.get_blockchain_top();
       CHECK_TEST_CONDITION(top_height == expected_height);
       CHECK_TEST_CONDITION_MSG(c.get_pool().get_transactions_count() == 0, "The double spend TX should not be added to the pool");
       return true;
@@ -325,7 +325,7 @@ bool gen_double_spend_in_different_chains::generate(std::vector<test_event_entry
     DEFINE_TESTS_ERROR_CONTEXT("check_txpool");
     uint64_t top_height;
     crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    std::tie(top_height, top_hash) = c.get_blockchain_top();
     CHECK_EQ(top_hash, block_hash);
 
     std::vector<transaction> mempool;

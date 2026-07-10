@@ -39,6 +39,7 @@ add_library(cryptonote_core
   beldex_name_system.cpp
   tx_pool.cpp
   tx_sanity_check.cpp
+  gateway_utils.cpp
   cryptonote_tx_utils.cpp
   pos.cpp
   uptime_proof.cpp)

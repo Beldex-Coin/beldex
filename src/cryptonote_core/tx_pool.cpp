@@ -40,6 +40,8 @@
 #include "cryptonote_core/master_node_list.h"
 #include "cryptonote_config.h"
 #include "blockchain.h"
+#include "gateway_utils.h"
+#include <optional>
 #include "blockchain_db/locked_txn.h"
 #include "blockchain_db/blockchain_db.h"
 #include "common/boost_serialization_helper.h"
@@ -219,12 +221,15 @@ namespace cryptonote
     }
     else
     {
-      if (tx.type != txtype::standard && tx.type != txtype::stake && tx.type != txtype::coin_burn)
+      if (tx.type != txtype::standard && tx.type != txtype::stake && tx.type != txtype::coin_burn
+          && tx.type != txtype::register_gateway_address && tx.type != txtype::update_gateway_address)
       {
         // NOTE(beldex): This is a developer error. If we come across this in production, be conservative and just reject
         MERROR("Unrecognised transaction type: " << tx.type << " for tx: " << get_transaction_hash(tx));
         return true;
       }
+      // Gateway register/update duplicate detection is handled by the tx-pool
+      // gateway tracker (pending-register set + per-(gateway,asset) spends).
     }
 
     return false;
@@ -875,6 +880,17 @@ namespace cryptonote
       auto ins_res = kei_image_set.insert(id);
       CHECK_AND_ASSERT_MES(ins_res.second, false, "internal error: try to insert duplicate iterator in key_image set");
     }
+    // HF22: track gateway withdrawals / register op for pool txs only (block txs
+    // are authoritative and go straight to the chain). Reject pool overdraws.
+    if (!kept_by_block)
+    {
+      std::string gw_reason;
+      if (!insert_gateway_spends(tx, gw_reason))
+      {
+        MERROR("gateway pool check failed for tx " << id << ": " << gw_reason);
+        return false;
+      }
+    }
     ++m_cookie;
     return true;
   }
@@ -908,9 +924,87 @@ namespace cryptonote
       }
 
     }
+    // HF22: untrack any gateway withdrawals / register op (tolerant if untracked).
+    remove_gateway_spends(tx);
     ++m_cookie;
     return true;
   }
+  //---------------------------------------------------------------------------------
+  // HF22: track/untrack a pool tx's gateway withdrawals and register op.
+  bool tx_memory_pool::insert_gateway_spends(const transaction_prefix& tx, std::string& reason)
+  {
+    auto& db = m_blockchain.get_db();
+
+    // Register op: reject a second pending (or already on-chain) registration.
+    std::optional<crypto::public_key> pending_register;
+    {
+      tx_extra_gateway_descriptor_operation op{};
+      if (get_field_from_tx_extra(tx.extra, op, 0) &&
+          op.op_type == gateway_descriptor_op_type::register_address)
+      {
+        if (db.gateway_exists(op.address_id) || m_gateway_pending_registers.count(op.address_id))
+        {
+          reason = "gateway already registered or a registration is pending";
+          return false;
+        }
+        pending_register = op.address_id;
+      }
+    }
+
+    // Sum this tx's withdrawal needs per (gateway, asset).
+    std::map<std::pair<crypto::public_key, crypto::asset_id>, uint64_t> need;
+    for (const auto& in : tx.vin)
+      if (const auto* g = std::get_if<txin_gateway>(&in))
+        need[{g->gateway_addr, g->asset_id}] += g->amount;
+
+    // Check cumulative pending + this tx <= on-chain balance.
+    for (const auto& [gk, amount] : need)
+    {
+      gateway_account_data acct;
+      uint64_t onchain = 0;
+      if (load_gateway_account(db, gk.first, acct))
+        onchain = acct.balance_for(gk.second);
+      auto it = m_gateway_pending_spends.find(gk);
+      const uint64_t pending = it == m_gateway_pending_spends.end() ? 0 : it->second;
+      const uint64_t remaining = onchain <= pending ? 0 : onchain - pending;
+      if (amount > remaining)
+      {
+        reason = "gateway withdrawal would overdraw the pool balance";
+        return false;
+      }
+    }
+
+    // Commit.
+    if (pending_register)
+      m_gateway_pending_registers.insert(*pending_register);
+    for (const auto& [gk, amount] : need)
+      m_gateway_pending_spends[gk] += amount;
+    return true;
+  }
+  //---------------------------------------------------------------------------------
+  void tx_memory_pool::remove_gateway_spends(const transaction_prefix& tx)
+  {
+    tx_extra_gateway_descriptor_operation op{};
+    if (get_field_from_tx_extra(tx.extra, op, 0) &&
+        op.op_type == gateway_descriptor_op_type::register_address)
+      m_gateway_pending_registers.erase(op.address_id);
+
+    std::map<std::pair<crypto::public_key, crypto::asset_id>, uint64_t> need;
+    for (const auto& in : tx.vin)
+      if (const auto* g = std::get_if<txin_gateway>(&in))
+        need[{g->gateway_addr, g->asset_id}] += g->amount;
+
+    for (const auto& [gk, amount] : need)
+    {
+      auto it = m_gateway_pending_spends.find(gk);
+      if (it == m_gateway_pending_spends.end())
+        continue; // tolerant: e.g. was never tracked
+      it->second = it->second <= amount ? 0 : it->second - amount;
+      if (it->second == 0)
+        m_gateway_pending_spends.erase(it);
+    }
+  }
+  //---------------------------------------------------------------------------------
   tx_memory_pool::key_images_container tx_memory_pool::get_spent_key_images(bool already_locked) {
     std::unique_lock tx_lock{*this, std::defer_lock};
     std::unique_lock bc_lock{m_blockchain, std::defer_lock};

@@ -83,6 +83,12 @@ namespace crypto {
 
   struct key_image: ec_point {};
 
+  // Asset identifier for confidential assets. Cherry-picked from the
+  // feature-confidential-asset branch (crypto.h) so gateway code can use
+  // crypto::asset_id / null_aid from day 1 and the later CA merge is a no-op.
+  // null_aid is the permanent sentinel for native BDX.
+  struct asset_id : ec_point {};
+
   struct signature {
     ec_scalar c, r;
 
@@ -119,6 +125,42 @@ namespace crypto {
     operator bool() const { return memcmp(data, null().data, sizeof(data)); }
   };
 
+  // --- Gateway address (HF22) foreign-curve owner-key types ---------------
+  // Data-only definitions so the gateway owner-key/signature variants and the
+  // wire structs compile. The generate/verify implementations (vendored
+  // bitcoin-core/secp256k1 for eth, RFC-8032 EdDSA ported from Zano) are the
+  // crypto-groundwork milestone; see docs/GATEWAY_ADDRESS_PLAN.md §2.
+
+  // secp256k1 compressed public key (ETH-style custody). NOTE: no alignas here —
+  // 33 bytes is not a multiple of size_t, and blob serialization writes sizeof
+  // bytes, so the struct must stay exactly 33 bytes.
+  struct eth_public_key {
+    unsigned char data[33]; // 33 = compressed secp256k1 point
+    static constexpr eth_public_key null() { return {0}; }
+    operator bool() const { auto z = null(); return memcmp(this, &z, sizeof(z)); }
+  };
+
+  // 64-byte compact ECDSA signature (r || s), secp256k1.
+  struct alignas(size_t) eth_signature {
+    unsigned char data[64];
+    static constexpr eth_signature null() { return {0}; }
+    operator bool() const { auto z = null(); return memcmp(this, &z, sizeof(z)); }
+  };
+
+  // RFC-8032 Ed25519 public key.
+  struct alignas(size_t) eddsa_public_key {
+    unsigned char data[32];
+    static constexpr eddsa_public_key null() { return {0}; }
+    operator bool() const { return memcmp(data, null().data, sizeof(data)); }
+  };
+
+  // RFC-8032 Ed25519 signature (R || S).
+  struct alignas(size_t) eddsa_signature {
+    unsigned char data[64];
+    static constexpr eddsa_signature null() { return {0}; }
+    operator bool() const { auto z = null(); return memcmp(this, &z, sizeof(z)); }
+  };
+
   struct alignas(size_t) x25519_secret_key_ {
     unsigned char data[32]; // crypto_scalarmult_curve25519_BYTES
   };
@@ -132,6 +174,9 @@ namespace crypto {
   static_assert(sizeof(ec_point) == 32 && sizeof(ec_scalar) == 32 &&
     sizeof(public_key) == 32 && sizeof(secret_key) == 32 &&
     sizeof(key_derivation) == 32 && sizeof(key_image) == 32 &&
+    sizeof(asset_id) == 32 &&
+    sizeof(eth_public_key) == 33 && sizeof(eth_signature) == 64 &&
+    sizeof(eddsa_public_key) == 32 && sizeof(eddsa_signature) == 64 &&
     sizeof(signature) == 64, "Invalid structure size");
 
   void generate_random_bytes_thread_safe(size_t N, uint8_t *bytes);
@@ -294,6 +339,9 @@ namespace crypto {
   inline std::ostream &operator <<(std::ostream &o, const crypto::key_image &v) {
     return o << '<' << tools::type_to_hex(v) << '>';
   }
+  inline std::ostream &operator <<(std::ostream &o, const crypto::asset_id &v) {
+    return o << '<' << tools::type_to_hex(v) << '>';
+  }
   inline std::ostream &operator <<(std::ostream &o, const crypto::signature &v) {
     return o << '<' << tools::type_to_hex(v) << '>';
   }
@@ -303,8 +351,15 @@ namespace crypto {
   inline std::ostream &operator <<(std::ostream &o, const crypto::x25519_public_key &v) {
     return o << '<' << tools::type_to_hex(v) << '>';
   }
+  inline std::ostream &operator <<(std::ostream &o, const crypto::eth_public_key &v) {
+    return o << '<' << tools::type_to_hex(v) << '>';
+  }
+  inline std::ostream &operator <<(std::ostream &o, const crypto::eddsa_public_key &v) {
+    return o << '<' << tools::type_to_hex(v) << '>';
+  }
   constexpr inline crypto::public_key null_pkey{};
   const inline crypto::secret_key null_skey{};
+  const inline crypto::asset_id null_aid{};
 }
 
 CRYPTO_MAKE_HASHABLE(public_key)
@@ -313,3 +368,12 @@ CRYPTO_MAKE_HASHABLE(key_image)
 CRYPTO_MAKE_HASHABLE(signature)
 CRYPTO_MAKE_HASHABLE(ed25519_public_key)
 CRYPTO_MAKE_HASHABLE(x25519_public_key)
+CRYPTO_MAKE_HASHABLE(asset_id)
+// eth/eddsa owner-key & signature types: comparable (needed for variant
+// equality and serialization round-trip tests) but not hashable — eth_public_key
+// is 33 bytes / 1-byte aligned and can't satisfy the hash alignment requirement,
+// and none of these are used as map keys.
+CRYPTO_MAKE_COMPARABLE(eth_public_key)
+CRYPTO_MAKE_COMPARABLE(eth_signature)
+CRYPTO_MAKE_COMPARABLE(eddsa_public_key)
+CRYPTO_MAKE_COMPARABLE(eddsa_signature)

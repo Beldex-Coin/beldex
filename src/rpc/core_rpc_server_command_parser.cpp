@@ -379,6 +379,16 @@ namespace cryptonote::rpc {
         "name_hash",       required{names_to_owners.request.name_hash});
   }
 
+  void parse_request(GET_GATEWAY_INFO& c, rpc_input in) {
+    get_values(in, "gateway_id", required{c.request.gateway_id});
+  }
+
+  void parse_request(GET_ALL_GATEWAYS& c, rpc_input in) {
+    get_values(in,
+        "count", c.request.count,
+        "from",  c.request.from);
+  }
+
   void parse_request(BNS_RESOLVE& resolve, rpc_input in) {
     get_values(in,
         "name_hash", required{resolve.request.name_hash},
