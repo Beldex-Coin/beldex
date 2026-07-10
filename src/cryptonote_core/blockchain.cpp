@@ -3163,9 +3163,15 @@ bool Blockchain::check_tx_outputs(const transaction& tx, tx_verification_context
   // Require CLSAGs starting 10 blocks after the CLSAG-enabling hard fork (the 10 block buffer is to
   // allow staggling txes around fork time to still make it into a block).
   // NB: there *are* such txes on mainnet in this 10-block window so this code has to stay.
+  // HF22 pure-gateway withdrawals (gateway in → gateway out) are transparent and
+  // carry no RingCT data (RCTType::Null); they are balance-checked arithmetically
+  // in verify_pure_gateway_balance, so exempt them from the CLSAG requirement.
+  // (Mixing native ring inputs with gateway inputs is rejected in gateway_utils,
+  // so a Null tx with gateway inputs can only be pure-gateway.)
   if (hf_version >= feature::CLSAG
       && tx.rct_signatures.type < rct::RCTType::CLSAG
       && tx.version >= txversion::v4_tx_types && tx.is_transfer()
+      && !tx.has_gateway_inputs()
       && (hf_version > feature::CLSAG || height >= 10 + *hard_fork_begins(m_nettype, feature::CLSAG)))
   {
     MERROR_VER("Ringct type " << (unsigned)tx.rct_signatures.type << " is not allowed from v" << static_cast<int>(feature::CLSAG));

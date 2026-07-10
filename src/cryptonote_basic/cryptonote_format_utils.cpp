@@ -554,6 +554,23 @@ namespace cryptonote
   {
     if (burned)
       *burned = 0;
+    // HF22 pure-gateway withdrawal (gateway in → gateway out, RCTType::Null):
+    // there is no rct txnFee; the fee is implicit as Σ gateway_in − Σ gateway_out
+    // (native amounts are plaintext). gateway→wallet withdrawals are RCTType::
+    // BulletproofPlus and carry the fee in txnFee, so they fall through below.
+    if (tx.rct_signatures.type == rct::RCTType::Null && tx.has_gateway_inputs())
+    {
+      uint64_t in_sum = 0, out_sum = 0;
+      for (const auto& in : tx.vin)
+        if (const auto* g = std::get_if<txin_gateway>(&in))
+          in_sum += g->amount;
+      for (const auto& o : tx.vout)
+        if (const auto* g = std::get_if<tx_out_gateway>(&o.target))
+          out_sum += g->amount;
+      CHECK_AND_ASSERT_MES(in_sum >= out_sum, false, "pure-gateway tx outputs exceed inputs");
+      fee = in_sum - out_sum;
+      return true;
+    }
     if (tx.version >= txversion::v2_ringct)
     {
       fee = tx.rct_signatures.txnFee;
