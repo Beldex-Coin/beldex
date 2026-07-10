@@ -225,7 +225,7 @@ bool WalletManagerImpl::connected(uint32_t* version) {
     try {
         auto res = m_http_client.json_rpc("get_version");
         if (version)
-            *version = res["version"];
+            *version = res["version"].get<uint32_t>();
         return true;
     } catch (...) {
     }
@@ -261,7 +261,7 @@ uint64_t WalletManagerImpl::networkDifficulty()
     if (!res)
         return 0;
 
-    return res["difficulty"];
+    return res["difficulty"].get<uint64_t>();
 }
 
 EXPORT
