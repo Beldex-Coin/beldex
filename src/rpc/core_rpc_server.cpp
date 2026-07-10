@@ -68,6 +68,7 @@
 #include "cryptonote_basic/account.h"
 #include "cryptonote_basic/cryptonote_basic_impl.h"
 #include "cryptonote_core/gateway_utils.h"
+#include "cryptonote_core/cryptonote_tx_utils.h"
 #include "cryptonote_core/uptime_proof.h"
 #include "net/parse.h"
 #include "crypto/hash.h"
@@ -3626,6 +3627,207 @@ namespace cryptonote::rpc {
     cmd.response["gateways"] = std::move(gateways);
     cmd.response["total"]    = ids.size();
     cmd.response["status"]   = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GATEWAY_CREATE_TRANSFER& cmd, rpc_context context)
+  {
+    auto& req = cmd.request;
+    const auto nettype = m_core.get_nettype();
+
+    // Resolve source gateway id (gwB… address or 64-char hex).
+    crypto::public_key source_id{};
+    {
+      cryptonote::gateway_address_parse_info info{};
+      if (cryptonote::get_gateway_address_from_str(info, nettype, req.source))
+        source_id = info.gateway_id;
+      else if (!tools::hex_to_type(req.source, source_id))
+        throw rpc_error{ERROR_WRONG_PARAM, "invalid source (expected gwB… address or 64-char hex id)"};
+    }
+
+    if (req.destinations.empty() || req.destinations.size() != req.amounts.size())
+      throw rpc_error{ERROR_WRONG_PARAM, "destinations and amounts must be non-empty and of equal length"};
+
+    auto& db = m_core.get_blockchain_storage().get_db();
+    cryptonote::gateway_account_data acct;
+    if (!cryptonote::load_gateway_account(db, source_id, acct) || acct.descriptor_history.empty())
+      throw rpc_error{ERROR_WRONG_PARAM, "source gateway is not registered"};
+
+    // Destinations are EITHER all gateway addresses (gwB/gwiB → gateway→gateway
+    // withdrawal) OR all normal wallet addresses (gateway→wallet withdrawal).
+    // Mixing is rejected: the two forms produce structurally different txs.
+    const bool to_gateway = [&]{
+      cryptonote::gateway_address_parse_info gi{};
+      return cryptonote::get_gateway_address_from_str(gi, nettype, req.destinations.front());
+    }();
+
+    std::vector<cryptonote::gateway_withdraw_destination> gw_dests;
+    std::vector<cryptonote::gateway_wallet_destination>   wallet_dests;
+    uint64_t total = 0;
+    for (size_t i = 0; i < req.destinations.size(); ++i)
+    {
+      if (req.amounts[i] == 0)
+        throw rpc_error{ERROR_WRONG_PARAM, "destination amount must be > 0"};
+      if (total > std::numeric_limits<uint64_t>::max() - req.amounts[i])
+        throw rpc_error{ERROR_WRONG_PARAM, "total amount overflow"};
+
+      if (to_gateway)
+      {
+        cryptonote::gateway_address_parse_info info{};
+        if (!cryptonote::get_gateway_address_from_str(info, nettype, req.destinations[i]))
+          throw rpc_error{ERROR_WRONG_PARAM, "cannot mix gateway and wallet destinations: " + req.destinations[i]};
+        cryptonote::gateway_withdraw_destination d{};
+        d.gateway_id = info.gateway_id;
+        d.amount     = req.amounts[i];
+        d.payment_id = info.has_payment_id ? info.payment_id : 0;
+        gw_dests.push_back(d);
+      }
+      else
+      {
+        cryptonote::address_parse_info info{};
+        if (!cryptonote::get_account_address_from_str(info, nettype, req.destinations[i]))
+          throw rpc_error{ERROR_WRONG_PARAM, "invalid destination address: " + req.destinations[i]};
+        if (info.is_subaddress)
+          throw rpc_error{ERROR_WRONG_PARAM, "gateway->wallet withdrawal to subaddresses is not supported (v1)"};
+        if (info.has_payment_id)
+          throw rpc_error{ERROR_WRONG_PARAM, "integrated-address payment ids are not supported for gateway->wallet withdrawal (v1)"};
+        cryptonote::gateway_wallet_destination d{};
+        d.addr   = info.address;
+        d.amount = req.amounts[i];
+        wallet_dests.push_back(d);
+      }
+      total += req.amounts[i];
+    }
+
+    // Balance pre-check against the node's current state (null_aid = native BDX).
+    uint64_t balance = 0;
+    for (const auto& b : acct.balances)
+      if (b.asset_id == crypto::null_aid) balance = b.amount;
+    if (req.fee > std::numeric_limits<uint64_t>::max() - total || balance < total + req.fee)
+      throw rpc_error{ERROR_WRONG_PARAM, "insufficient gateway balance for withdrawal + fee"};
+
+    const auto hf_version = m_core.get_blockchain_storage().get_network_version();
+    cryptonote::transaction tx;
+    crypto::hash hash_to_sign;
+    const bool built = to_gateway
+        ? cryptonote::construct_gateway_withdraw_tx(hf_version, nettype, source_id, gw_dests, req.fee, tx, hash_to_sign)
+        : cryptonote::construct_gateway_withdraw_to_wallet_tx(hf_version, nettype, source_id, wallet_dests, req.fee, tx, hash_to_sign);
+    if (!built)
+      throw rpc_error{ERROR_INTERNAL, "failed to construct gateway withdrawal transaction"};
+
+    const auto& okey = acct.latest_descriptor().owner_key;
+    cmd.response["source_gateway_id"] = tools::type_to_hex(source_id);
+    cmd.response["owner_key_type"]    = okey.index();
+    cmd.response["unsigned_tx_blob"]  = oxenc::to_hex(tx_to_blob(tx));
+    cmd.response["hash_to_sign"]      = tools::type_to_hex(hash_to_sign);
+    cmd.response["amount"]            = total;
+    cmd.response["fee"]               = req.fee;
+
+    // Decode the built blob back into a signer-verifiable summary. The owner (or
+    // its external signer) should re-derive this independently from the returned
+    // unsigned_tx_blob and compare before signing — never trust a bare hash from
+    // the daemon. Recomputing here also proves hash_to_sign matches the blob.
+    {
+      cryptonote::gateway_withdraw_summary sum{};
+      std::string sreason;
+      if (!cryptonote::summarize_gateway_withdraw(nettype, tx, sum, sreason) ||
+          sum.hash_to_sign != hash_to_sign || sum.source_gateway_id != source_id ||
+          sum.total_debit != total + req.fee)
+        throw rpc_error{ERROR_INTERNAL, "internal error: built withdrawal failed self-verification"};
+      auto& s = cmd.response["summary"];
+      s["source_gateway_id"] = tools::type_to_hex(sum.source_gateway_id);
+      s["total_debit"]       = sum.total_debit; // amount leaving the gateway (Σ out + fee)
+      s["fee"]               = sum.fee;
+      s["to_wallet"]         = sum.to_wallet;   // true: stealth outputs (amounts hidden)
+      if (!sum.to_wallet)
+        for (const auto& [gid, amt] : sum.gateway_dests)
+          s["gateway_destinations"].push_back({{"gateway_id", tools::type_to_hex(gid)}, {"amount", amt}});
+    }
+
+    // TEST-ONLY: if a native Schnorr owner secret is supplied, sign server-side
+    // and return a ready-to-submit signed blob. Real owners omit this and use
+    // the external create→sign→submit flow.
+    if (!req.owner_secret.empty())
+    {
+      const auto* opub = std::get_if<crypto::public_key>(&okey);
+      if (!opub)
+        throw rpc_error{ERROR_WRONG_PARAM, "owner_secret server-side signing is only supported for Schnorr owners"};
+      crypto::secret_key osec;
+      if (!tools::hex_to_type(req.owner_secret, osec))
+        throw rpc_error{ERROR_WRONG_PARAM, "invalid owner_secret (expected 64-char hex)"};
+      crypto::signature sig{};
+      crypto::generate_signature(hash_to_sign, *opub, osec, sig);
+      if (!cryptonote::finalize_gateway_withdraw_tx(m_core.get_nettype(), tx, okey, cryptonote::gateway_owner_sig_v{sig}))
+        throw rpc_error{ERROR_WRONG_PARAM, "owner_secret does not match the gateway owner key"};
+      cmd.response["signed_tx_blob"] = oxenc::to_hex(tx_to_blob(tx));
+    }
+
+    cmd.response["status"] = STATUS_OK;
+
+    LOG_PRINT_L0("Gateway withdrawal transaction constructed: " << obj_to_json_str(tx));
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GATEWAY_SUBMIT_TRANSFER& cmd, rpc_context context)
+  {
+    auto& req = cmd.request;
+
+    if (!oxenc::is_hex(req.tx_blob))
+      throw rpc_error{ERROR_WRONG_PARAM, "tx_blob is not valid hex"};
+    std::string blob = oxenc::from_hex(req.tx_blob);
+    cryptonote::transaction tx;
+    if (!cryptonote::parse_and_validate_tx_from_blob(blob, tx))
+      throw rpc_error{ERROR_WRONG_PARAM, "failed to parse tx_blob"};
+
+    // If a detached owner signature was supplied, inject it (looking up the
+    // owner key type from the source gateway's on-chain descriptor).
+    if (!req.signature.empty())
+    {
+      crypto::public_key source_id{};
+      bool found = false;
+      for (const auto& in : tx.vin)
+        if (const auto* g = std::get_if<cryptonote::txin_gateway>(&in)) { source_id = g->gateway_addr; found = true; break; }
+      if (!found)
+        throw rpc_error{ERROR_WRONG_PARAM, "tx_blob has no gateway input to authorize"};
+
+      auto& db = m_core.get_blockchain_storage().get_db();
+      cryptonote::gateway_account_data acct;
+      if (!cryptonote::load_gateway_account(db, source_id, acct) || acct.descriptor_history.empty())
+        throw rpc_error{ERROR_WRONG_PARAM, "source gateway is not registered"};
+      const auto& okey = acct.latest_descriptor().owner_key;
+
+      if (!oxenc::is_hex(req.signature))
+        throw rpc_error{ERROR_WRONG_PARAM, "signature is not valid hex"};
+      const std::string sbytes = oxenc::from_hex(req.signature);
+
+      cryptonote::gateway_owner_sig_v osig;
+      switch (okey.index())
+      {
+        case 0: { crypto::signature s{};       if (sbytes.size() != sizeof(s)) throw rpc_error{ERROR_WRONG_PARAM, "Schnorr signature must be 64 bytes"};  std::memcpy(&s, sbytes.data(), sizeof(s)); osig = s; break; }
+        case 1: { crypto::eth_signature s{};   if (sbytes.size() != sizeof(s)) throw rpc_error{ERROR_WRONG_PARAM, "eth signature must be 64 bytes"};      std::memcpy(&s, sbytes.data(), sizeof(s)); osig = s; break; }
+        case 2: { crypto::eddsa_signature s{}; if (sbytes.size() != sizeof(s)) throw rpc_error{ERROR_WRONG_PARAM, "eddsa signature must be 64 bytes"};    std::memcpy(&s, sbytes.data(), sizeof(s)); osig = s; break; }
+        default: throw rpc_error{ERROR_INTERNAL, "unknown gateway owner key type"};
+      }
+      if (!cryptonote::finalize_gateway_withdraw_tx(m_core.get_nettype(), tx, okey, osig))
+        throw rpc_error{ERROR_WRONG_PARAM, "signature does not verify against the gateway owner key"};
+    }
+
+    std::string final_blob = tx_to_blob(tx);
+    cryptonote::tx_verification_context tvc{};
+    if (!m_core.handle_incoming_tx(final_blob, tvc, tx_pool_options::new_tx()) || tvc.m_verifivation_failed || !tvc.m_should_be_relayed)
+    {
+      std::string reason = print_tx_verification_context(tvc);
+      throw rpc_error{ERROR_INTERNAL, "gateway withdrawal rejected: " + reason};
+    }
+
+    NOTIFY_NEW_TRANSACTIONS::request r{};
+    r.txs.push_back(std::move(final_blob));
+    cryptonote_connection_context fake_context{};
+    m_core.get_protocol()->relay_transactions(r, fake_context);
+
+    LOG_PRINT_L0("Gateway withdrawal transaction relayed: " << tools::type_to_hex(cryptonote::get_transaction_hash(tx)));
+    cmd.response["tx_hash"] = tools::type_to_hex(cryptonote::get_transaction_hash(tx));
+    cmd.response["status"]  = STATUS_OK;
   }
 
   //------------------------------------------------------------------------------------------------------------------------------

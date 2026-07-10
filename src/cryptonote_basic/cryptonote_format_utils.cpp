@@ -990,8 +990,10 @@ namespace cryptonote
     money = 0;
     for(const auto& in: tx.vin)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
-      money += tokey_in.amount;
+      if (const auto* tokey_in = std::get_if<txin_to_key>(&in))
+        money += tokey_in->amount;
+      else if (const auto* gw_in = std::get_if<txin_gateway>(&in)) // HF22: plaintext withdrawal amount
+        money += gw_in->amount;
     }
     return true;
   }
@@ -1007,6 +1009,12 @@ namespace cryptonote
   {
     for(const auto& in: tx.vin)
     {
+      // Gateway withdrawal inputs (txin_gateway, HF22) are a valid input type;
+      // they carry no ring/key image and are validated (owner signature,
+      // balance) in gateway_utils rather than via the ring machinery.
+      if (std::holds_alternative<txin_gateway>(in))
+        continue;
+
       CHECK_AND_ASSERT_MES(std::holds_alternative<txin_to_key>(in), false, "wrong variant type: "
         << tools::type_name(tools::variant_type(in)) << ", expected " << tools::type_name<txin_to_key>()
         << ", in transaction id=" << get_transaction_hash(tx));
@@ -1059,10 +1067,19 @@ namespace cryptonote
     uint64_t money = 0;
     for(const auto& in: tx.vin)
     {
-      CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
-      if(money > tokey_in.amount + money)
+      uint64_t amount = 0;
+      if (const auto* tokey_in = std::get_if<txin_to_key>(&in))
+        amount = tokey_in->amount;                 // 0 for RCT inputs
+      else if (const auto* gw_in = std::get_if<txin_gateway>(&in))
+        amount = gw_in->amount;                     // HF22: plaintext withdrawal amount
+      else
+      {
+        LOG_ERROR("wrong variant type in check_inputs_overflow, tx id=" << get_transaction_hash(tx));
         return false;
-      money += tokey_in.amount;
+      }
+      if(money > amount + money)
+        return false;
+      money += amount;
     }
     return true;
   }

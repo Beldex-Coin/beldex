@@ -2708,6 +2708,77 @@ namespace cryptonote::rpc {
     } request;
   };
 
+  /// RPC: gateway/gateway_create_transfer
+  ///
+  /// Admin-only. Builds an UNSIGNED pure-gateway withdrawal (HF22): spends from a
+  /// source gateway's balance (txin_gateway) to one or more destination gateways
+  /// (tx_out_gateway). Amounts are plaintext; the tx carries no RCT data. The
+  /// gateway owner must sign `hash_to_sign` with the key type reported in
+  /// `owner_key_type`, then broadcast via `gateway_submit_transfer`. This
+  /// create→sign→submit split is the external-signer flow: gateway owners
+  /// (TSS/MPC, ETH, EdDSA keys) never need a Beldex wallet.
+  ///
+  /// Only the gateway→gateway form is supported (gateway→normal-wallet is future
+  /// work). A balance pre-check is done against the node's current state.
+  ///
+  /// Inputs:
+  /// - `source` -- source gateway: gwB… address or 64-char hex id.
+  /// - `destinations` -- list of destination gwB…/gwiB… addresses.
+  /// - `amounts` -- per-destination amounts (parallel to `destinations`).
+  /// - `fee` -- withdrawal fee (burned from the gateway balance; Σamounts+fee spent).
+  /// - `owner_secret` -- OPTIONAL, TEST ONLY: a native Schnorr owner secret key
+  ///   (hex). If given (and the owner is Schnorr), the node signs server-side and
+  ///   also returns `signed_tx_blob`. Real owners omit this and sign externally.
+  ///
+  /// Output:
+  /// - `source_gateway_id` -- hex of the resolved source id.
+  /// - `owner_key_type` -- 0 = Schnorr/ed25519, 1 = eth secp256k1, 2 = eddsa.
+  /// - `unsigned_tx_blob` -- hex of the unsigned tx to sign + submit.
+  /// - `hash_to_sign` -- 64-char hex the owner signs (H(GW_INPUT_SIG‖prefix)).
+  /// - `amount` -- total amount withdrawn (Σamounts).
+  /// - `fee` -- the fee.
+  /// - `signed_tx_blob` -- hex (only when `owner_secret` was supplied).
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GATEWAY_CREATE_TRANSFER : RPC_COMMAND
+  {
+    static constexpr auto names() { return NAMES("gateway_create_transfer"); }
+    struct request_parameters
+    {
+      std::string source;
+      std::vector<std::string> destinations;
+      std::vector<uint64_t> amounts;
+      uint64_t fee = 0;
+      std::string owner_secret;
+    } request;
+  };
+
+  /// RPC: gateway/gateway_submit_transfer
+  ///
+  /// Admin-only. Attaches the gateway owner signature to an unsigned withdrawal
+  /// from `gateway_create_transfer` and broadcasts it. The owner key type is
+  /// looked up from the source gateway's on-chain descriptor, so the signature is
+  /// parsed to match. Alternatively an already-signed blob (proofs embedded) can
+  /// be submitted with an empty `signature`.
+  ///
+  /// Inputs:
+  /// - `tx_blob` -- hex of the (unsigned) tx from `gateway_create_transfer`.
+  /// - `signature` -- hex of the owner signature over `hash_to_sign`
+  ///   (Schnorr = 128 hex, eth/eddsa sized to their scheme). Omit to submit a
+  ///   blob that already carries its gateway proofs.
+  ///
+  /// Output:
+  /// - `tx_hash` -- hex of the broadcast transaction.
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GATEWAY_SUBMIT_TRANSFER : RPC_COMMAND
+  {
+    static constexpr auto names() { return NAMES("gateway_submit_transfer"); }
+    struct request_parameters
+    {
+      std::string tx_blob;
+      std::string signature;
+    } request;
+  };
+
   // List of all supported rpc command structs to allow compile-time enumeration of all supported
   // RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   // a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2716,6 +2787,8 @@ namespace cryptonote::rpc {
   using core_rpc_types = tools::type_list<
     GET_GATEWAY_INFO,
     GET_ALL_GATEWAYS,
+    GATEWAY_CREATE_TRANSFER,
+    GATEWAY_SUBMIT_TRANSFER,
     BANNED,
     FLUSH_CACHE,
     FLUSH_TRANSACTION_POOL,

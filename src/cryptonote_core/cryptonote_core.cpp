@@ -1603,6 +1603,21 @@ namespace cryptonote
   //-----------------------------------------------------------------------------------------------
   std::future<std::pair<flash_result, std::string>> core::handle_flash_tx(const std::string &tx_blob)
   {
+    // HF22: reject gateway-input withdrawals from the flash path up front.
+    // txin_gateway carries no key image, so the flash quorum cannot lock it
+    // against a double-spend and must not promise instant finality for it. Such
+    // txs are still fully spendable via normal confirmation.
+    {
+      transaction tx{};
+      crypto::hash tx_hash{};
+      if (parse_and_validate_tx_from_blob(tx_blob, tx, tx_hash) && tx.has_gateway_inputs())
+      {
+        std::promise<std::pair<flash_result, std::string>> p;
+        p.set_value({flash_result::rejected,
+            "gateway withdrawals cannot be flashed (keyless inputs are not flash-lockable); use a normal transfer"});
+        return p.get_future();
+      }
+    }
     return quorumnet_send_flash(*this, tx_blob);
   }
   //-----------------------------------------------------------------------------------------------
@@ -1908,6 +1923,7 @@ namespace cryptonote
     std::unordered_set<crypto::key_image> ki;
     for(const auto& in: tx.vin)
     {
+      if (std::holds_alternative<txin_gateway>(in)) continue; // HF22: no key image
       CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
       if(!ki.insert(tokey_in.k_image).second)
         return false;
@@ -1919,6 +1935,7 @@ namespace cryptonote
   {
     for(const auto& in: tx.vin)
     {
+      if (std::holds_alternative<txin_gateway>(in)) continue; // HF22: no ring members
       CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
       for (size_t n = 1; n < tokey_in.key_offsets.size(); ++n)
         if (tokey_in.key_offsets[n] == 0)
@@ -1933,6 +1950,7 @@ namespace cryptonote
     std::unordered_set<crypto::key_image> ki;
     for(const auto& in: tx.vin)
     {
+      if (std::holds_alternative<txin_gateway>(in)) continue; // HF22: no key image
       CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
       if (!(rct::scalarmultKey(rct::ki2rct(tokey_in.k_image), rct::curveOrder()) == rct::identity()))
         return false;

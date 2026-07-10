@@ -255,9 +255,36 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Balance proof for a gateway→wallet withdrawal (gateway inputs only, RCT
+  // stealth outputs). The output commitments C_i = mask_i·G + b_i·H carry
+  // derived masks the sender cannot zero out and there are no pseudo-outs to
+  // absorb them, so the balance residual is mask_point = (Σ mask_i)·G. The
+  // proof pins that residual to the G generator (no hidden H component ⇒ no
+  // inflation): mask_sig is a Schnorr signature keyed by mask_point (proves
+  // knowledge of Σ mask_i), txkey_sig is keyed by the tx pubkey (welds the
+  // proof to this tx's DH outputs). Both sign
+  // H(GW_BALANCE || network_byte || tx prefix hash); crypto::check_signature
+  // enforces canonical scalars, so the proof is non-malleable. The verifier
+  // subtracts mask_point inside gateway_balance_offset so the standard RCT
+  // sum check closes: 0 == Σ outPk + fee·H − Σ gw_in·H − mask_point.
+  struct gateway_balance_proof
+  {
+    uint8_t version = 0;
+    crypto::public_key mask_point; // P = (Σ output commitment masks)·G
+    crypto::signature  mask_sig;   // Schnorr keyed by mask_point
+    crypto::signature  txkey_sig;  // Schnorr keyed by the tx pubkey
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(version)
+      FIELD(mask_point)
+      FIELD(mask_sig)
+      FIELD(txkey_sig)
+    END_SERIALIZE()
+  };
+
   // Gateway proof vector element. Tags 0xc0+ so the vector can later be unified
   // with the CA branch's asset_proofs (0xb0-0xb5) without collision.
-  using gateway_proof_v = std::variant<gateway_input_sig, gateway_ownership_proof>;
+  using gateway_proof_v = std::variant<gateway_input_sig, gateway_ownership_proof, gateway_balance_proof>;
 
   // Per-asset gateway balance. A vector (not a std::map) because the generic
   // container serializer doesn't support std::map, and HF22 only ever stores the
@@ -527,9 +554,11 @@ namespace cryptonote
           // Gateway proofs (HF22). Presence is fully determined by deterministic
           // fields available on both read and write (gateway inputs / tx type),
           // so read and write stay symmetric without relying on the vector state.
-          // Present when the tx has gateway withdrawal inputs (one input sig
-          // each) or is an update_gateway_address tx (one ownership proof).
-          // Prunable region, like the RCT prunable data above.
+          // Present when the tx has gateway withdrawal inputs (one input sig each,
+          // plus one gateway_balance_proof for a gateway→wallet withdrawal) or is
+          // an update_gateway_address tx (one ownership proof). The vector is
+          // length-prefixed, so a mixed [balance_proof, input_sig] payload
+          // round-trips without a separate count. Prunable region, like RCT above.
           if (has_gateway_inputs() || type == txtype::update_gateway_address)
           {
             ar.tag("gateway_proofs");
@@ -847,3 +876,4 @@ VARIANT_TAG(crypto::eddsa_signature,   "eddsa_sig",   0x2);
 // branch's asset_proofs (0xb0-0xb5) so the two can later be unified.
 VARIANT_TAG(cryptonote::gateway_input_sig,       "gw_input_sig",   0xc0);
 VARIANT_TAG(cryptonote::gateway_ownership_proof, "gw_owner_proof", 0xc1);
+VARIANT_TAG(cryptonote::gateway_balance_proof,   "gw_balance_proof", 0xc2);

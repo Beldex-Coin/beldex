@@ -521,9 +521,57 @@ built clean (`make -j6 <target>`, EXIT=0).
   (gateway out + main-address change) are unaffected. The wallet-RPC `transfer`
   doesn't yet parse `gwB` (CLI only).
 
-Remaining Phase 3: **E** (withdrawals, owner mode; gateway→gateway only until the
-deferred gateway→normal-wallet consensus path lands), owner-side deposit decoding
-RPC, and `get_gateway_history`.
+### Milestone E status — withdrawals (owner mode, IMPLEMENTED + build-verified)
+
+The **create→sign→submit** external-signer flow is live as two admin-gated daemon
+RPCs (Zano's `on_gateway_create_transfer` / `on_gateway_sign_transfer`), scoped to
+the consensus-supported **gateway→gateway** form.
+
+- **Builder** (`cryptonote_tx_utils.cpp`): `construct_gateway_withdraw_tx(hf,
+  source_id, [{dest_id, amount, payment_id}], fee, tx, hash_to_sign)` assembles a
+  pure-gateway tx — one `txin_gateway` (`amount = Σdest + fee`, `asset_id =
+  null_aid`) and one transparent `tx_out_gateway` per destination (DH-encrypted
+  payment id via the same `encrypt_gateway_payment_id` the deposit path uses). It
+  sets `rct_signatures.type = Null` (no RCT — verified by `verify_pure_gateway_balance`),
+  reserves one empty `gateway_input_sig` slot, and returns
+  `hash_to_sign = gateway_input_message(tx) = H(GW_INPUT_SIG ‖ prefix_hash)`.
+  `finalize_gateway_withdraw_tx(tx, owner_key, owner_sig)` verifies the owner
+  signature and writes it into every gateway-input slot (single-owner-sig model,
+  Zano parity).
+- **`gateway_create_transfer`** (admin RPC): resolves the source (gwB… or hex),
+  balance-pre-checks against current node state, parses destination gwB/gwiB
+  addresses, builds the unsigned tx, and returns `unsigned_tx_blob`,
+  `hash_to_sign`, `owner_key_type`. **TEST-ONLY** convenience: if a native Schnorr
+  `owner_secret` is supplied it signs server-side and also returns
+  `signed_tx_blob` (real eth/eddsa/TSS owners omit this and sign externally).
+- **`gateway_submit_transfer`** (admin RPC): takes the (unsigned) `tx_blob` + a
+  detached `signature` (parsed to match the source gateway's owner key type),
+  finalizes, and relays via `handle_incoming_tx`. An already-signed blob may be
+  submitted with an empty `signature`.
+
+> ⚠ **Note vs §3.5:** the implemented signing hash is
+> `H(GW_INPUT_SIG ‖ prefix_hash)` (no genesis-hash binding — the §3.5 hardening
+> was never added); sign and verify both use `gateway_input_message`, so they
+> agree. The §3.5 BP+/`gateway_balance_proof` (0xc2) applies only to the deferred
+> gateway→**stealth** path and is not exercised by this gateway→gateway form.
+
+**Test recipe (native Schnorr owner, devnet):**
+```
+# 1. build + (test-)sign in one call
+gateway_create_transfer {"source":"<src gwB…>","destinations":["<dest gwB…>"],
+                         "amounts":[<atomic>],"fee":<atomic>,"owner_secret":"<hex>"}
+#    → returns signed_tx_blob
+# 2. broadcast
+gateway_submit_transfer {"tx_blob":"<signed_tx_blob>"}
+#    → returns tx_hash; mine a block; balances move on get_gateway_info
+```
+(External-signer path: omit `owner_secret`, sign `hash_to_sign` off-box, then
+`gateway_submit_transfer` with `tx_blob = unsigned_tx_blob` + `signature`.)
+
+Remaining Phase 3: a **simplewallet `gateway_withdraw` convenience command**
+(orchestrating create→sign→submit for Schnorr owners), the deferred
+gateway→normal-wallet consensus path, owner-side deposit decoding RPC, and
+`get_gateway_history`.
 
 
 **Daemon RPC** (`core_rpc_server*`) — mirror Zano's surface 1:1.

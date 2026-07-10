@@ -117,6 +117,11 @@ void BlockchainDB::add_transaction(const crypto::hash& blk_hash, const std::pair
       /* nothing to do here */
       miner_tx = true;
     }
+    else if (std::holds_alternative<txin_gateway>(tx_input))
+    {
+      /* HF22 gateway withdrawal input: no key image to record. The gateway
+         balance is decremented separately in append_gateways_from_transactions. */
+    }
     else
     {
       LOG_PRINT_L1("Unsupported input type, removing key images and aborting transaction addition");

@@ -5,12 +5,14 @@
 #include "gateway_utils.h"
 
 #include <limits>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <variant>
 
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "cryptonote_core/cryptonote_tx_utils.h" // generate_genesis_block
 #include "crypto/crypto.h"
 #include "crypto/hash.h"
 #include "crypto/eth_signature.h"
@@ -27,6 +29,29 @@ namespace
   void set_reason(std::string* reason, std::string value)
   {
     if (reason) *reason = std::move(value);
+  }
+
+  // Authoritative genesis block hash for a network, cached (computed once per
+  // process). Used to bind gateway signatures to a specific chain: unlike a
+  // bare network-type byte, the genesis hash differs even between two chains
+  // that share a nettype enum (e.g. a fork), so a signature can never be
+  // replayed across chains. Both signer and verifier derive it from the same
+  // network config, so they agree.
+  const crypto::hash& gateway_chain_binding(network_type nettype)
+  {
+    static std::mutex mtx;
+    static std::unordered_map<uint8_t, crypto::hash> cache;
+    std::lock_guard<std::mutex> lk(mtx);
+    auto it = cache.find(static_cast<uint8_t>(nettype));
+    if (it == cache.end())
+    {
+      crypto::hash h = crypto::null_hash;
+      block genesis{};
+      if (generate_genesis_block(genesis, nettype))
+        h = get_block_hash(genesis);
+      it = cache.emplace(static_cast<uint8_t>(nettype), h).first;
+    }
+    return it->second;
   }
 
   // Enumerate every gateway descriptor operation carried in tx.extra.
@@ -97,14 +122,95 @@ namespace
   }
 }
 
-crypto::hash gateway_input_message(const transaction& tx)
+namespace
 {
-  const crypto::hash prefix_hash = get_transaction_prefix_hash(tx);
-  std::string buf;
-  buf.reserve(hashkey::GW_INPUT_SIG.size() + sizeof(prefix_hash));
-  buf.append(hashkey::GW_INPUT_SIG);
-  buf.append(reinterpret_cast<const char*>(&prefix_hash), sizeof(prefix_hash));
-  return crypto::cn_fast_hash(buf.data(), buf.size());
+  // Common shape for every gateway signature/proof message:
+  //   H(domain || genesis_hash || tx_prefix_hash).
+  // The genesis hash binds the message to a specific chain (gateway constructs
+  // carry no key image, so without a chain binding a signature would replay on
+  // any chain where the same gateway/owner exists — including a fork sharing a
+  // nettype enum). It is a consensus rule: signer and verifier must agree on
+  // nettype, and both derive the genesis hash from the same network config.
+  crypto::hash gateway_message(std::string_view domain, network_type nettype, const transaction& tx)
+  {
+    const crypto::hash prefix_hash = get_transaction_prefix_hash(tx);
+    const crypto::hash& genesis    = gateway_chain_binding(nettype);
+    std::string buf;
+    buf.reserve(domain.size() + sizeof(genesis) + sizeof(prefix_hash));
+    buf.append(domain);
+    buf.append(reinterpret_cast<const char*>(&genesis), sizeof(genesis));
+    buf.append(reinterpret_cast<const char*>(&prefix_hash), sizeof(prefix_hash));
+    return crypto::cn_fast_hash(buf.data(), buf.size());
+  }
+}
+
+crypto::hash gateway_input_message(network_type nettype, const transaction& tx)
+{
+  return gateway_message(hashkey::GW_INPUT_SIG, nettype, tx);
+}
+
+bool summarize_gateway_withdraw(network_type nettype, const transaction& tx,
+                                gateway_withdraw_summary& out, std::string& reason)
+{
+  out = {};
+
+  // Exactly one gateway input (single source), native asset only at HF22.
+  const txin_gateway* gin = nullptr;
+  for (const auto& in : tx.vin)
+  {
+    if (const auto* g = std::get_if<txin_gateway>(&in))
+    {
+      if (gin) { reason = "withdrawal has more than one gateway input"; return false; }
+      gin = g;
+    }
+    else
+    {
+      reason = "withdrawal mixes non-gateway inputs";
+      return false;
+    }
+  }
+  if (!gin) { reason = "tx is not a gateway withdrawal (no gateway input)"; return false; }
+  if (gin->asset_id != crypto::null_aid) { reason = "gateway input asset must be native at HF22"; return false; }
+
+  out.source_gateway_id = gin->gateway_addr;
+  out.total_debit       = gin->amount;
+
+  // Classify by output type. All outputs must be one kind.
+  uint64_t gw_out_sum = 0;
+  size_t gw_outs = 0, other_outs = 0;
+  for (const auto& o : tx.vout)
+  {
+    if (const auto* g = std::get_if<tx_out_gateway>(&o.target))
+    {
+      ++gw_outs;
+      if (gw_out_sum > std::numeric_limits<uint64_t>::max() - g->amount)
+      { reason = "gateway output sum overflow"; return false; }
+      gw_out_sum += g->amount;
+      out.gateway_dests.emplace_back(g->gateway_addr, g->amount);
+    }
+    else
+    {
+      ++other_outs;
+    }
+  }
+  if (gw_outs && other_outs) { reason = "withdrawal mixes gateway and stealth outputs"; return false; }
+
+  out.to_wallet = other_outs > 0;
+  if (out.to_wallet)
+  {
+    // Stealth outputs: amounts are hidden. Fee is the declared RCT fee; the
+    // balance proof (checked in consensus) guarantees Σ outputs == debit − fee.
+    out.fee = tx.rct_signatures.txnFee;
+  }
+  else
+  {
+    // Transparent gateway outputs: fee is the visible remainder.
+    if (out.total_debit < gw_out_sum) { reason = "gateway outputs exceed the debit"; return false; }
+    out.fee = out.total_debit - gw_out_sum;
+  }
+
+  out.hash_to_sign = gateway_input_message(nettype, tx);
+  return true;
 }
 
 bool tx_has_gateway_constructs(const transaction& tx)
@@ -118,11 +224,111 @@ bool tx_has_gateway_constructs(const transaction& tx)
   return get_field_from_tx_extra(tx.extra, op, 0);
 }
 
+crypto::hash gateway_balance_message(network_type nettype, const transaction& tx)
+{
+  // Domain-separated, chain-bound message both balance-proof Schnorr legs sign.
+  // The proof itself is prunable (lives in gateway_proofs) so hashing the
+  // prefix is not circular.
+  return gateway_message(hashkey::GW_BALANCE, nettype, tx);
+}
+
+const gateway_balance_proof* get_gateway_balance_proof(const transaction& tx)
+{
+  for (const auto& p : tx.gateway_proofs)
+    if (const auto* bp = std::get_if<gateway_balance_proof>(&p))
+      return bp;
+  return nullptr;
+}
+
+bool verify_gateway_balance_proof(network_type nettype, const transaction& tx,
+                                  const gateway_balance_proof& proof, std::string& reason)
+{
+  if (proof.version != 0)
+  {
+    reason = "unsupported gateway balance proof version";
+    return false;
+  }
+  crypto::public_key tx_pub = get_tx_pub_key_from_extra(tx);
+  if (tx_pub == crypto::null_pkey)
+  {
+    reason = "gateway balance proof requires a tx public key in extra";
+    return false;
+  }
+  const crypto::hash msg = gateway_balance_message(nettype, tx);
+  // Leg 1: mask_point = s·G for known s (Σ output commitment masks). Proving a
+  // DL wrt G pins the residual to the G generator: no hidden H component, so
+  // the transparent gateway amounts cannot be inflated. check_signature
+  // enforces canonical scalars (non-malleable) and rejects bad encodings.
+  if (!crypto::check_signature(msg, proof.mask_point, proof.mask_sig))
+  {
+    reason = "gateway balance proof: mask point signature invalid";
+    return false;
+  }
+  // Leg 2: knowledge of the tx secret key. Welds the proof to this tx's DH
+  // outputs so it cannot be produced by anyone but the tx author.
+  if (!crypto::check_signature(msg, tx_pub, proof.txkey_sig))
+  {
+    reason = "gateway balance proof: tx key signature invalid";
+    return false;
+  }
+  return true;
+}
+
+bool generate_gateway_balance_proof(network_type nettype, const transaction& tx,
+                                    const crypto::secret_key& mask_sum,
+                                    const crypto::secret_key& tx_key,
+                                    gateway_balance_proof& proof)
+{
+  proof = {};
+  crypto::public_key tx_pub{};
+  if (!crypto::secret_key_to_public_key(mask_sum, proof.mask_point) ||
+      !crypto::secret_key_to_public_key(tx_key, tx_pub))
+    return false;
+  const crypto::hash msg = gateway_balance_message(nettype, tx);
+  crypto::generate_signature(msg, proof.mask_point, mask_sum, proof.mask_sig);
+  crypto::generate_signature(msg, tx_pub, tx_key, proof.txkey_sig);
+  return true;
+}
+
+bool verify_gateway_wallet_balance(const transaction& tx, std::string& reason)
+{
+  // Connection-time commitment-sum check for a gateway→wallet withdrawal,
+  // duplicating verRctSemanticsSimple's balance equation so it is guaranteed at
+  // block connection (check_tx_inputs), not only at pool ingress. Range proofs
+  // still come from the semantic path (as for every RCT tx), but this closes the
+  // most direct inflation vector (owner decrements `in` yet pays out more):
+  //   Σ outPk.mask + fee·H − Σ gw_in·H − mask_point  ==  0
+  // with mask_point proven to lie in <G> by verify_gateway_balance_proof.
+  const rct::rctSig& rv = tx.rct_signatures;
+  if (rv.outPk.empty())
+  {
+    reason = "gateway->wallet withdrawal has no confidential outputs";
+    return false;
+  }
+  rct::keyV masks;
+  masks.reserve(rv.outPk.size());
+  for (const auto& o : rv.outPk)
+    masks.push_back(o.mask);
+  rct::key sum = rct::addKeys(masks);
+  rct::addKeys(sum, sum, rct::scalarmultH(rct::d2h(rv.txnFee)));
+  rct::addKeys(sum, sum, gateway_balance_offset(tx)); // −Σgw_in·H − mask_point
+  if (!rct::equalKeys(sum, rct::identity()))
+  {
+    reason = "gateway->wallet withdrawal balance check failed";
+    return false;
+  }
+  return true;
+}
+
 rct::key gateway_balance_offset(const transaction& tx)
 {
-  // Σ gw_out·H − Σ gw_in·H. Generator taken from asset_id (null_aid → H) so the
-  // post-CA relaxation (a·H_asset) is a lookup change, not a rewrite. HF22
-  // rejects non-null asset ids, so H is always used here for now.
+  // Σ gw_out·H − Σ gw_in·H − mask_point. Generator taken from asset_id
+  // (null_aid → H) so the post-CA relaxation (a·H_asset) is a lookup change,
+  // not a rewrite. HF22 rejects non-null asset ids, so H is always used here
+  // for now. mask_point (present only on gw→wallet withdrawals, enforced in
+  // validate_gateway_withdrawals) absorbs the derived output-commitment masks:
+  // the RCT sum check then closes iff Σ b_i + fee == Σ gw_in and the proof
+  // separately guarantees mask_point has no H component.
   rct::key offset = rct::identity();
   for (const auto& o : tx.vout)
     if (const auto* g = std::get_if<tx_out_gateway>(&o.target))
@@ -130,6 +336,8 @@ rct::key gateway_balance_offset(const transaction& tx)
   for (const auto& in : tx.vin)
     if (const auto* g = std::get_if<txin_gateway>(&in))
       rct::subKeys(offset, offset, rct::scalarmultH(rct::d2h(g->amount)));
+  if (const auto* bp = get_gateway_balance_proof(tx))
+    rct::subKeys(offset, offset, rct::pk2rct(bp->mask_point));
   return offset;
 }
 
@@ -207,17 +415,14 @@ bool verify_gateway_owner_signature(const gateway_owner_key_v& owner_key,
   return false;
 }
 
-crypto::hash gateway_ownership_message(const transaction& tx)
+crypto::hash gateway_ownership_message(network_type nettype, const transaction& tx)
 {
-  const crypto::hash prefix_hash = get_transaction_prefix_hash(tx);
-  std::string buf;
-  buf.reserve(hashkey::GW_OWNERSHIP.size() + sizeof(prefix_hash));
-  buf.append(hashkey::GW_OWNERSHIP);
-  buf.append(reinterpret_cast<const char*>(&prefix_hash), sizeof(prefix_hash));
-  return crypto::cn_fast_hash(buf.data(), buf.size());
+  // Chain-bound for the same reason as gateway_input_message: an owner-change
+  // proof has no key image and must not be replayable across chains.
+  return gateway_message(hashkey::GW_OWNERSHIP, nettype, tx);
 }
 
-bool validate_gateway_descriptor_operation(BlockchainDB& db, const transaction& tx,
+bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettype, const transaction& tx,
                                            const tx_extra_gateway_descriptor_operation& op,
                                            std::string& reason)
 {
@@ -289,7 +494,7 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, const transaction& 
         return false;
       }
 
-      const crypto::hash msg = gateway_ownership_message(tx);
+      const crypto::hash msg = gateway_ownership_message(nettype, tx);
       if (!verify_gateway_owner_signature(acct.latest_descriptor().owner_key, proof->sig, msg))
       {
         reason = "gateway ownership proof verification failed";
@@ -347,12 +552,65 @@ namespace
   // validation against pre-block DB state, so a same-block deposit→withdraw must
   // not be rejected. The authoritative underflow check happens in append (which
   // processes the block in order); the tx-pool tracker guards pool entry.
-  bool validate_gateway_withdrawals(BlockchainDB& db, const transaction& tx, hf hf_version, std::string& reason)
+  bool validate_gateway_withdrawals(BlockchainDB& db, network_type nettype, const transaction& tx, hf hf_version, std::string& reason)
   {
     const auto sigs = input_sigs(tx);
-    const crypto::hash msg = gateway_input_message(tx);
+    const crypto::hash msg = gateway_input_message(nettype, tx);
 
     std::unordered_map<crypto::public_key, gateway_account_data> acct_cache;
+
+    // Withdrawal structure rules (Zano parity: "gateway-originated txs contain
+    // only gateway inputs"): a tx with any txin_gateway must have NO native
+    // ring inputs — mixing would let the pseudo-out masks and the balance
+    // proof interact in unanalyzed ways, and no legitimate flow needs it (the
+    // gateway owner holds no UTXOs).
+    size_t gw_ins = 0, native_ins = 0, non_gw_outs = 0;
+    for (const auto& in : tx.vin)
+    {
+      if (std::holds_alternative<txin_gateway>(in)) ++gw_ins;
+      else if (std::holds_alternative<txin_to_key>(in)) ++native_ins;
+    }
+    for (const auto& o : tx.vout)
+      if (!std::holds_alternative<tx_out_gateway>(o.target))
+        ++non_gw_outs;
+    if (gw_ins > 0 && native_ins > 0)
+    {
+      reason = "mixing native ring inputs and gateway inputs is not allowed";
+      return false;
+    }
+
+    // Balance proof presence: REQUIRED for gw→wallet withdrawals (gateway
+    // inputs paying confidential stealth outputs — no pseudo-outs exist, so
+    // the derived output masks leave a (Σmask)·G residual that must be proven
+    // to carry no hidden H component). FORBIDDEN everywhere else: deposits and
+    // native txs balance via pseudo-out mask absorption, and pure-gateway txs
+    // have an exactly-zero residual — a stray proof there would let its
+    // mask_point skew the sum check.
+    {
+      size_t balance_proofs = 0;
+      for (const auto& p : tx.gateway_proofs)
+        if (std::holds_alternative<gateway_balance_proof>(p))
+          ++balance_proofs;
+      const bool required = gw_ins > 0 && non_gw_outs > 0;
+      if (required && balance_proofs != 1)
+      {
+        reason = "gateway->wallet withdrawal requires exactly one gateway balance proof";
+        return false;
+      }
+      if (!required && balance_proofs != 0)
+      {
+        reason = "gateway balance proof present in a tx that must not carry one";
+        return false;
+      }
+      if (balance_proofs == 1)
+      {
+        if (!verify_gateway_balance_proof(nettype, tx, *get_gateway_balance_proof(tx), reason))
+          return false;
+        // Enforce the amount balance at connection time too (see helper).
+        if (!verify_gateway_wallet_balance(tx, reason))
+          return false;
+      }
+    }
 
     size_t gw_in_index = 0;
     for (const auto& in : tx.vin)
@@ -397,7 +655,7 @@ namespace
   }
 }
 
-bool validate_tx_gateway_operations_against_db(BlockchainDB& db, const transaction& tx,
+bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type nettype, const transaction& tx,
                                                hf hf_version, std::string& reason)
 {
   // ---- descriptor operations (register / update) ----
@@ -426,7 +684,7 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, const transacti
       reason = "gateway descriptor operation in a non-gateway tx type";
       return false;
     }
-    if (!validate_gateway_descriptor_operation(db, tx, ops.front(), reason))
+    if (!validate_gateway_descriptor_operation(db, nettype, tx, ops.front(), reason))
       return false;
   }
 
@@ -447,7 +705,7 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, const transacti
   // ---- deposits & withdrawals ----
   if (!validate_gateway_deposits(db, tx, hf_version, reason))
     return false;
-  if (!validate_gateway_withdrawals(db, tx, hf_version, reason))
+  if (!validate_gateway_withdrawals(db, nettype, tx, hf_version, reason))
     return false;
 
   return true;

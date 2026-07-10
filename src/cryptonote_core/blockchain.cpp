@@ -3207,6 +3207,10 @@ bool Blockchain::have_tx_keyimges_as_spent(const transaction &tx) const
   LOG_PRINT_L3("Blockchain::" << __func__);
   for (const txin_v& in: tx.vin)
   {
+    // HF22: gateway withdrawal inputs carry no key image; double-spend
+    // protection is the gateway balance tracker, not the key-image set.
+    if (std::holds_alternative<txin_gateway>(in))
+      continue;
     CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, in_to_key, true);
     if(have_tx_keyimg_as_spent(in_to_key.k_image))
       return true;
@@ -3340,7 +3344,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
   if (hf_version >= feature::GATEWAY_ADDRESSES)
   {
     std::string gw_reason;
-    if (!validate_tx_gateway_operations_against_db(*m_db, tx, hf_version, gw_reason))
+    if (!validate_tx_gateway_operations_against_db(*m_db, m_nettype, tx, hf_version, gw_reason))
     {
       MERROR_VER("Gateway operation validation failed for tx " << get_transaction_hash(tx) << ": " << gw_reason);
       tvc.m_verifivation_failed = true;
@@ -3475,13 +3479,18 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
           false, "Transaction spends at least one output which is too young");
     }
 
-  // HF22: a pure-gateway tx (only gateway in/out) carries no RCT (type Null);
-  // its plain-arithmetic balance is checked at semantic-verification time, so
-  // skip the RCT ring/balance machinery here (expand_transaction_2 rejects Null).
-  const bool pure_gateway_tx =
-      tx.rct_signatures.type == rct::RCTType::Null && pubkeys.empty() && tx.has_gateway_inputs();
+  // HF22: a tx whose inputs are ALL gateway inputs (no native ring input, so
+  // pubkeys is empty) carries no ring signatures and no pseudo-outs. This covers
+  // both a pure-gateway tx (RCTType::Null, gateway outputs) and a gateway→wallet
+  // withdrawal (RCTType::BulletproofPlus, stealth outputs). The ring/key-image
+  // machinery here (expand_transaction_2 rejects empty pubkeys) does not apply;
+  // balance and range are checked at semantic-verification time
+  // (verify_pure_gateway_balance for Null, verRctSemanticsSimple + the gateway
+  // balance offset for BP+), and the gateway input signature + balance proof are
+  // checked in validate_tx_gateway_operations_against_db above.
+  const bool gateway_only_inputs = pubkeys.empty() && tx.has_gateway_inputs();
 
-  if (tx.version >= cryptonote::txversion::v2_ringct && !pure_gateway_tx)
+  if (tx.version >= cryptonote::txversion::v2_ringct && !gateway_only_inputs)
 	{
     if (!expand_transaction_2(tx, tx_prefix_hash, pubkeys))
     {
@@ -5435,6 +5444,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
       // get all amounts from tx.vin(s)
       for (const auto &txin : tx.vin)
       {
+        if (!std::holds_alternative<txin_to_key>(txin)) continue; // HF22: gateway inputs have no ring/key image
         const auto& in_to_key = var::get<txin_to_key>(txin);
 
         // check for duplicate
@@ -5463,6 +5473,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
       // add new absolute_offsets to offset_map
       for (const auto &txin : tx.vin)
       {
+        if (!std::holds_alternative<txin_to_key>(txin)) continue; // HF22: gateway inputs have no ring/key image
         const auto& in_to_key = var::get<txin_to_key>(txin);
         // no need to check for duplicate here.
         auto absolute_offsets = relative_output_offsets_to_absolute(in_to_key.key_offsets);
@@ -5528,6 +5539,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
 
       for (const auto &txin : tx.vin)
       {
+        if (!std::holds_alternative<txin_to_key>(txin)) continue; // HF22: gateway inputs have no ring/key image
         const txin_to_key &in_to_key = var::get<txin_to_key>(txin);
         auto needed_offsets = relative_output_offsets_to_absolute(in_to_key.key_offsets);
 

@@ -35,12 +35,14 @@
 #include "common/hex.h"
 #include "cryptonote_tx_utils.h"
 #include "cryptonote_config.h"
+#include "gateway_utils.h"
 #include "blockchain.h"
 #include "cryptonote_basic/miner.h"
 #include "cryptonote_basic/tx_extra.h"
 #include "crypto/crypto.h"
 #include "crypto/hash.h"
 #include "ringct/rctSigs.h"
+#include "ringct/bulletproofs_plus.h" // bulletproof_plus_PROVE (public BP+ primitive)
 #include "multisig/multisig.h"
 #include "epee/int-util.h"
 
@@ -617,6 +619,318 @@ namespace cryptonote
     uint64_t mask_u64;
     std::memcpy(&mask_u64, mask.data + 8, sizeof(mask_u64)); // bytes 8..15 (Zano m_u64[1] parity)
     return payment_id ^ mask_u64;
+  }
+  //---------------------------------------------------------------
+  // Gateway withdrawal (HF22). Builds a pure-gateway transfer: it spends from a
+  // source gateway's on-chain balance via a single txin_gateway (no ring, no key
+  // image) and pays one or more destination gateways via transparent
+  // tx_out_gateway outputs. Amounts are plaintext, so the tx carries NO RCT data
+  // (RCTType::Null) and is verified by verify_pure_gateway_balance
+  // (Σ inputs == Σ outputs + fee). The owner authorizes the spend with a single
+  // signature over `hash_to_sign` = gateway_input_message(nettype, tx) =
+  // H(GW_INPUT_SIG ‖ network_byte ‖ prefix_hash); the caller (or an external signer holding the
+  // owner key) fills tx.gateway_proofs afterwards via
+  // finalize_gateway_withdraw_tx. Only the supported gateway→gateway form is
+  // built here (gateway→normal-wallet is deferred, see plan §3.5).
+  bool construct_gateway_withdraw_tx(hf hf_version,
+                                     network_type nettype,
+                                     const crypto::public_key& source_gateway_id,
+                                     const std::vector<gateway_withdraw_destination>& destinations,
+                                     uint64_t fee,
+                                     transaction& tx,
+                                     crypto::hash& hash_to_sign)
+  {
+    tx.set_null();
+    tx.version     = transaction::get_max_version_for_hf(hf_version);
+    tx.type        = txtype::standard;
+    tx.unlock_time = 0;
+
+    if (destinations.empty())
+    {
+      LOG_ERROR("gateway withdraw: no destinations");
+      return false;
+    }
+
+    // The single gateway input covers Σ outputs + fee.
+    uint64_t out_sum = 0;
+    for (const auto& d : destinations)
+    {
+      if (d.amount == 0)
+      {
+        LOG_ERROR("gateway withdraw: zero-amount destination");
+        return false;
+      }
+      if (out_sum > std::numeric_limits<uint64_t>::max() - d.amount)
+      {
+        LOG_ERROR("gateway withdraw: output sum overflow");
+        return false;
+      }
+      out_sum += d.amount;
+    }
+    if (out_sum > std::numeric_limits<uint64_t>::max() - fee)
+    {
+      LOG_ERROR("gateway withdraw: input amount overflow");
+      return false;
+    }
+    const uint64_t in_amount = out_sum + fee;
+
+    // A tx public key lets the destination gateway owner DH-decrypt integrated
+    // payment ids (8·r·V_gw). Add one unconditionally (parity with deposits).
+    keypair const txkey{hw::get_device("default")};
+    add_tx_extra<tx_extra_pub_key>(tx, txkey.pub);
+
+    // One transparent tx_out_gateway per destination.
+    for (size_t i = 0; i < destinations.size(); ++i)
+    {
+      const auto& d = destinations[i];
+      tx_out out{};
+      out.amount = 0; // outer amount hidden like RCT; the real plaintext amount lives in tx_out_gateway
+      tx_out_gateway gw{};
+      gw.version      = 0;
+      gw.gateway_addr = d.gateway_id;
+      gw.asset_id     = crypto::null_aid; // HF22: native BDX
+      gw.amount       = d.amount;
+      gw.payment_id   = encrypt_gateway_payment_id(d.payment_id, txkey.sec, d.gateway_id, i);
+      out.target      = gw;
+      tx.vout.push_back(out);
+      // v3+ txs require one per-output unlock time (gateway deposits credit the
+      // destination account immediately, so 0).
+      if (tx.version >= txversion::v3_per_output_unlock_times)
+        tx.output_unlock_times.push_back(0);
+    }
+
+    // Single gateway input spending the source gateway's balance.
+    txin_gateway in{};
+    in.version      = 0;
+    in.gateway_addr = source_gateway_id;
+    in.asset_id     = crypto::null_aid;
+    in.amount       = in_amount;
+    tx.vin.emplace_back(in);
+
+    // Pure-gateway tx: no RCT signatures.
+    tx.rct_signatures      = {};
+    tx.rct_signatures.type = rct::RCTType::Null;
+
+    // One (empty) input-sig slot per gateway input; the owner signer fills it.
+    tx.gateway_proofs.clear();
+    tx.gateway_proofs.emplace_back(gateway_input_sig{});
+
+    tx.invalidate_hashes();
+    hash_to_sign = gateway_input_message(nettype, tx);
+    return true;
+  }
+  //---------------------------------------------------------------
+  // Attaches the owner signature(s) to a withdrawal built by
+  // construct_gateway_withdraw_tx. One signature covers every gateway input
+  // (same message), matching Zano's single-owner-sig model. Verifies the sig
+  // against `owner_key` before attaching so a bad signature never leaves the
+  // builder.
+  bool finalize_gateway_withdraw_tx(network_type nettype,
+                                    transaction& tx,
+                                    const gateway_owner_key_v& owner_key,
+                                    const gateway_owner_sig_v& owner_sig)
+  {
+    if (!tx.has_gateway_inputs())
+    {
+      LOG_ERROR("gateway withdraw finalize: tx has no gateway inputs");
+      return false;
+    }
+    const crypto::hash msg = gateway_input_message(nettype, tx);
+    if (!verify_gateway_owner_signature(owner_key, owner_sig, msg))
+    {
+      LOG_ERROR("gateway withdraw finalize: owner signature does not verify");
+      return false;
+    }
+
+    size_t gw_inputs = 0;
+    for (const auto& vin : tx.vin)
+      if (std::holds_alternative<txin_gateway>(vin))
+        ++gw_inputs;
+
+    // Replace only the input-sig slots; preserve any other proofs (a gw→wallet
+    // withdrawal carries a gateway_balance_proof that must survive signing).
+    std::vector<gateway_proof_v> proofs;
+    proofs.reserve(tx.gateway_proofs.size());
+    for (const auto& p : tx.gateway_proofs)
+      if (!std::holds_alternative<gateway_input_sig>(p))
+        proofs.push_back(p);
+    for (size_t i = 0; i < gw_inputs; ++i)
+      proofs.emplace_back(gateway_input_sig{owner_sig});
+    tx.gateway_proofs = std::move(proofs);
+    tx.invalidate_hashes();
+    return true;
+  }
+  //---------------------------------------------------------------
+  // Gateway → wallet withdrawal (HF22). Spends from a gateway's on-chain balance
+  // via a single txin_gateway and pays normal wallet (stealth) outputs, fully
+  // scannable by wallet2: per-output one-time keys, v2 ECDH-encoded amounts,
+  // BP+ range proofs (RCTType::BulletproofPlus with zero ring members — gateway
+  // inputs have no ring, so mixRing/pseudoOuts/CLSAGs are all empty and
+  // verRctNonSemanticsSimple passes trivially).
+  //
+  // Balance: the output commitments carry derived masks the sender cannot zero
+  // out and there are no pseudo-outs to absorb them, so the tx includes a
+  // gateway_balance_proof over mask_point = (Σ masks)·G; consensus subtracts
+  // mask_point in gateway_balance_offset, closing the RCT sum check
+  // (see gateway_utils.h).
+  //
+  // v1 limitations (documented in docs/GATEWAY_ADDRESS_PLAN.md §3.5): main
+  // addresses only (no subaddresses — they need per-output tx keys) and no
+  // encrypted payment ids. Exchanges typically withdraw to plain user addresses,
+  // so this covers the dominant flow.
+  bool construct_gateway_withdraw_to_wallet_tx(hf hf_version,
+                                               network_type nettype,
+                                               const crypto::public_key& source_gateway_id,
+                                               const std::vector<gateway_wallet_destination>& destinations,
+                                               uint64_t fee,
+                                               transaction& tx,
+                                               crypto::hash& hash_to_sign)
+  {
+    tx.set_null();
+    tx.version     = transaction::get_max_version_for_hf(hf_version);
+    tx.type        = txtype::standard;
+    tx.unlock_time = 0;
+
+    if (destinations.empty())
+    {
+      LOG_ERROR("gateway wallet-withdraw: no destinations");
+      return false;
+    }
+
+    // Expand to at least two outputs (MIN_2_OUTPUTS applies: these are stealth
+    // outputs, not gateway outputs, so no exemption). A single destination is
+    // split into two outputs to the same address — distinct output indices give
+    // distinct one-time keys, and a zero-amount RCT output is valid.
+    std::vector<gateway_wallet_destination> dests = destinations;
+    if (dests.size() == 1)
+    {
+      gateway_wallet_destination half = dests[0];
+      half.amount        = dests[0].amount / 2;
+      dests[0].amount   -= half.amount;
+      dests.push_back(half);
+    }
+
+    uint64_t out_sum = 0;
+    for (const auto& d : dests)
+    {
+      if (out_sum > std::numeric_limits<uint64_t>::max() - d.amount)
+      {
+        LOG_ERROR("gateway wallet-withdraw: output sum overflow");
+        return false;
+      }
+      out_sum += d.amount;
+    }
+    if (out_sum > std::numeric_limits<uint64_t>::max() - fee)
+    {
+      LOG_ERROR("gateway wallet-withdraw: input amount overflow");
+      return false;
+    }
+
+    hw::device& hwdev = hw::get_device("default");
+    keypair const txkey{hwdev};
+    add_tx_extra<tx_extra_pub_key>(tx, txkey.pub);
+
+    // Stealth outputs + per-output amount keys Hs(8·r·V, i).
+    rct::keyV amount_keys;
+    std::vector<uint64_t> amounts;
+    amount_keys.reserve(dests.size());
+    amounts.reserve(dests.size());
+    for (size_t i = 0; i < dests.size(); ++i)
+    {
+      const auto& d = dests[i];
+      crypto::key_derivation derivation;
+      if (!crypto::generate_key_derivation(d.addr.m_view_public_key, txkey.sec, derivation))
+      {
+        LOG_ERROR("gateway wallet-withdraw: key derivation failed for destination " << i);
+        return false;
+      }
+      crypto::secret_key amount_key;
+      crypto::derivation_to_scalar(derivation, i, amount_key);
+      amount_keys.push_back(rct::sk2rct(amount_key));
+
+      crypto::public_key out_eph;
+      if (!crypto::derive_public_key(derivation, i, d.addr.m_spend_public_key, out_eph))
+      {
+        LOG_ERROR("gateway wallet-withdraw: output key derivation failed for destination " << i);
+        return false;
+      }
+      tx_out out{};
+      out.amount = 0;
+      out.target = txout_to_key{out_eph};
+      tx.vout.push_back(out);
+      // v3+ txs require one per-output unlock time; withdrawals are immediately
+      // spendable by the recipient, so 0.
+      if (tx.version >= txversion::v3_per_output_unlock_times)
+        tx.output_unlock_times.push_back(0);
+      amounts.push_back(d.amount);
+    }
+
+    // Single gateway input covering Σ outputs + fee.
+    txin_gateway in{};
+    in.version      = 0;
+    in.gateway_addr = source_gateway_id;
+    in.asset_id     = crypto::null_aid;
+    in.amount       = out_sum + fee;
+    tx.vin.emplace_back(in);
+
+    // RCT: BP+ range proofs + v2 ECDH amounts, mirroring genRctSimple's output
+    // handling; no inputs → no mixRing, no pseudoOuts, no CLSAGs.
+    rct::rctSig& rv = tx.rct_signatures;
+    rv        = {};
+    rv.type   = rct::RCTType::BulletproofPlus;
+    rv.txnFee = fee;
+    rv.outPk.resize(dests.size());
+    rv.ecdhInfo.resize(dests.size());
+
+    // Range-prove the outputs. This inlines rct::proveRangeBulletproofPlus's
+    // body (derive per-output commitment masks, then BP+ over the amounts)
+    // because that helper is declared const-ref in rctSigs.h but defined
+    // non-const in rctSigs.cpp, so it is not linkable across translation units.
+    // bulletproof_plus_PROVE returns V premultiplied by 1/8, so outPk masks are
+    // recovered with scalarmult8 below (parity with genRctSimple).
+    rct::keyV C, masks(amounts.size());
+    for (size_t i = 0; i < amounts.size(); ++i)
+      masks[i] = hwdev.genCommitmentMask(amount_keys[i]);
+    try
+    {
+      rct::BulletproofPlus bpp = rct::bulletproof_plus_PROVE(amounts, masks);
+      C = bpp.V;
+      rv.p.bulletproofs_plus.push_back(std::move(bpp));
+    }
+    catch (const std::exception& e)
+    {
+      LOG_ERROR("gateway wallet-withdraw: BP+ proving failed: " << e.what());
+      return false;
+    }
+
+    rct::key mask_sum = rct::zero();
+    for (size_t i = 0; i < dests.size(); ++i)
+    {
+      rv.outPk[i].dest = rct::pk2rct(var::get<txout_to_key>(tx.vout[i].target).key);
+      rv.outPk[i].mask = rct::scalarmult8(C[i]);
+      sc_add(mask_sum.bytes, mask_sum.bytes, masks[i].bytes);
+      rv.ecdhInfo[i].mask   = rct::copy(masks[i]);
+      rv.ecdhInfo[i].amount = rct::d2h(amounts[i]);
+      hwdev.ecdhEncode(rv.ecdhInfo[i], amount_keys[i], true /* v2 */);
+    }
+    rv.message = rct::hash2rct(get_transaction_prefix_hash(tx));
+
+    // Balance proof over mask_point = (Σ masks)·G, bound to this tx + network.
+    gateway_balance_proof balance_proof{};
+    const crypto::secret_key mask_sum_sk = rct::rct2sk(mask_sum);
+    if (!generate_gateway_balance_proof(nettype, tx, mask_sum_sk, txkey.sec, balance_proof))
+    {
+      LOG_ERROR("gateway wallet-withdraw: balance proof generation failed");
+      return false;
+    }
+
+    tx.gateway_proofs.clear();
+    tx.gateway_proofs.emplace_back(balance_proof);
+    tx.gateway_proofs.emplace_back(gateway_input_sig{}); // owner signer fills this
+
+    tx.invalidate_hashes();
+    hash_to_sign = gateway_input_message(nettype, tx);
+    return true;
   }
   //---------------------------------------------------------------
   bool construct_tx_with_tx_key(const account_keys& sender_account_keys, const std::unordered_map<crypto::public_key, subaddress_index>& subaddresses, std::vector<tx_source_entry>& sources, std::vector<tx_destination_entry>& destinations, const std::optional<tx_destination_entry>& change_addr, const std::vector<uint8_t> &extra, transaction& tx, uint64_t unlock_time, const crypto::secret_key &tx_key, const std::vector<crypto::secret_key> &additional_tx_keys, const rct::RCTConfig &rct_config, rct::multisig_out *msout, bool shuffle_outs, beldex_construct_tx_params const &tx_params)

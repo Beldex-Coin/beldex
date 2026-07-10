@@ -232,6 +232,59 @@ namespace cryptonote
   };
 
   //---------------------------------------------------------------
+  // Gateway withdrawal (HF22). One payout leg of a pure-gateway withdrawal:
+  // pay `amount` to the destination gateway `gateway_id`, optionally tagged with
+  // a plaintext customer `payment_id` (DH-encrypted into the tx_out_gateway).
+  struct gateway_withdraw_destination
+  {
+    crypto::public_key gateway_id;
+    uint64_t amount = 0;
+    uint64_t payment_id = 0; // 0 = none (plain gwB destination)
+  };
+
+  // Build an unsigned pure-gateway withdrawal (gateway→gateway). On success `tx`
+  // holds the full prefix + an empty gateway_input_sig slot, and `hash_to_sign`
+  // is the message the gateway owner must sign. Finalize with
+  // finalize_gateway_withdraw_tx once the owner signature is available.
+  // nettype binds hash_to_sign to the network (gateway inputs have no key image,
+  // so a signature would otherwise replay across networks). The same nettype
+  // must be passed to finalize_gateway_withdraw_tx and to consensus validation.
+  bool construct_gateway_withdraw_tx(hf hf_version,
+                                     network_type nettype,
+                                     const crypto::public_key& source_gateway_id,
+                                     const std::vector<gateway_withdraw_destination>& destinations,
+                                     uint64_t fee,
+                                     transaction& tx,
+                                     crypto::hash& hash_to_sign);
+
+  // Attach the owner signature to a withdrawal built above (verifies first).
+  // nettype must match the one passed to construct_gateway_withdraw_tx.
+  // Preserves non-input-sig proofs (e.g. the gateway_balance_proof).
+  bool finalize_gateway_withdraw_tx(network_type nettype,
+                                    transaction& tx,
+                                    const gateway_owner_key_v& owner_key,
+                                    const gateway_owner_sig_v& owner_sig);
+
+  struct gateway_wallet_destination
+  {
+    account_public_address addr; // main address only (v1: no subaddresses)
+    uint64_t amount = 0;
+  };
+
+  // Build an unsigned gateway→wallet withdrawal: single txin_gateway paying
+  // normal stealth outputs (wallet2-scannable), BP+ range proofs, and a
+  // gateway_balance_proof pinning the output-mask residual to G. Sign the
+  // returned hash_to_sign with the gateway owner key, then attach it via
+  // finalize_gateway_withdraw_tx (same nettype).
+  bool construct_gateway_withdraw_to_wallet_tx(hf hf_version,
+                                               network_type nettype,
+                                               const crypto::public_key& source_gateway_id,
+                                               const std::vector<gateway_wallet_destination>& destinations,
+                                               uint64_t fee,
+                                               transaction& tx,
+                                               crypto::hash& hash_to_sign);
+
+  //---------------------------------------------------------------
   crypto::public_key get_destination_view_key_pub(const std::vector<tx_destination_entry> &destinations, const std::optional<cryptonote::tx_destination_entry>& change_addr);
   bool construct_tx(const account_keys& sender_account_keys, std::vector<tx_source_entry> &sources, const std::vector<tx_destination_entry>& destinations, const std::optional<cryptonote::tx_destination_entry>& change_addr, const std::vector<uint8_t> &extra, transaction& tx, uint64_t unlock_time, const beldex_construct_tx_params &tx_params = {});
   bool construct_tx_with_tx_key   (const account_keys& sender_account_keys, const std::unordered_map<crypto::public_key, subaddress_index>& subaddresses, std::vector<tx_source_entry>& sources, std::vector<tx_destination_entry>& destinations, const std::optional<cryptonote::tx_destination_entry>& change_addr, const std::vector<uint8_t> &extra, transaction& tx, uint64_t unlock_time, const crypto::secret_key &tx_key, const std::vector<crypto::secret_key> &additional_tx_keys, const rct::RCTConfig &rct_config= { rct::RangeProofType::Borromean, 0}, rct::multisig_out *msout = NULL, bool shuffle_outs = true, beldex_construct_tx_params const &tx_params = {});

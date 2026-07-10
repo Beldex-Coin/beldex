@@ -389,6 +389,21 @@ namespace cryptonote::rpc {
         "from",  c.request.from);
   }
 
+  void parse_request(GATEWAY_CREATE_TRANSFER& c, rpc_input in) {
+    get_values(in,
+        "amounts",      required{c.request.amounts},
+        "destinations", required{c.request.destinations},
+        "fee",          c.request.fee,
+        "owner_secret", c.request.owner_secret,
+        "source",       required{c.request.source});
+  }
+
+  void parse_request(GATEWAY_SUBMIT_TRANSFER& c, rpc_input in) {
+    get_values(in,
+        "signature", c.request.signature,
+        "tx_blob",   required{c.request.tx_blob});
+  }
+
   void parse_request(BNS_RESOLVE& resolve, rpc_input in) {
     get_values(in,
         "name_hash", required{resolve.request.name_hash},

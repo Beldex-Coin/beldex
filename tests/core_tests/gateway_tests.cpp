@@ -78,9 +78,10 @@ namespace
         .with_fee(TESTS_DEFAULT_FEE)
         .build();
 
-    // Ownership proof over H(GW_OWNERSHIP || prefix_hash) — the proof is prunable
-    // and not part of the prefix, so it can be attached after construction.
-    const crypto::hash msg = gateway_ownership_message(tx);
+    // Ownership proof over H(GW_OWNERSHIP || network_byte || prefix_hash) — the
+    // proof is prunable and not part of the prefix, so it can be attached after
+    // construction. Core tests run on FAKECHAIN, matching the consensus check.
+    const crypto::hash msg = gateway_ownership_message(cryptonote::FAKECHAIN, tx);
     crypto::signature sig{};
     crypto::generate_signature(msg, signer_pub, signer_sec, sig);
     gateway_ownership_proof proof{};
