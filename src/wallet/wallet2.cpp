@@ -3377,7 +3377,7 @@ std::vector<wallet2::get_pool_state_tx> wallet2::get_pool_state(bool refreshed)
 
     try {
       nlohmann::json get_transactions_params{
-        {{"txs_hashes", hex_hashes}},
+        {"txs_hashes", hex_hashes},
         {"prune",true},
         {"split",true},
         {"data",true}
