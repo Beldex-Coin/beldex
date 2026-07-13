@@ -91,6 +91,7 @@ add_executable(unit_tests
   gateway_eth.cpp
   gateway_address_prefix.cpp
   gateway_withdrawal.cpp
+  gateway_bridge.cpp
   aligned.cpp)
 
 target_link_libraries(unit_tests

@@ -2779,6 +2779,73 @@ namespace cryptonote::rpc {
     } request;
   };
 
+  /// RPC: gateway/bridge_get_reserves
+  ///
+  /// Sovereign Bridge (HF23) reserve-audit surface (plan §A.4). Returns the
+  /// locked-BDX balance backing a bridge gateway plus its current fixed-window
+  /// release accounting, so a public dashboard can verify the 1:1 backing
+  /// invariant (Σ wBDX across all EVM chains == gateway balance). The
+  /// per-chain expected wBDX supply is sourced from the EVM chain registry +
+  /// watchers (Phase E) and is returned empty until those land.
+  ///
+  /// Inputs:
+  /// - `gateway_id` -- gwB… address or 64-char hex id of the bridge gateway.
+  /// - `height` -- optional height for the release-window calc (default: tip).
+  ///
+  /// Output:
+  /// - `registered` -- whether the gateway exists.
+  /// - `frozen` -- whether the gateway is currently governance-frozen.
+  /// - `gateway_balance` -- native BDX locked in the gateway (atomic units).
+  /// - `window_id` -- current fixed release window (floor(height/window_blocks)).
+  /// - `window_blocks` -- release window length in blocks.
+  /// - `epoch_released` -- native BDX already released in the current window.
+  /// - `release_cap` -- per-window release cap (atomic units).
+  /// - `per_tx_max` -- per-withdrawal release maximum (atomic units).
+  /// - `per_chain_wbdx` -- expected wBDX supply per EVM chain (empty until Phase E).
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct BRIDGE_GET_RESERVES : PUBLIC
+  {
+    static constexpr auto names() { return NAMES("bridge_get_reserves"); }
+    struct request_parameters
+    {
+      std::string gateway_id;
+      uint64_t    height = 0; // 0 => current tip
+    } request;
+  };
+
+  /// RPC: gateway/gateway_get_history
+  ///
+  /// Paginated, height-tagged deposit/withdrawal/governance event stream for one
+  /// gateway (plan §A.4) — the delivered get_gateway_info exposes only current
+  /// state, but the bridge watcher (Phase E) needs the event history. Backed by a
+  /// bounded forward block scan (no new DB index): the caller polls forward from
+  /// `from_height`, and the response returns `next_height` to resume. The scan is
+  /// capped at `max_blocks` blocks and `max_events` events per call.
+  ///
+  /// Inputs:
+  /// - `gateway_id` -- gwB… address or 64-char hex id.
+  /// - `from_height` -- first height to scan (default 0).
+  /// - `max_blocks` -- max blocks to scan this call (default/limit applied server-side).
+  /// - `max_events` -- max events to return this call (default/limit applied server-side).
+  ///
+  /// Output:
+  /// - `events` -- list of {height, txid, type, amount, ...}; type ∈
+  ///   {deposit, withdrawal, register, update, freeze, unfreeze, repoint}.
+  /// - `next_height` -- resume height for the next page (== scanned tip + 1).
+  /// - `top_height` -- current blockchain height at the time of the call.
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GATEWAY_GET_HISTORY : PUBLIC
+  {
+    static constexpr auto names() { return NAMES("gateway_get_history"); }
+    struct request_parameters
+    {
+      std::string gateway_id;
+      uint64_t    from_height = 0;
+      uint64_t    max_blocks = 0; // 0 => server default
+      uint64_t    max_events = 0; // 0 => server default
+    } request;
+  };
+
   // List of all supported rpc command structs to allow compile-time enumeration of all supported
   // RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   // a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2789,6 +2856,8 @@ namespace cryptonote::rpc {
     GET_ALL_GATEWAYS,
     GATEWAY_CREATE_TRANSFER,
     GATEWAY_SUBMIT_TRANSFER,
+    BRIDGE_GET_RESERVES,
+    GATEWAY_GET_HISTORY,
     BANNED,
     FLUSH_CACHE,
     FLUSH_TRANSACTION_POOL,

@@ -4,6 +4,7 @@
 
 #include "gateway_utils.h"
 
+#include <algorithm>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -63,6 +64,37 @@ namespace
     while (get_field_from_tx_extra(tx.extra, op, skip++))
       ops.push_back(op);
     return ops;
+  }
+
+  // Enumerate HF23 governance / routing fields carried in tx.extra.
+  std::vector<tx_extra_gateway_freeze> extract_gateway_freezes(const transaction& tx)
+  {
+    std::vector<tx_extra_gateway_freeze> v;
+    size_t skip = 0;
+    tx_extra_gateway_freeze op{};
+    while (get_field_from_tx_extra(tx.extra, op, skip++))
+      v.push_back(op);
+    return v;
+  }
+
+  std::vector<tx_extra_gateway_repoint> extract_gateway_repoints(const transaction& tx)
+  {
+    std::vector<tx_extra_gateway_repoint> v;
+    size_t skip = 0;
+    tx_extra_gateway_repoint op{};
+    while (get_field_from_tx_extra(tx.extra, op, skip++))
+      v.push_back(op);
+    return v;
+  }
+
+  std::vector<tx_extra_gateway_deposit_memo> extract_gateway_memos(const transaction& tx)
+  {
+    std::vector<tx_extra_gateway_deposit_memo> v;
+    size_t skip = 0;
+    tx_extra_gateway_deposit_memo m{};
+    while (get_field_from_tx_extra(tx.extra, m, skip++))
+      v.push_back(m);
+    return v;
   }
 
   bool same_descriptor(const gateway_descriptor_base& a, const gateway_descriptor_base& b)
@@ -142,11 +174,118 @@ namespace
     buf.append(reinterpret_cast<const char*>(&prefix_hash), sizeof(prefix_hash));
     return crypto::cn_fast_hash(buf.data(), buf.size());
   }
+
+  // Governance attestation message (HF23): H(domain || genesis_hash || fields).
+  // Unlike gateway_message this does NOT hash a tx prefix — a freeze/re-point
+  // supermajority is collected off-chain over explicit fields, not over the tx
+  // that carries the evidence (the same evidence blob can be attached to any
+  // carrier tx). genesis binding still prevents cross-chain/fork replay.
+  crypto::hash gateway_governance_message(std::string_view domain, network_type nettype, const std::string& fields)
+  {
+    const crypto::hash& genesis = gateway_chain_binding(nettype);
+    std::string buf;
+    buf.reserve(domain.size() + sizeof(genesis) + fields.size());
+    buf.append(domain);
+    buf.append(reinterpret_cast<const char*>(&genesis), sizeof(genesis));
+    buf.append(fields);
+    return crypto::cn_fast_hash(buf.data(), buf.size());
+  }
+
+  // Little-endian byte append of a u64 (explicit, so the message is
+  // endianness-independent across signer/verifier platforms).
+  void append_u64_le(std::string& buf, uint64_t v)
+  {
+    for (int i = 0; i < 8; ++i) buf.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+  }
 }
 
 crypto::hash gateway_input_message(network_type nettype, const transaction& tx)
 {
   return gateway_message(hashkey::GW_INPUT_SIG, nettype, tx);
+}
+
+crypto::hash gateway_freeze_message(network_type nettype, const crypto::public_key& gateway_id,
+                                    bool freeze, uint64_t governance_seq, uint64_t epoch_height)
+{
+  std::string fields;
+  fields.append(reinterpret_cast<const char*>(&gateway_id), sizeof(gateway_id));
+  fields.push_back(freeze ? 1 : 0);
+  append_u64_le(fields, governance_seq);
+  append_u64_le(fields, epoch_height);
+  return gateway_governance_message(hashkey::GW_FREEZE, nettype, fields);
+}
+
+crypto::hash gateway_repoint_message(network_type nettype, const crypto::public_key& gateway_id,
+                                     const gateway_descriptor_base& new_owner_descriptor,
+                                     uint64_t governance_seq, uint64_t epoch_height)
+{
+  auto desc_copy = new_owner_descriptor; // dump_binary needs non-const
+  const std::string desc_blob = serialization::dump_binary(desc_copy);
+  std::string fields;
+  fields.append(reinterpret_cast<const char*>(&gateway_id), sizeof(gateway_id));
+  fields.append(desc_blob);
+  append_u64_le(fields, governance_seq);
+  append_u64_le(fields, epoch_height);
+  return gateway_governance_message(hashkey::GW_REPOINT, nettype, fields);
+}
+
+bool verify_gateway_governance_evidence(const std::vector<gateway_governance_signature>& evidence,
+                                        uint64_t epoch_height, const crypto::hash& msg,
+                                        const checkpoint_quorum_resolver& resolve_quorum,
+                                        std::string& reason)
+{
+  if (!resolve_quorum)
+  {
+    reason = "no governance quorum resolver available";
+    return false;
+  }
+
+  std::vector<crypto::public_key> validators;
+  if (!resolve_quorum(epoch_height, validators) || validators.empty())
+  {
+    reason = "no checkpoint quorum for the governance epoch height " + std::to_string(epoch_height);
+    return false;
+  }
+
+  // Required supermajority: ceil(NUM/DEN · quorum_size), and always > half.
+  const size_t quorum_size = validators.size();
+  const size_t required = (quorum_size * GATEWAY_GOVERNANCE_SUPERMAJORITY_NUM
+                           + GATEWAY_GOVERNANCE_SUPERMAJORITY_DEN - 1)
+                          / GATEWAY_GOVERNANCE_SUPERMAJORITY_DEN;
+  if (evidence.size() < required)
+  {
+    reason = "insufficient governance evidence (" + std::to_string(evidence.size()) + " < required "
+             + std::to_string(required) + " of " + std::to_string(quorum_size) + ")";
+    return false;
+  }
+  if (evidence.size() > quorum_size)
+  {
+    reason = "more governance signatures than quorum members";
+    return false;
+  }
+
+  // Distinct, strictly-ascending voter indices (prevents double-counting a
+  // signer and pins a canonical evidence ordering, mirroring checkpoint votes).
+  for (size_t i = 0; i < evidence.size(); ++i)
+  {
+    const auto& e = evidence[i];
+    if (e.voter_index >= quorum_size)
+    {
+      reason = "governance voter index out of range";
+      return false;
+    }
+    if (i > 0 && evidence[i - 1].voter_index >= e.voter_index)
+    {
+      reason = "governance voter indices not strictly ascending";
+      return false;
+    }
+    if (!crypto::check_signature(msg, validators[e.voter_index], e.signature))
+    {
+      reason = "governance signature verification failed at voter index " + std::to_string(e.voter_index);
+      return false;
+    }
+  }
+  return true;
 }
 
 bool summarize_gateway_withdraw(network_type nettype, const transaction& tx,
@@ -475,6 +614,16 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
         return false;
       }
 
+      // HF23 circuit breaker: a frozen gateway rejects owner-signed updates too
+      // (S8) — otherwise a compromised owner could rotate the key out from under
+      // a freeze. Re-point (governance) is the only way to change a frozen
+      // gateway's owner.
+      if (acct.frozen)
+      {
+        reason = "gateway is frozen; owner update rejected";
+        return false;
+      }
+
       const gateway_ownership_proof* proof = nullptr;
       for (const auto& p : tx.gateway_proofs)
       {
@@ -507,6 +656,121 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
       reason = "unknown gateway descriptor operation type";
       return false;
   }
+}
+
+namespace
+{
+  // XOR keystream for the deposit memo: concatenated cn_fast_hash blocks keyed by
+  // the DH-derived scalar and a block counter, mirroring encrypt_gateway_payment_id.
+  std::vector<uint8_t> deposit_memo_keystream(const crypto::key_derivation& derivation,
+                                              size_t output_index, size_t len)
+  {
+    crypto::ec_scalar h;
+    crypto::derivation_to_scalar(derivation, output_index, h);
+    std::vector<uint8_t> ks;
+    ks.reserve(((len + 31) / 32) * 32);
+    for (uint32_t ctr = 0; ks.size() < len; ++ctr)
+    {
+      std::string buf;
+      buf.reserve(hashkey::GW_DEPOSIT_MEMO.size() + sizeof(h) + sizeof(ctr));
+      buf.append(hashkey::GW_DEPOSIT_MEMO);
+      buf.append(reinterpret_cast<const char*>(&h), sizeof(h));
+      buf.append(reinterpret_cast<const char*>(&ctr), sizeof(ctr));
+      const crypto::hash block = crypto::cn_fast_hash(buf.data(), buf.size());
+      ks.insert(ks.end(), block.data, block.data + sizeof(block.data));
+    }
+    ks.resize(len);
+    return ks;
+  }
+
+  bool xor_memo(const std::vector<uint8_t>& in, const crypto::key_derivation& derivation,
+                size_t output_index, std::vector<uint8_t>& out)
+  {
+    const auto ks = deposit_memo_keystream(derivation, output_index, in.size());
+    out.resize(in.size());
+    for (size_t i = 0; i < in.size(); ++i) out[i] = in[i] ^ ks[i];
+    return true;
+  }
+}
+
+bool encrypt_gateway_deposit_memo(const std::vector<uint8_t>& plaintext, const crypto::secret_key& tx_secret,
+                                  const crypto::public_key& gateway_view_pub, size_t output_index,
+                                  std::vector<uint8_t>& out_ciphertext)
+{
+  if (plaintext.size() > GATEWAY_DEPOSIT_MEMO_MAX_BYTES)
+    return false;
+  crypto::key_derivation derivation;
+  if (!crypto::generate_key_derivation(gateway_view_pub, tx_secret, derivation))
+    return false;
+  return xor_memo(plaintext, derivation, output_index, out_ciphertext);
+}
+
+bool decrypt_gateway_deposit_memo(const std::vector<uint8_t>& ciphertext, const crypto::public_key& tx_public,
+                                  const crypto::secret_key& gateway_view_secret, size_t output_index,
+                                  std::vector<uint8_t>& out_plaintext)
+{
+  if (ciphertext.size() > GATEWAY_DEPOSIT_MEMO_MAX_BYTES)
+    return false;
+  crypto::key_derivation derivation;
+  if (!crypto::generate_key_derivation(tx_public, gateway_view_secret, derivation))
+    return false;
+  return xor_memo(ciphertext, derivation, output_index, out_plaintext);
+}
+
+bool validate_gateway_freeze_operation(BlockchainDB& db, network_type nettype, const transaction& /*tx*/,
+                                       const tx_extra_gateway_freeze& op,
+                                       const checkpoint_quorum_resolver& resolve_quorum, std::string& reason)
+{
+  gateway_account_data acct;
+  if (!load_gateway_account(db, op.gateway_id, acct) || acct.descriptor_history.empty())
+  {
+    reason = "freeze op targets an unknown gateway";
+    return false;
+  }
+  if ((op.freeze != 0) == (acct.frozen != 0))
+  {
+    reason = op.freeze ? "gateway is already frozen" : "gateway is not frozen";
+    return false;
+  }
+  if (op.governance_seq != acct.governance_seq)
+  {
+    reason = "stale governance nonce on freeze (expected " + std::to_string(acct.governance_seq)
+             + ", got " + std::to_string(op.governance_seq) + ")";
+    return false;
+  }
+  const crypto::hash msg = gateway_freeze_message(nettype, op.gateway_id, op.freeze != 0,
+                                                  op.governance_seq, op.epoch_height);
+  if (!verify_gateway_governance_evidence(op.evidence, op.epoch_height, msg, resolve_quorum, reason))
+    return false;
+  return true;
+}
+
+bool validate_gateway_repoint_operation(BlockchainDB& db, network_type nettype, const transaction& /*tx*/,
+                                        const tx_extra_gateway_repoint& op,
+                                        const checkpoint_quorum_resolver& resolve_quorum, std::string& reason)
+{
+  gateway_account_data acct;
+  if (!load_gateway_account(db, op.gateway_id, acct) || acct.descriptor_history.empty())
+  {
+    reason = "repoint op targets an unknown gateway";
+    return false;
+  }
+  if (!is_valid_gateway_owner_key(op.new_owner_descriptor.owner_key))
+  {
+    reason = "repoint new owner descriptor has an invalid owner key";
+    return false;
+  }
+  if (op.governance_seq != acct.governance_seq)
+  {
+    reason = "stale governance nonce on repoint (expected " + std::to_string(acct.governance_seq)
+             + ", got " + std::to_string(op.governance_seq) + ")";
+    return false;
+  }
+  const crypto::hash msg = gateway_repoint_message(nettype, op.gateway_id, op.new_owner_descriptor,
+                                                   op.governance_seq, op.epoch_height);
+  if (!verify_gateway_governance_evidence(op.evidence, op.epoch_height, msg, resolve_quorum, reason))
+    return false;
+  return true;
 }
 
 namespace
@@ -632,6 +896,15 @@ namespace
         return false;
       }
 
+      // HF23 circuit breaker (S8): a frozen gateway rejects ALL withdrawals,
+      // even with a valid owner signature. Checked before signature verification
+      // so a frozen state is fail-closed regardless of the (possibly stolen) key.
+      if (it->second.frozen)
+      {
+        reason = "gateway is frozen; withdrawal rejected";
+        return false;
+      }
+
       if (gw_in_index >= sigs.size())
       {
         reason = "missing gateway input signature";
@@ -656,8 +929,105 @@ namespace
 }
 
 bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type nettype, const transaction& tx,
-                                               hf hf_version, std::string& reason)
+                                               hf hf_version, const checkpoint_quorum_resolver& resolve_quorum,
+                                               std::string& reason)
 {
+  // ---- HF23 Sovereign Bridge governance & routing fields -------------------
+  const auto freezes  = extract_gateway_freezes(tx);
+  const auto repoints = extract_gateway_repoints(tx);
+  const auto memos    = extract_gateway_memos(tx);
+
+  const bool has_governance = !freezes.empty() || !repoints.empty();
+
+  if (hf_version < feature::BRIDGE)
+  {
+    // Pre-HF23: none of the bridge fields may appear.
+    if (has_governance || !memos.empty())
+    {
+      reason = "gateway governance / deposit-memo field before HF23";
+      return false;
+    }
+  }
+  else
+  {
+    if (freezes.size() > 1 || repoints.size() > 1)
+    {
+      reason = "tx carries more than one gateway freeze/repoint op";
+      return false;
+    }
+    if (!freezes.empty() && !repoints.empty())
+    {
+      reason = "tx carries both a freeze and a repoint op";
+      return false;
+    }
+
+    // A governance tx is a clean carrier: no descriptor ops, no gateway in/out,
+    // no deposit memo may ride alongside a freeze/repoint.
+    if (has_governance)
+    {
+      const bool has_gw_construct =
+          tx_has_gateway_constructs(tx) ||
+          std::any_of(tx.vout.begin(), tx.vout.end(),
+                      [](const tx_out& o){ return std::holds_alternative<tx_out_gateway>(o.target); }) ||
+          !memos.empty();
+      if (has_gw_construct)
+      {
+        reason = "gateway governance op must not ride alongside other gateway constructs";
+        return false;
+      }
+      if (!freezes.empty() && !validate_gateway_freeze_operation(db, nettype, tx, freezes.front(), resolve_quorum, reason))
+        return false;
+      if (!repoints.empty() && !validate_gateway_repoint_operation(db, nettype, tx, repoints.front(), resolve_quorum, reason))
+        return false;
+    }
+
+    // Deposit-routing memos (A.5): bounded size, target an existing gateway that
+    // this tx actually deposits to. Encryption/semantics are off-chain; consensus
+    // only bounds the blob and binds it to a real deposit.
+    for (const auto& m : memos)
+    {
+      if (m.enc_memo.size() > GATEWAY_DEPOSIT_MEMO_MAX_BYTES)
+      {
+        reason = "gateway deposit memo exceeds the maximum size";
+        return false;
+      }
+      const bool deposits_to_target = std::any_of(tx.vout.begin(), tx.vout.end(),
+          [&](const tx_out& o){
+            const auto* g = std::get_if<tx_out_gateway>(&o.target);
+            return g && g->gateway_addr == m.gateway_id;
+          });
+      if (!deposits_to_target)
+      {
+        reason = "gateway deposit memo does not correspond to a deposit output in this tx";
+        return false;
+      }
+      if (!db.gateway_exists(m.gateway_id))
+      {
+        reason = "gateway deposit memo targets an unregistered gateway";
+        return false;
+      }
+    }
+
+    // Per-tx release maximum (A.3). The cumulative per-window cap is authoritative
+    // at block-apply (append); the per-tx bound is a static check enforceable here.
+    uint64_t tx_release = 0;
+    for (const auto& in : tx.vin)
+      if (const auto* g = std::get_if<txin_gateway>(&in))
+      {
+        if (tx_release > std::numeric_limits<uint64_t>::max() - g->amount)
+        {
+          reason = "gateway withdrawal amount overflow";
+          return false;
+        }
+        tx_release += g->amount;
+      }
+    if (tx_release > GATEWAY_RELEASE_PER_TX_MAX)
+    {
+      reason = "gateway withdrawal exceeds the per-tx release maximum";
+      return false;
+    }
+  }
+
   // ---- descriptor operations (register / update) ----
   const auto ops = extract_gateway_ops(tx);
   if (ops.size() > 1)
@@ -711,7 +1081,73 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
   return true;
 }
 
-bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason)
+namespace
+{
+  // HF23 release-window accounting helpers (see gateway_release_window). All set
+  // version>=1 so the bridge state is serialized. Bounded: append prunes windows
+  // older than w-1 (outside any legal reorg, so never re-touched by rewind).
+
+  bool add_release(gateway_account_data& acct, uint64_t height, uint64_t amount, std::string* reason)
+  {
+    const uint64_t w = height / GATEWAY_RELEASE_WINDOW_BLOCKS;
+    gateway_release_window* entry = nullptr;
+    for (auto& e : acct.release_windows)
+      if (e.window_id == w) { entry = &e; break; }
+    if (!entry)
+    {
+      acct.release_windows.push_back(gateway_release_window{w, 0});
+      entry = &acct.release_windows.back();
+    }
+    if (amount > GATEWAY_RELEASE_CAP_PER_WINDOW ||
+        entry->amount > GATEWAY_RELEASE_CAP_PER_WINDOW - amount)
+    {
+      set_reason(reason, "gateway per-window release cap exceeded");
+      return false;
+    }
+    entry->amount += amount;
+    if (acct.version < 1) acct.version = 1;
+
+    // Prune windows strictly older than the immediately-preceding one.
+    if (w >= 2)
+    {
+      auto& v = acct.release_windows;
+      v.erase(std::remove_if(v.begin(), v.end(),
+              [&](const gateway_release_window& e){ return e.window_id + 1 < w; }), v.end());
+    }
+    return true;
+  }
+
+  bool sub_release(gateway_account_data& acct, uint64_t height, uint64_t amount, std::string* reason)
+  {
+    const uint64_t w = height / GATEWAY_RELEASE_WINDOW_BLOCKS;
+    for (auto it = acct.release_windows.begin(); it != acct.release_windows.end(); ++it)
+    {
+      if (it->window_id != w) continue;
+      if (it->amount < amount)
+      {
+        set_reason(reason, "gateway release-window underflow while rewinding");
+        return false;
+      }
+      it->amount -= amount;
+      if (it->amount == 0)
+        acct.release_windows.erase(it);
+      return true;
+    }
+    set_reason(reason, "gateway release window missing while rewinding");
+    return false;
+  }
+
+  // Restore byte-exact HF22 (version 0) shape for an account with no remaining
+  // bridge state, so a full reorg of bridge activity leaves an identical blob.
+  void normalize_bridge_state(gateway_account_data& acct)
+  {
+    if (acct.frozen == 0 && acct.governance_seq == 0 && acct.release_windows.empty())
+      acct.version = 0;
+  }
+}
+
+bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs,
+                                       uint64_t block_height, bool bridge_active, std::string* reason)
 {
   std::unordered_map<crypto::public_key, gateway_account_data> cache;
 
@@ -748,6 +1184,34 @@ bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
       acct.descriptor_history.push_back(op.descriptor);
     }
 
+    // 1b) governance re-point (HF23): append the new descriptor and bump the nonce.
+    for (const auto& op : extract_gateway_repoints(tx))
+    {
+      gateway_account_data& acct = get(op.gateway_id);
+      if (acct.descriptor_history.empty())
+      {
+        set_reason(reason, "repoint for an unknown gateway");
+        return false;
+      }
+      acct.descriptor_history.push_back(op.new_owner_descriptor);
+      ++acct.governance_seq;
+      if (acct.version < 1) acct.version = 1;
+    }
+
+    // 1c) governance freeze/unfreeze (HF23): toggle the flag and bump the nonce.
+    for (const auto& op : extract_gateway_freezes(tx))
+    {
+      gateway_account_data& acct = get(op.gateway_id);
+      if (acct.descriptor_history.empty())
+      {
+        set_reason(reason, "freeze for an unknown gateway");
+        return false;
+      }
+      acct.frozen = (op.freeze != 0) ? 1 : 0;
+      ++acct.governance_seq;
+      if (acct.version < 1) acct.version = 1;
+    }
+
     // 2) deposits (tx_out_gateway): increase balance
     for (const auto& o : tx.vout)
     {
@@ -765,6 +1229,8 @@ bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
     }
 
     // 3) withdrawals (txin_gateway): decrease balance (underflow => block invalid)
+    //    and account the release against the fixed per-window cap (authoritative
+    //    here, where the block height is known — plan §A.3).
     for (const auto& in : tx.vin)
     {
       if (const auto* g = std::get_if<txin_gateway>(&in))
@@ -777,6 +1243,8 @@ bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
         }
         if (!change_gateway_balance(acct, g->asset_id, g->amount, /*increase=*/false, reason))
           return false;
+        if (bridge_active && !add_release(acct, block_height, g->amount, reason))
+          return false;
       }
     }
   }
@@ -787,7 +1255,8 @@ bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
   return true;
 }
 
-bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason)
+bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs,
+                                       uint64_t block_height, bool bridge_active, std::string* reason)
 {
   std::unordered_map<crypto::public_key, gateway_account_data> cache;
 
@@ -801,12 +1270,13 @@ bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
   };
 
   // Exact inverse of append. Reverse the tx order; within each tx undo in the
-  // reverse of the apply order: withdrawals, then deposits, then descriptor ops.
+  // reverse of the apply order: withdrawals(+release), deposits, freezes,
+  // repoints, then descriptor ops.
   for (auto tx_it = txs.rbegin(); tx_it != txs.rend(); ++tx_it)
   {
     const transaction& tx = *tx_it;
 
-    // undo withdrawals: re-add the spent amount
+    // undo withdrawals: re-add the spent amount and un-account the release
     for (const auto& in : tx.vin)
     {
       if (const auto* g = std::get_if<txin_gateway>(&in))
@@ -818,6 +1288,8 @@ bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
           set_reason(reason, "failed to undo gateway withdrawal while rewinding");
           return false;
         }
+        if (bridge_active && !sub_release(acct, block_height, g->amount, reason))
+          return false;
       }
     }
 
@@ -834,6 +1306,40 @@ bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
           return false;
         }
       }
+    }
+
+    // undo freezes: restore the prior flag (append validated freeze != prior) and
+    // roll back the nonce.
+    for (const auto& op : extract_gateway_freezes(tx))
+    {
+      bool ok = false;
+      gateway_account_data& acct = get(op.gateway_id, ok);
+      if (!ok || acct.descriptor_history.empty() || acct.governance_seq == 0)
+      {
+        set_reason(reason, "gateway freeze rewind on inconsistent state");
+        return false;
+      }
+      acct.frozen = (op.freeze != 0) ? 0 : 1;
+      --acct.governance_seq;
+    }
+
+    // undo repoints: pop the appended descriptor and roll back the nonce.
+    for (const auto& op : extract_gateway_repoints(tx))
+    {
+      bool ok = false;
+      gateway_account_data& acct = get(op.gateway_id, ok);
+      if (!ok || acct.descriptor_history.empty() || acct.governance_seq == 0)
+      {
+        set_reason(reason, "gateway repoint rewind on inconsistent state");
+        return false;
+      }
+      if (!same_descriptor(acct.descriptor_history.back(), op.new_owner_descriptor))
+      {
+        set_reason(reason, "repoint rewind mismatch: last descriptor does not match the popped op");
+        return false;
+      }
+      acct.descriptor_history.pop_back();
+      --acct.governance_seq;
     }
 
     // undo descriptor ops (reverse order), popping the matching last descriptor
@@ -861,8 +1367,9 @@ bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
     return true;
   };
 
-  for (const auto& [id, acct] : cache)
+  for (auto& [id, acct] : cache)
   {
+    normalize_bridge_state(acct); // restore byte-exact HF22 shape when no bridge state remains
     // A gateway whose register op was rewound (empty descriptor history) and
     // whose balances are all zero is removed entirely.
     if (acct.descriptor_history.empty() && all_zero(acct))

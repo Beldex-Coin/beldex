@@ -64,6 +64,9 @@ constexpr uint8_t
   TX_EXTRA_TAG_BURN                       = 0x79,
   TX_EXTRA_TAG_BELDEX_NAME_SYSTEM           = 0x7A,
   TX_EXTRA_TAG_GATEWAY_DESCRIPTOR_OPERATION = 0x7C, // HF22 (0x7B reserved for CA asset op)
+  TX_EXTRA_TAG_GATEWAY_FREEZE               = 0x7D, // HF23 (Sovereign Bridge governance)
+  TX_EXTRA_TAG_GATEWAY_REPOINT              = 0x7E, // HF23 (Sovereign Bridge governance)
+  TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO         = 0x7F, // HF23 (bridge deposit routing)
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
@@ -570,6 +573,101 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // ---- Sovereign Bridge governance (HF23) ----------------------------------
+  // A single masternode governance attestation: a checkpoint-quorum member's
+  // signature over the freeze/re-point message (see gateway_utils). Mirrors the
+  // shape of master_nodes::quorum_signature; kept as its own type so tx_extra
+  // has no dependency on the master-node headers.
+  struct gateway_governance_signature
+  {
+    uint16_t         voter_index = 0; // index into the checkpoint quorum at `epoch_height`
+    crypto::signature signature{};
+
+    BEGIN_SERIALIZE()
+      FIELD(voter_index)
+      FIELD(signature)
+    END_SERIALIZE()
+  };
+
+  // Governance FREEZE / UNFREEZE (HF23). When a gateway is frozen, consensus
+  // rejects ALL withdrawals (txin_gateway) and descriptor ops (update / re-point)
+  // for that gateway regardless of a valid owner signature (plan §A.1, S8). The
+  // native circuit breaker: it does not depend on the (possibly stolen) owner
+  // key. Authorized by a masternode supermajority over
+  //   H(GW_FREEZE || genesis_hash || gateway_id || freeze || governance_seq || epoch_height).
+  //
+  // `governance_seq` is the gateway's current per-account monotonic governance
+  // nonce (0 for a gateway never governed). Every applied governance op (freeze
+  // or re-point) increments it, so an evidence set is valid for exactly one
+  // account state and cannot be replayed (this replaces BNS-style prev-txid
+  // chaining, which is not an exact inverse under block-pop; a monotonic nonce
+  // is trivially invertible on rewind — S9).
+  struct tx_extra_gateway_freeze
+  {
+    uint8_t            version = 0;
+    crypto::public_key gateway_id{};
+    uint8_t            freeze = 1;        // 1 = freeze, 0 = unfreeze
+    uint64_t           governance_seq = 0; // expected current per-gateway governance nonce
+    uint64_t           epoch_height = 0;  // height whose checkpoint quorum authorizes this
+    std::vector<gateway_governance_signature> evidence; // supermajority attestations
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      FIELD(gateway_id)
+      FIELD(freeze)
+      VARINT_FIELD(governance_seq)
+      VARINT_FIELD(epoch_height)
+      FIELD(evidence)
+    END_SERIALIZE()
+  };
+
+  // Governance RE-POINT (HF23). Replaces a gateway's owner_key WITHOUT the old
+  // owner's signature (plan §A.2, §9.2, S8) — required when an attacker also
+  // holds the old key and could race an ordinary owner-update. Appends a new
+  // descriptor to the delivered descriptor_history exactly like update_address.
+  // Authorized by a masternode supermajority over
+  //   H(GW_REPOINT || genesis_hash || gateway_id || serialize(new_owner_descriptor) || governance_seq || epoch_height).
+  // `governance_seq` (see tx_extra_gateway_freeze) makes the evidence single-use.
+  struct tx_extra_gateway_repoint
+  {
+    uint8_t                 version = 0;
+    crypto::public_key      gateway_id{};
+    gateway_descriptor_base new_owner_descriptor{};
+    uint64_t                governance_seq = 0;
+    uint64_t                epoch_height = 0;
+    std::vector<gateway_governance_signature> evidence;
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      FIELD(gateway_id)
+      FIELD(new_owner_descriptor)
+      VARINT_FIELD(governance_seq)
+      VARINT_FIELD(epoch_height)
+      FIELD(evidence)
+    END_SERIALIZE()
+  };
+
+  // Bridge deposit-routing memo (HF23, plan §A.5). A bounded encrypted blob on a
+  // gateway deposit carrying {dst_chain_id, dst_addr} for the destination EVM
+  // chain. Encrypted (stream-XOR) against a mask derived from the gateway view
+  // key and the tx public key, so only the gateway owner can read it — the same
+  // shape as the integrated-address payment-id mask (GW_OUT_PID_MASK). The
+  // plaintext length is bounded by GATEWAY_DEPOSIT_MEMO_MAX_BYTES; the ciphertext
+  // is the same length. Only meaningful for deposits to a bridge-registered
+  // gateway (semantic routing is off-chain; consensus only bounds the size).
+  struct tx_extra_gateway_deposit_memo
+  {
+    uint8_t              version = 0;
+    crypto::public_key   gateway_id{};     // which deposit target this memo routes
+    std::vector<uint8_t> enc_memo;         // ciphertext, |enc_memo| <= GATEWAY_DEPOSIT_MEMO_MAX_BYTES
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      FIELD(gateway_id)
+      FIELD(enc_memo)
+    END_SERIALIZE()
+  };
+
   struct tx_extra_beldex_name_system
   {
     uint8_t                 version = 0;
@@ -668,6 +766,9 @@ namespace cryptonote
       tx_extra_tx_key_image_unlock,
       tx_extra_burn,
       tx_extra_gateway_descriptor_operation,
+      tx_extra_gateway_freeze,
+      tx_extra_gateway_repoint,
+      tx_extra_gateway_deposit_memo,
       tx_extra_merge_mining_tag,
       tx_extra_mysterious_minergate,
       tx_extra_padding,
@@ -695,5 +796,8 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_proofs,         cryptonote:
 BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_unlock,         cryptonote::TX_EXTRA_TAG_TX_KEY_IMAGE_UNLOCK);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_burn,                        cryptonote::TX_EXTRA_TAG_BURN);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_descriptor_operation, cryptonote::TX_EXTRA_TAG_GATEWAY_DESCRIPTOR_OPERATION);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_freeze,               cryptonote::TX_EXTRA_TAG_GATEWAY_FREEZE);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_repoint,              cryptonote::TX_EXTRA_TAG_GATEWAY_REPOINT);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_deposit_memo,         cryptonote::TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_beldex_name_system,            cryptonote::TX_EXTRA_TAG_BELDEX_NAME_SYSTEM);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_security_signature,            cryptonote::TX_EXTRA_TAG_SECURITY_SIGNATURE);

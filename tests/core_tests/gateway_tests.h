@@ -14,4 +14,5 @@ struct beldex_gateway_register_duplicate          : public test_chain_unit_base 
 struct beldex_gateway_register_pre_hf22           : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };
 struct beldex_gateway_update                       : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };
 struct beldex_gateway_update_wrong_key            : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };
+struct beldex_gateway_freeze_pre_hf23             : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };
 struct beldex_gateway_register_reorg              : public test_chain_unit_base { bool generate(std::vector<test_event_entry>& events); };

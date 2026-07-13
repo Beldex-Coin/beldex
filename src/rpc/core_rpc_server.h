@@ -198,6 +198,8 @@ namespace cryptonote::rpc {
     void invoke(GET_ALL_GATEWAYS& get_all_gateways, rpc_context context);
     void invoke(GATEWAY_CREATE_TRANSFER& gateway_create_transfer, rpc_context context);
     void invoke(GATEWAY_SUBMIT_TRANSFER& gateway_submit_transfer, rpc_context context);
+    void invoke(BRIDGE_GET_RESERVES& bridge_get_reserves, rpc_context context);
+    void invoke(GATEWAY_GET_HISTORY& gateway_get_history, rpc_context context);
     void invoke(BNS_RESOLVE& resolve, rpc_context context);
     void invoke(BNS_LOOKUP& lookup, rpc_context context);
     void invoke(BNS_VALUE_DECRYPT& value_decrypt, rpc_context context);

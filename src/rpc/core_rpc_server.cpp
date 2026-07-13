@@ -731,6 +731,48 @@ namespace cryptonote::rpc {
 
         set("gateway_descriptor", std::move(gw));
       }
+      void operator()(const tx_extra_gateway_freeze& x) {
+        set("gateway_freeze", json{
+            {"version", x.version},
+            {"gateway_id", tools::type_to_hex(x.gateway_id)},
+            {"freeze", x.freeze != 0},
+            {"governance_seq", x.governance_seq},
+            {"epoch_height", x.epoch_height},
+            {"evidence_count", x.evidence.size()},
+        });
+      }
+      void operator()(const tx_extra_gateway_repoint& x) {
+        json gw{
+            {"version", x.version},
+            {"gateway_id", tools::type_to_hex(x.gateway_id)},
+            {"governance_seq", x.governance_seq},
+            {"epoch_height", x.epoch_height},
+            {"evidence_count", x.evidence.size()},
+            {"new_owner_descriptor", {
+                {"version", x.new_owner_descriptor.version},
+                {"meta_info", x.new_owner_descriptor.meta_info},
+            }},
+        };
+        var::visit([&](const auto& key) {
+          using key_t = std::decay_t<decltype(key)>;
+          if constexpr (std::is_same_v<key_t, crypto::public_key>)
+            gw["new_owner_descriptor"]["owner_key_type"] = "beldex";
+          else if constexpr (std::is_same_v<key_t, crypto::eth_public_key>)
+            gw["new_owner_descriptor"]["owner_key_type"] = "eth";
+          else if constexpr (std::is_same_v<key_t, crypto::eddsa_public_key>)
+            gw["new_owner_descriptor"]["owner_key_type"] = "eddsa";
+          gw["new_owner_descriptor"]["owner_key"] = tools::type_to_hex(key);
+        }, x.new_owner_descriptor.owner_key);
+        set("gateway_repoint", std::move(gw));
+      }
+      void operator()(const tx_extra_gateway_deposit_memo& x) {
+        auto& memo = set("gateway_deposit_memo", json{
+            {"version", x.version},
+            {"gateway_id", tools::type_to_hex(x.gateway_id)},
+        });
+        json_binary_proxy{memo["enc_memo"], format} =
+            std::string_view{reinterpret_cast<const char*>(x.enc_memo.data()), x.enc_memo.size()};
+      }
       void operator()(const tx_extra_master_node_winner& x) { set("mn_winner", x.m_master_node_key); }
       void operator()(const tx_extra_master_node_pubkey& x) { set("mn_pubkey", x.m_master_node_key); }
       void operator()(const tx_extra_security_signature& x) { set("security_sig", tools::type_to_hex(x.m_security_signature)); }
@@ -3828,6 +3870,126 @@ namespace cryptonote::rpc {
     LOG_PRINT_L0("Gateway withdrawal transaction relayed: " << tools::type_to_hex(cryptonote::get_transaction_hash(tx)));
     cmd.response["tx_hash"] = tools::type_to_hex(cryptonote::get_transaction_hash(tx));
     cmd.response["status"]  = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  namespace
+  {
+    // Resolve a gwB… address or 64-char hex string to a gateway id.
+    bool resolve_gateway_id(cryptonote::network_type nettype, const std::string& s, crypto::public_key& out)
+    {
+      cryptonote::gateway_address_parse_info info{};
+      if (cryptonote::get_gateway_address_from_str(info, nettype, s)) { out = info.gateway_id; return true; }
+      return tools::hex_to_type(s, out);
+    }
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(BRIDGE_GET_RESERVES& cmd, rpc_context context)
+  {
+    const auto nettype = m_core.get_nettype();
+    crypto::public_key gw_id{};
+    if (!resolve_gateway_id(nettype, cmd.request.gateway_id, gw_id))
+      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_id (expected gwB… address or 64-char hex)"};
+
+    auto& db = m_core.get_blockchain_storage().get_db();
+    cryptonote::gateway_account_data acct;
+    const bool exists = cryptonote::load_gateway_account(db, gw_id, acct) && !acct.descriptor_history.empty();
+
+    const uint64_t top    = m_core.get_current_blockchain_height();
+    const uint64_t height = cmd.request.height ? cmd.request.height : (top ? top - 1 : 0);
+    const uint64_t window = height / cryptonote::GATEWAY_RELEASE_WINDOW_BLOCKS;
+
+    cmd.response["registered"]     = exists;
+    cmd.response["address"]        = cryptonote::get_gateway_address_as_str(nettype, gw_id);
+    cmd.response["frozen"]         = exists ? (acct.frozen != 0) : false;
+    cmd.response["gateway_balance"]= exists ? acct.balance_for(crypto::null_aid) : uint64_t{0};
+    cmd.response["window_id"]      = window;
+    cmd.response["window_blocks"]  = cryptonote::GATEWAY_RELEASE_WINDOW_BLOCKS;
+    cmd.response["epoch_released"] = exists ? acct.released_in_window(window) : uint64_t{0};
+    cmd.response["release_cap"]    = cryptonote::GATEWAY_RELEASE_CAP_PER_WINDOW;
+    cmd.response["per_tx_max"]     = cryptonote::GATEWAY_RELEASE_PER_TX_MAX;
+    // Per-chain expected wBDX supply is sourced from the EVM chain registry +
+    // watchers (Phase E); empty until those land. The dashboard cross-check
+    // (Σ wBDX == gateway_balance) is computed off-chain against this balance.
+    cmd.response["per_chain_wbdx"] = json::array();
+    cmd.response["status"]         = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GATEWAY_GET_HISTORY& cmd, rpc_context context)
+  {
+    const auto nettype = m_core.get_nettype();
+    crypto::public_key gw_id{};
+    if (!resolve_gateway_id(nettype, cmd.request.gateway_id, gw_id))
+      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_id (expected gwB… address or 64-char hex)"};
+
+    // Server-side bounds so a single call can never scan/return unboundedly.
+    constexpr uint64_t DEFAULT_MAX_BLOCKS = 1000, LIMIT_MAX_BLOCKS = 10000;
+    constexpr uint64_t DEFAULT_MAX_EVENTS = 100,  LIMIT_MAX_EVENTS = 1000;
+    const uint64_t max_blocks = std::min(cmd.request.max_blocks ? cmd.request.max_blocks : DEFAULT_MAX_BLOCKS, LIMIT_MAX_BLOCKS);
+    const uint64_t max_events = std::min(cmd.request.max_events ? cmd.request.max_events : DEFAULT_MAX_EVENTS, LIMIT_MAX_EVENTS);
+
+    const uint64_t top = m_core.get_current_blockchain_height();
+    auto& db = m_core.get_blockchain_storage().get_db();
+
+    auto events = json::array();
+    uint64_t h = cmd.request.from_height;
+    uint64_t scanned = 0;
+    for (; h < top && scanned < max_blocks && events.size() < max_events; ++h, ++scanned)
+    {
+      cryptonote::block blk;
+      try { blk = db.get_block_from_height(h); }
+      catch (...) { break; }
+
+      std::vector<cryptonote::transaction> txs;
+      if (!blk.tx_hashes.empty())
+        m_core.get_transactions(blk.tx_hashes, txs);
+
+      for (const auto& tx : txs)
+      {
+        const std::string txid = tools::type_to_hex(cryptonote::get_transaction_hash(tx));
+
+        // deposits (tx_out_gateway to this gateway)
+        for (const auto& o : tx.vout)
+          if (const auto* g = std::get_if<cryptonote::tx_out_gateway>(&o.target))
+            if (g->gateway_addr == gw_id)
+              events.push_back(json{{"height", h}, {"txid", txid}, {"type", "deposit"}, {"amount", g->amount}});
+
+        // withdrawals (txin_gateway from this gateway)
+        for (const auto& in : tx.vin)
+          if (const auto* g = std::get_if<cryptonote::txin_gateway>(&in))
+            if (g->gateway_addr == gw_id)
+              events.push_back(json{{"height", h}, {"txid", txid}, {"type", "withdrawal"}, {"amount", g->amount}});
+
+        // descriptor ops (register / update)
+        {
+          cryptonote::tx_extra_gateway_descriptor_operation op{};
+          if (cryptonote::get_field_from_tx_extra(tx.extra, op) && op.address_id == gw_id)
+            events.push_back(json{{"height", h}, {"txid", txid},
+                {"type", op.op_type == cryptonote::gateway_descriptor_op_type::register_address ? "register" : "update"}});
+        }
+        // governance freeze / unfreeze
+        {
+          cryptonote::tx_extra_gateway_freeze op{};
+          if (cryptonote::get_field_from_tx_extra(tx.extra, op) && op.gateway_id == gw_id)
+            events.push_back(json{{"height", h}, {"txid", txid}, {"type", op.freeze ? "freeze" : "unfreeze"}});
+        }
+        // governance re-point
+        {
+          cryptonote::tx_extra_gateway_repoint op{};
+          if (cryptonote::get_field_from_tx_extra(tx.extra, op) && op.gateway_id == gw_id)
+            events.push_back(json{{"height", h}, {"txid", txid}, {"type", "repoint"}});
+        }
+
+        if (events.size() >= max_events) break;
+      }
+    }
+
+    cmd.response["events"]      = std::move(events);
+    cmd.response["next_height"] = h;   // resume point for the next page
+    cmd.response["top_height"]  = top;
+    cmd.response["status"]      = STATUS_OK;
   }
 
   //------------------------------------------------------------------------------------------------------------------------------

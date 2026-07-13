@@ -232,6 +232,40 @@ bool beldex_gateway_update_wrong_key::generate(std::vector<test_event_entry>& ev
   return true;
 }
 
+// --- HF23 governance fields are rejected before HF23 -------------------------
+bool beldex_gateway_freeze_pre_hf23::generate(std::vector<test_event_entry>& events)
+{
+  // Chain tops out at HF22 (gateway live, bridge governance not yet active).
+  auto hard_forks = beldex_generate_hard_fork_table(hf::hf22_gateway_addresses);
+  beldex_chain_generator gen(events, hard_forks);
+  account_base miner = gen.first_miner_;
+  gen.add_blocks_until_version(hard_forks.back().version);
+  gen.add_mined_money_unlock_blocks();
+
+  // Register a gateway (so the freeze targets a real account had HF23 been live).
+  gw_keys k = make_gw_keys();
+  transaction reg = build_register_tx(events, gen, miner, k, GATEWAY_ADDRESS_REGISTRATION_FEE);
+  gen.add_tx(reg, true);
+  gen.create_and_add_next_block({reg});
+
+  // A standard tx carrying a gateway_freeze field must be rejected before HF23.
+  tx_extra_gateway_freeze op{};
+  op.gateway_id     = k.id;
+  op.freeze         = 1;
+  op.governance_seq = 0;
+  op.epoch_height   = gen.height();
+  std::vector<uint8_t> extra;
+  add_gateway_freeze_to_tx_extra(extra, op);
+
+  transaction tx{};
+  beldex_tx_builder(events, tx, gen.top().block, miner, miner.get_keys().m_account_address, 0, gen.hardfork())
+      .with_extra(extra)
+      .with_fee(TESTS_DEFAULT_FEE)
+      .build();
+  gen.add_tx(tx, false /*rejected*/, "gateway governance field before HF23");
+  return true;
+}
+
 // --- a reorg that pops the register block removes the gateway ----------------
 bool beldex_gateway_register_reorg::generate(std::vector<test_event_entry>& events)
 {

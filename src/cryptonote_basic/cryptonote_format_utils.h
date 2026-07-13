@@ -171,6 +171,9 @@ namespace cryptonote
   bool add_burned_amount_to_tx_extra(std::vector<uint8_t>& tx_extra, uint64_t burn);
   uint64_t get_burned_amount_from_tx_extra(const std::vector<uint8_t>& tx_extra);
   bool add_gateway_descriptor_operation_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_gateway_descriptor_operation& op);
+  bool add_gateway_freeze_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_gateway_freeze& op);
+  bool add_gateway_repoint_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_gateway_repoint& op);
+  bool add_gateway_deposit_memo_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_gateway_deposit_memo& memo);
   bool is_out_to_acc(const account_keys& acc, const txout_to_key& out_key, const crypto::public_key& tx_pub_key, const std::vector<crypto::public_key>& additional_tx_public_keys, size_t output_index);
   struct subaddress_receive_info
   {

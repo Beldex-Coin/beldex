@@ -404,6 +404,20 @@ namespace cryptonote::rpc {
         "tx_blob",   required{c.request.tx_blob});
   }
 
+  void parse_request(BRIDGE_GET_RESERVES& c, rpc_input in) {
+    get_values(in,
+        "gateway_id", required{c.request.gateway_id},
+        "height",     c.request.height);
+  }
+
+  void parse_request(GATEWAY_GET_HISTORY& c, rpc_input in) {
+    get_values(in,
+        "from_height", c.request.from_height,
+        "gateway_id",  required{c.request.gateway_id},
+        "max_blocks",  c.request.max_blocks,
+        "max_events",  c.request.max_events);
+  }
+
   void parse_request(BNS_RESOLVE& resolve, rpc_input in) {
     get_values(in,
         "name_hash", required{resolve.request.name_hash},

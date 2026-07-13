@@ -300,6 +300,26 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Sovereign Bridge (HF23) per-window release accounting. `window_id` is
+  // floor(height / GATEWAY_RELEASE_WINDOW_BLOCKS); `amount` is the cumulative
+  // native BDX released in that FIXED calendar window (plan §A.3/§7-bis). Stored
+  // as a short list rather than a single reset-counter so that block pop
+  // (rewind) is an EXACT inverse of append even across a window boundary (S9):
+  // append adds to the entry for the block's window and lazily prunes entries
+  // older than the immediately-previous window (safely outside any legal reorg,
+  // since windows ≫ the checkpoint reorg buffer); rewind subtracts from the
+  // matching entry. The cap check reads only the current window's entry.
+  struct gateway_release_window
+  {
+    uint64_t window_id = 0;
+    uint64_t amount    = 0;
+
+    BEGIN_SERIALIZE_OBJECT()
+      VARINT_FIELD(window_id)
+      VARINT_FIELD(amount)
+    END_SERIALIZE()
+  };
+
   // Consensus state for one gateway account, stored in the DB keyed by the
   // gateway address id. descriptor_history is append-only (latest entry is
   // authoritative for spend/update validation); balances is materialized with
@@ -310,11 +330,32 @@ namespace cryptonote
     std::vector<gateway_descriptor_base> descriptor_history;
     std::vector<gateway_balance_entry> balances;
 
+    // ---- Sovereign Bridge governance state (HF23, version >= 1) ------------
+    // Written only once an HF23 op (freeze / re-point / a capped withdrawal)
+    // touches the account; absent (version 0) means "never frozen, no release
+    // recorded", so existing HF22 blobs deserialize unchanged.
+    uint8_t  frozen = 0;                                   // 1 => all withdrawals/updates rejected regardless of owner sig (S8)
+    uint64_t governance_seq = 0;                           // monotonic per-gateway governance nonce (anti-replay; reorg-exact)
+    std::vector<gateway_release_window> release_windows;   // bounded recent per-window release accounting (reorg-exact)
+
     BEGIN_SERIALIZE_OBJECT()
       FIELD(version)
       FIELD(descriptor_history)
       FIELD(balances)
+      if (version >= 1)
+      {
+        FIELD(frozen)
+        VARINT_FIELD(governance_seq)
+        FIELD(release_windows)
+      }
     END_SERIALIZE()
+
+    // Cumulative native BDX already released in `window_id` (0 if none recorded).
+    uint64_t released_in_window(uint64_t window_id) const {
+      for (const auto& w : release_windows)
+        if (w.window_id == window_id) return w.amount;
+      return 0;
+    }
 
     // Latest (authoritative) descriptor. Callers must ensure history is non-empty.
     const gateway_descriptor_base& latest_descriptor() const { return descriptor_history.back(); }

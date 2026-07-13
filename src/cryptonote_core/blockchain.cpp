@@ -750,7 +750,8 @@ block Blockchain::pop_block_from_blockchain()
   {
     std::string gw_reason;
     CHECK_AND_ASSERT_THROW_MES(
-        rewind_gateways_from_transactions(*m_db, popped_txs, &gw_reason),
+        rewind_gateways_from_transactions(*m_db, popped_txs, cryptonote::get_block_height(popped_block),
+                                          popped_block.major_version >= feature::BRIDGE, &gw_reason),
         "Failed to rewind gateway state while popping block: " + gw_reason);
   }
 
@@ -3345,12 +3346,20 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
   }
 
   // Gateway address (HF22): validate any register/update descriptor operation and
-  // reject gateway ops carried in the wrong tx type. Balance-affecting deposit /
-  // withdrawal checks are added in later milestones.
+  // reject gateway ops carried in the wrong tx type. HF23 (Sovereign Bridge) adds
+  // governance freeze/re-point + deposit-memo + per-tx release-max validation; the
+  // resolver hands gateway_utils the checkpoint quorum that authorizes governance
+  // (keeping master-node headers out of the leaf util).
   if (hf_version >= feature::GATEWAY_ADDRESSES)
   {
+    auto resolve_quorum = [this](uint64_t height, std::vector<crypto::public_key>& validators) -> bool {
+      auto q = m_master_node_list.get_quorum(master_nodes::quorum_type::checkpointing, height, /*include_old=*/true);
+      if (!q) return false;
+      validators = q->validators;
+      return !validators.empty();
+    };
     std::string gw_reason;
-    if (!validate_tx_gateway_operations_against_db(*m_db, m_nettype, tx, hf_version, gw_reason))
+    if (!validate_tx_gateway_operations_against_db(*m_db, m_nettype, tx, hf_version, resolve_quorum, gw_reason))
     {
       MERROR_VER("Gateway operation validation failed for tx " << get_transaction_hash(tx) << ": " << gw_reason);
       tvc.m_verifivation_failed = true;
@@ -4619,7 +4628,8 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
     try
     {
       std::string gw_reason;
-      if (!append_gateways_from_transactions(*m_db, only_txs, &gw_reason))
+      if (!append_gateways_from_transactions(*m_db, only_txs, cryptonote::get_block_height(bl),
+                                             bl.major_version >= feature::BRIDGE, &gw_reason))
       {
         MGINFO_RED("Failed to persist gateway operation(s): " << gw_reason);
         bvc.m_verifivation_failed = true;

@@ -63,6 +63,37 @@ inline constexpr uint64_t PUBLIC_ADDRESS_TEXTBLOB_VER          = 0;
 // literal here because beldex_economy.h (which defines COIN) includes this file.
 inline constexpr uint64_t GATEWAY_ADDRESS_REGISTRATION_FEE     = UINT64_C(100000000000); // 100 * pow(10, 9)
 
+// ---- Sovereign Bridge (HF23) Phase A parameters ----------------------------
+// All values are atomic units (COIN = 10^9). These are the initial/default
+// consensus parameters; the plan (§7-bis) treats caps as governance-adjustable
+// and sized by C·φ·β < (t+1)·B. They are chosen conservatively for the mainnet
+// canary (§13 staged schedule, "Mainnet canary" row: 100–250k BDX/epoch).
+//
+// GATEWAY_RELEASE_WINDOW_BLOCKS is a FIXED calendar window (β=1). A withdrawal
+// is accounted to floor(height / WINDOW); the cumulative released amount resets
+// to zero on the window boundary. It must NOT be a rolling window (a rolling
+// window admits a back-to-back 2× burst — §7-bis). 2880 blocks = 24h at
+// TARGET_BLOCK_TIME (30s).
+inline constexpr uint64_t GATEWAY_RELEASE_WINDOW_BLOCKS        = 2880;                       // 24h fixed calendar window
+inline constexpr uint64_t GATEWAY_RELEASE_CAP_PER_WINDOW       = UINT64_C(250000000000000);  // 250,000 BDX per window (canary ceiling)
+inline constexpr uint64_t GATEWAY_RELEASE_PER_TX_MAX           = UINT64_C(50000000000000);   // 50,000 BDX per withdrawal tx
+
+// Governance supermajority: a freeze/re-point attestation is authorized only if
+// at least this fraction (numerator/denominator) of the checkpoint quorum at the
+// target height signed the governance message. Deliberately a LARGER quorum than
+// the t+1 bridge signing committee (plan §G.1), so a compromised committee cannot
+// self-authorize a re-point. 4/5 of the checkpoint quorum (≥16 of 20 on mainnet).
+inline constexpr uint32_t GATEWAY_GOVERNANCE_SUPERMAJORITY_NUM = 4;
+inline constexpr uint32_t GATEWAY_GOVERNANCE_SUPERMAJORITY_DEN = 5;
+
+// Bridge deposit-routing memo (A.5): bounded encrypted blob carrying
+// {dst_chain_id, dst_addr} for a bridge deposit. 1 (version) + 8 (chain id) +
+// 32 (max dst addr, e.g. 20-byte EVM address left-padded) = 41 plaintext bytes;
+// capped at 64 to leave headroom for future destination encodings without a new
+// wire format. The stored/serialized ciphertext is the same length as the
+// plaintext (stream-XOR against a view-key-derived mask, like GW_OUT_PID_MASK).
+inline constexpr size_t   GATEWAY_DEPOSIT_MEMO_MAX_BYTES       = 64;
+
 inline constexpr uint64_t FINAL_SUBSIDY_PER_MINUTE             = 500000000; // 3 * pow(10, 7)
 
 inline constexpr uint64_t BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW    = 11;
@@ -127,6 +158,14 @@ namespace hashkey {
   inline constexpr std::string_view GW_OWNERSHIP    = "gateway_ownership"sv;    // descriptor-update ownership proof message
   inline constexpr std::string_view GW_OUT_PID_MASK = "gateway_out_pid_mask"sv; // integrated-address payment-id encryption mask
   inline constexpr std::string_view GW_BALANCE      = "gateway_balance"sv;      // gw→wallet withdrawal balance-proof message
+  // Sovereign Bridge governance (HF23) domain separators. Each governance
+  // attestation message is H(tag || genesis_hash || …) — the genesis binding
+  // (same rationale as GW_INPUT_SIG) prevents cross-chain/fork replay of a
+  // supermajority attestation, and the distinct tags keep freeze and re-point
+  // evidence non-interchangeable.
+  inline constexpr std::string_view GW_FREEZE       = "gateway_freeze"sv;       // supermajority freeze/unfreeze attestation message
+  inline constexpr std::string_view GW_REPOINT      = "gateway_repoint"sv;      // supermajority owner re-point attestation message
+  inline constexpr std::string_view GW_DEPOSIT_MEMO = "gateway_deposit_memo"sv; // bridge deposit-routing memo encryption mask
 }
 
 // Maximum allowed stake contribution, as a fraction of the available contribution room.  This
@@ -216,6 +255,7 @@ enum class hf : uint8_t
     hf20_bulletproof_plus,
     hf21_bulletproof_plus,
     hf22_gateway_addresses, // Account-model gateway addresses for exchanges/bridges/DEXes
+    hf23_bridge, // Sovereign Bridge: gateway governance (freeze/re-point), release cap, deposit-routing memo
 
     _next,
     none = 0
@@ -248,6 +288,7 @@ namespace feature {
   constexpr auto PROOF_BTENC                  = hf::hf18_bns;
   constexpr auto BULLETPROOF_PLUS             = hf::hf20_bulletproof_plus;
   constexpr auto GATEWAY_ADDRESSES            = hf::hf22_gateway_addresses;
+  constexpr auto BRIDGE                       = hf::hf23_bridge;
 }
 
 enum network_type : uint8_t

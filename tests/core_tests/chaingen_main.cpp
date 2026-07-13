@@ -136,6 +136,7 @@ int main(int argc, char* argv[])
     GENERATE_AND_PLAY(beldex_gateway_register_pre_hf22);
     GENERATE_AND_PLAY(beldex_gateway_update);
     GENERATE_AND_PLAY(beldex_gateway_update_wrong_key);
+    GENERATE_AND_PLAY(beldex_gateway_freeze_pre_hf23);
     GENERATE_AND_PLAY(beldex_gateway_register_reorg);
     GENERATE_AND_PLAY(beldex_master_nodes_alt_quorums);
     GENERATE_AND_PLAY(beldex_master_nodes_checkpoint_quorum_size);
