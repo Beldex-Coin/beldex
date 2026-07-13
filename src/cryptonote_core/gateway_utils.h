@@ -134,7 +134,13 @@ bool verify_pure_gateway_balance(const transaction& tx, uint64_t& fee, std::stri
 
 // Apply / exact-inverse rewind of ALL gateway state changes (descriptor ops +
 // deposit/withdrawal balance mutations) at block add / pop.
-bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason = nullptr);
-bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason = nullptr);
+// `height` is the block height being applied/popped; it keys the per-gateway
+// transaction-history table (second gateway table) so entries are ordered and
+// exactly removable on reorg.
+bool append_gateways_from_transactions(BlockchainDB& db, uint64_t height, const std::vector<transaction>& txs, std::string* reason = nullptr);
+bool rewind_gateways_from_transactions(BlockchainDB& db, uint64_t height, const std::vector<transaction>& txs, std::string* reason = nullptr);
+
+// Read the transaction history for a gateway (height-ascending, paginated).
+std::vector<crypto::hash> get_gateway_history(BlockchainDB& db, const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count);
 
 } // namespace cryptonote

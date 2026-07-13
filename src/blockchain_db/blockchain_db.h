@@ -1832,6 +1832,17 @@ public:
   virtual bool gateway_exists(const crypto::public_key& gateway_addr) const = 0;
   virtual std::vector<crypto::public_key> get_all_gateway_ids() const = 0;
 
+  // Gateway transaction history (HF22) — the second gateway table (mirrors
+  // Zano's split of gateway state into an accounts table and a transactions
+  // table). Maps a gateway address id to the list of transactions that touched
+  // it (deposits, withdrawals, descriptor ops), stored as (height, tx_hash)
+  // entries ordered by height so an exchange can page through its gateway's
+  // activity. add/remove are exact inverses for reorg safety.
+  virtual void add_gateway_tx(const crypto::public_key& gateway_addr, uint64_t height, const crypto::hash& tx_hash) = 0;
+  virtual void remove_gateway_tx(const crypto::public_key& gateway_addr, uint64_t height, const crypto::hash& tx_hash) = 0;
+  // Returns up to `count` tx hashes (height-ascending) starting at `offset`.
+  virtual std::vector<crypto::hash> get_gateway_txs(const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count) const = 0;
+
   // This function accepts an empty timestamps/difficulties array to fill, or
   // a prior timestamps/difficulties array that was filled by a previous call to
   // this same function in which case it will optimally insert and remove the

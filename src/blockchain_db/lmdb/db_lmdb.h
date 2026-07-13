@@ -80,6 +80,7 @@ struct mdb_txn_cursors
   MDB_cursor *master_node_proofs;
   MDB_cursor *output_blacklist;
   MDB_cursor *gateway_accounts;
+  MDB_cursor *gateway_tx_history;
   MDB_cursor *properties;
 };
 
@@ -108,6 +109,7 @@ struct mdb_rflags
   bool m_rf_master_node_data;
   bool m_rf_master_node_proofs;
   bool m_rf_gateway_accounts;
+  bool m_rf_gateway_tx_history;
   bool m_rf_properties;
 };
 
@@ -450,6 +452,10 @@ private:
   bool gateway_exists(const crypto::public_key& gateway_addr) const override;
   std::vector<crypto::public_key> get_all_gateway_ids() const override;
 
+  void add_gateway_tx(const crypto::public_key& gateway_addr, uint64_t height, const crypto::hash& tx_hash) override;
+  void remove_gateway_tx(const crypto::public_key& gateway_addr, uint64_t height, const crypto::hash& tx_hash) override;
+  std::vector<crypto::hash> get_gateway_txs(const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count) const override;
+
 private:
   template <typename T,
             std::enable_if_t<std::is_same_v<T, cryptonote::block> ||
@@ -490,6 +496,7 @@ private:
   MDB_dbi m_master_node_proofs;
 
   MDB_dbi m_gateway_accounts; // HF22: gateway_addr -> serialized gateway_account_data
+  MDB_dbi m_gateway_tx_history; // HF22: gateway_addr -> (height||tx_hash) entries (DUPSORT)
 
   MDB_dbi m_properties;
 

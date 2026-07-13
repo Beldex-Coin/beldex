@@ -6,6 +6,7 @@
 
 #include <limits>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -711,7 +712,27 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
   return true;
 }
 
-bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason)
+namespace
+{
+  // Every gateway address touched by a tx: descriptor-op targets, deposit
+  // destinations, and withdrawal sources. Deduped so a tx appears once per
+  // gateway in the history table.
+  std::set<crypto::public_key> gateways_touched_by_tx(const transaction& tx)
+  {
+    std::set<crypto::public_key> gws;
+    for (const auto& op : extract_gateway_ops(tx))
+      gws.insert(op.address_id);
+    for (const auto& o : tx.vout)
+      if (const auto* g = std::get_if<tx_out_gateway>(&o.target))
+        gws.insert(g->gateway_addr);
+    for (const auto& in : tx.vin)
+      if (const auto* g = std::get_if<txin_gateway>(&in))
+        gws.insert(g->gateway_addr);
+    return gws;
+  }
+}
+
+bool append_gateways_from_transactions(BlockchainDB& db, uint64_t height, const std::vector<transaction>& txs, std::string* reason)
 {
   std::unordered_map<crypto::public_key, gateway_account_data> cache;
 
@@ -779,6 +800,12 @@ bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
           return false;
       }
     }
+
+    // 4) transaction-history table (second gateway table): record this tx under
+    //    every gateway it touched.
+    const crypto::hash tx_hash = get_transaction_hash(tx);
+    for (const auto& gw : gateways_touched_by_tx(tx))
+      db.add_gateway_tx(gw, height, tx_hash);
   }
 
   for (const auto& [id, acct] : cache)
@@ -787,7 +814,7 @@ bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
   return true;
 }
 
-bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason)
+bool rewind_gateways_from_transactions(BlockchainDB& db, uint64_t height, const std::vector<transaction>& txs, std::string* reason)
 {
   std::unordered_map<crypto::public_key, gateway_account_data> cache;
 
@@ -805,6 +832,11 @@ bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
   for (auto tx_it = txs.rbegin(); tx_it != txs.rend(); ++tx_it)
   {
     const transaction& tx = *tx_it;
+
+    // undo the transaction-history entries (second gateway table)
+    const crypto::hash tx_hash = get_transaction_hash(tx);
+    for (const auto& gw : gateways_touched_by_tx(tx))
+      db.remove_gateway_tx(gw, height, tx_hash);
 
     // undo withdrawals: re-add the spent amount
     for (const auto& in : tx.vin)
@@ -872,6 +904,11 @@ bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
   }
 
   return true;
+}
+
+std::vector<crypto::hash> get_gateway_history(BlockchainDB& db, const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count)
+{
+  return db.get_gateway_txs(gateway_addr, offset, count);
 }
 
 } // namespace cryptonote
