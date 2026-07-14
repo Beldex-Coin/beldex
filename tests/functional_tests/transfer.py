@@ -29,12 +29,15 @@
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import json
+import pprint as pp
 
 """Test simple transfers
 """
 
 from framework.daemon import Daemon
 from framework.wallet import Wallet
+from deepdiff import DeepDiff
+import util_resources
 
 def diff_transfers(actual_transfers, expected_transfers, ignore_order = True):
     # The payments containers aren't ordered; re-scanning can lead to diff orders
@@ -74,18 +77,18 @@ class TransferTest():
 
     def create(self):
         print('Creating wallets')
-        seeds = [
+        self.seeds = [
           'velvet lymph giddy number token physics poetry unquoted nibs useful sabotage limits benches lifestyle eden nitrogen anvil fewest avoid batch vials washing fences goat unquoted',
           'peeled mixture ionic radar utopia puddle buying illness nuns gadget river spout cavernous bounced paradise drunk looking cottage jump tequila melting went winter adjust spout',
           'dilute gutter certain antics pamphlet macro enjoy left slid guarded bogeys upload nineteen bomb jubilee enhanced irritate turnip eggs swung jukebox loudly reduce sedan slid',
         ]
-        self.wallet = [None] * len(seeds)
-        for i in range(len(seeds)):
+        self.wallet = [None] * len(self.seeds)
+        for i in range(len(self.seeds)):
             self.wallet[i] = Wallet(idx = i)
             # close the wallet if any, will throw if none is loaded
             try: self.wallet[i].close_wallet()
             except: pass
-            res = self.wallet[i].restore_deterministic_wallet(seed = seeds[i])
+            res = self.wallet[i].restore_deterministic_wallet(seed = self.seeds[i])
 
     def mine(self):
         print("Mining some blocks")
@@ -881,7 +884,7 @@ class TransferTest():
         sender_wallet = self.wallet[0]
         try: sender_wallet.close_wallet()
         except: pass
-        sender_wallet.restore_deterministic_wallet(seed = seeds[0])
+        sender_wallet.restore_deterministic_wallet(seed = self.seeds[0])
         sender_wallet.auto_refresh(enable = False)
         sender_wallet.refresh()
         res = sender_wallet.incoming_transfers(transfer_type = 'available')
@@ -903,7 +906,7 @@ class TransferTest():
         receiver_wallet = self.wallet[1]
         try: receiver_wallet.close_wallet()
         except: pass
-        receiver_wallet.restore_deterministic_wallet(seed = seeds[1])
+        receiver_wallet.restore_deterministic_wallet(seed = self.seeds[1])
         receiver_wallet.auto_refresh(enable = False)
         receiver_wallet.refresh()
         res = receiver_wallet.get_transfers()
@@ -947,7 +950,7 @@ class TransferTest():
         assert sender_wallet.get_balance().balance == expected_sender_balance
 
         # Restore and check background syncing outgoing wallet
-        restore_wallet(sender_wallet, seeds[0])
+        restore_wallet(sender_wallet, self.seeds[0])
         sender_wallet.setup_background_sync(background_sync_type = reuse_password)
         sender_wallet.start_background_sync()
         sender_wallet.refresh()
@@ -962,20 +965,20 @@ class TransferTest():
         assert 'out' not in background_transfers or len(background_transfers.out) == 0
         assert 'in' in background_transfers and len(background_transfers['in']) > 0
         background_incoming_transfers = sender_wallet.incoming_transfers(transfer_type = 'all')
-        assert len(background_incoming_transfers) == len(incoming_transfers)
+        assert len(background_incoming_transfers.transfers) == len(incoming_transfers.transfers)
         assert len([x for x in background_incoming_transfers.transfers if x.spent or x.key_image != '']) == 0
         assert len([x for x in background_incoming_transfers.transfers if x.tx_hash == spent_txid]) == 1
 
         # Try to stop background sync with the wrong seed
-        stop_with_wrong_inputs(sender_wallet, wallet_password = '', seed = seeds[1])
+        stop_with_wrong_inputs(sender_wallet, wallet_password = '', seed = self.seeds[1])
 
         # Stop background sync and check transfers update correctly
-        sender_wallet.stop_background_sync(wallet_password = '', seed = seeds[0])
+        sender_wallet.stop_background_sync(wallet_password = '', seed = self.seeds[0])
         assert_correct_transfers(sender_wallet, transfers, incoming_transfers, expected_sender_balance)
 
         # Check stopping a wallet with wallet files saved to disk
         for background_sync_type in [reuse_password, custom_password]:
-            restore_wallet(sender_wallet, seeds[0], 'test1', 'test_password')
+            restore_wallet(sender_wallet, self.seeds[0], 'test1', 'test_password')
             background_cache_password = None if background_sync_type == reuse_password else 'background_password'
             sender_wallet.setup_background_sync(background_sync_type = background_sync_type, wallet_password = 'test_password', background_cache_password = background_cache_password)
             sender_wallet.start_background_sync()
@@ -987,7 +990,7 @@ class TransferTest():
 
         # Close wallet while background syncing, then reopen
         for background_sync_type in [reuse_password, custom_password]:
-            restore_wallet(sender_wallet, seeds[0], 'test1', 'test_password')
+            restore_wallet(sender_wallet, self.seeds[0], 'test1', 'test_password')
             background_cache_password = None if background_sync_type == reuse_password else 'background_password'
             sender_wallet.setup_background_sync(background_sync_type = background_sync_type, wallet_password = 'test_password', background_cache_password = background_cache_password)
             sender_wallet.start_background_sync()
@@ -1001,7 +1004,7 @@ class TransferTest():
 
         # Close wallet while syncing normally, then reopen
         for background_sync_type in [reuse_password, custom_password]:
-            restore_wallet(sender_wallet, seeds[0], 'test1', 'test_password')
+            restore_wallet(sender_wallet, self.seeds[0], 'test1', 'test_password')
             background_cache_password = None if background_sync_type == reuse_password else 'background_password'
             sender_wallet.setup_background_sync(background_sync_type = background_sync_type, wallet_password = 'test_password', background_cache_password = background_cache_password)
             sender_wallet.refresh()
@@ -1013,7 +1016,7 @@ class TransferTest():
 
         # Create background cache using custom password, then use it to sync, then reopen main wallet
         for background_cache_password in ['background_password', '']:
-            restore_wallet(sender_wallet, seeds[0], 'test1', 'test_password')
+            restore_wallet(sender_wallet, self.seeds[0], 'test1', 'test_password')
             assert not util_resources.file_exists('test1.background')
             assert not util_resources.file_exists('test1.background.keys')
             sender_wallet.setup_background_sync(background_sync_type = custom_password, wallet_password = 'test_password', background_cache_password = background_cache_password)
@@ -1029,7 +1032,7 @@ class TransferTest():
             assert_correct_transfers(sender_wallet, transfers, incoming_transfers, expected_sender_balance)
 
         # Check that main wallet keeps background cache encrypted with custom password in sync
-        restore_wallet(sender_wallet, seeds[0], 'test1', 'test_password')
+        restore_wallet(sender_wallet, self.seeds[0], 'test1', 'test_password')
         sender_wallet.setup_background_sync(background_sync_type = background_sync_type, wallet_password = 'test_password', background_cache_password = 'background_password')
         sender_wallet.refresh()
         assert_correct_transfers(sender_wallet, transfers, incoming_transfers, expected_sender_balance)
@@ -1038,7 +1041,7 @@ class TransferTest():
         assert_correct_transfers(sender_wallet, transfers, incoming_transfers, expected_sender_balance)
 
         # Try using wallet password as custom background password
-        restore_wallet(sender_wallet, seeds[0], 'test1', 'test_password')
+        restore_wallet(sender_wallet, self.seeds[0], 'test1', 'test_password')
         assert not util_resources.file_exists('test1.background')
         assert not util_resources.file_exists('test1.background.keys')
         same_password = False
@@ -1050,7 +1053,7 @@ class TransferTest():
 
         # Turn off background sync
         for background_sync_type in [reuse_password, custom_password]:
-            restore_wallet(sender_wallet, seeds[0], 'test1', 'test_password')
+            restore_wallet(sender_wallet, self.seeds[0], 'test1', 'test_password')
             background_cache_password = None if background_sync_type == reuse_password else 'background_password'
             sender_wallet.setup_background_sync(background_sync_type = background_sync_type, wallet_password = 'test_password', background_cache_password = background_cache_password)
             if background_sync_type == custom_password:
@@ -1076,7 +1079,7 @@ class TransferTest():
 
         # Sanity check against outgoing wallet restored at height 0
         sender_wallet.close_wallet()
-        sender_wallet.restore_deterministic_wallet(seed = seeds[0], restore_height = 0)
+        sender_wallet.restore_deterministic_wallet(seed = self.seeds[0], restore_height = 0)
         sender_wallet.refresh()
         assert_correct_transfers(sender_wallet, transfers, incoming_transfers, expected_sender_balance)
 
@@ -1098,7 +1101,7 @@ class TransferTest():
         assert receiver_wallet.get_balance().balance == expected_receiver_balance
 
         # Restore and check background syncing incoming wallet
-        restore_wallet(receiver_wallet, seeds[1])
+        restore_wallet(receiver_wallet, self.seeds[1])
         receiver_wallet.setup_background_sync(background_sync_type = reuse_password)
         receiver_wallet.start_background_sync()
         receiver_wallet.refresh()
@@ -1112,20 +1115,20 @@ class TransferTest():
         assert 'out' not in background_transfers or len(background_transfers.out) == 0
         assert 'in' in background_transfers and len(background_transfers['in']) > 0
         background_incoming_transfers = receiver_wallet.incoming_transfers(transfer_type = 'all')
-        assert len(background_incoming_transfers) == len(incoming_transfers)
+        assert len(background_incoming_transfers.transfers) == len(incoming_transfers.transfers)
         assert len([x for x in background_incoming_transfers.transfers if x.spent or x.key_image != '']) == 0
         assert len([x for x in background_incoming_transfers.transfers if x.tx_hash == txid]) == 1
 
         # Stop background sync and check transfers update correctly
-        receiver_wallet.stop_background_sync(wallet_password = '', seed = seeds[1])
+        receiver_wallet.stop_background_sync(wallet_password = '', seed = self.seeds[1])
         diff_transfers(receiver_wallet.get_transfers(), transfers)
         incoming_transfers = receiver_wallet.incoming_transfers(transfer_type = 'all')
-        assert len(background_incoming_transfers) == len(incoming_transfers)
+        assert len(background_incoming_transfers.transfers) == len(incoming_transfers.transfers)
         assert len([x for x in incoming_transfers.transfers if x.tx_hash == txid and x.key_image != '' and not x.spent]) == 1
         assert receiver_wallet.get_balance().balance == expected_receiver_balance
 
         # Check a fresh incoming wallet with wallet files saved to disk and encrypted with password
-        restore_wallet(receiver_wallet, seeds[1], 'test2', 'test_password')
+        restore_wallet(receiver_wallet, self.seeds[1], 'test2', 'test_password')
         receiver_wallet.setup_background_sync(background_sync_type = reuse_password, wallet_password = 'test_password')
         receiver_wallet.start_background_sync()
         receiver_wallet.refresh()
@@ -1135,7 +1138,7 @@ class TransferTest():
         assert_correct_transfers(receiver_wallet, transfers, incoming_transfers, expected_receiver_balance)
 
         # Close receiver's wallet while background sync is enabled then reopen
-        restore_wallet(receiver_wallet, seeds[1], 'test2', 'test_password')
+        restore_wallet(receiver_wallet, self.seeds[1], 'test2', 'test_password')
         receiver_wallet.setup_background_sync(background_sync_type = reuse_password, wallet_password = 'test_password')
         receiver_wallet.start_background_sync()
         receiver_wallet.refresh()
@@ -1149,7 +1152,7 @@ class TransferTest():
 
         # Sanity check against incoming wallet restored at height 0
         receiver_wallet.close_wallet()
-        receiver_wallet.restore_deterministic_wallet(seed = seeds[1], restore_height = 0)
+        receiver_wallet.restore_deterministic_wallet(seed = self.seeds[1], restore_height = 0)
         receiver_wallet.refresh()
         assert_correct_transfers(receiver_wallet, transfers, incoming_transfers, expected_receiver_balance)
 
@@ -1158,7 +1161,7 @@ class TransferTest():
         util_resources.remove_wallet_files('test2')
         for i in range(2):
             self.wallet[i].close_wallet()
-            self.wallet[i].restore_deterministic_wallet(seed = seeds[i])
+            self.wallet[i].restore_deterministic_wallet(seed = self.seeds[i])
 
     def check_background_sync_reorg_recovery(self):
         daemon = Daemon()
@@ -1177,7 +1180,7 @@ class TransferTest():
             # Set up wallet saved to disk
             sender_wallet.close_wallet()
             util_resources.remove_wallet_files('test1')
-            sender_wallet.restore_deterministic_wallet(seed = seeds[0], filename = 'test1', password = '')
+            sender_wallet.restore_deterministic_wallet(seed = self.seeds[0], filename = 'test1', password = '')
             sender_wallet.auto_refresh(enable = False)
             sender_wallet.refresh()
             sender_starting_balance = sender_wallet.get_balance().balance
@@ -1212,7 +1215,7 @@ class TransferTest():
 
             # Make sure the wallet can no longer see the tx
             sender_wallet.refresh()
-            sender_wallet.stop_background_sync(wallet_password = '', seed = seeds[0])
+            sender_wallet.stop_background_sync(wallet_password = '', seed = self.seeds[0])
             transfers = sender_wallet.get_transfers()
             no_tx = [x for x in transfers.out if x.txid == txid]
             assert len(no_tx) == 0
@@ -1222,7 +1225,7 @@ class TransferTest():
         daemon.out_peers(12)
         util_resources.remove_wallet_files('test1')
         self.wallet[0].close_wallet()
-        self.wallet[0].restore_deterministic_wallet(seed = seeds[0])
+        self.wallet[0].restore_deterministic_wallet(seed = self.seeds[0])
 
 if __name__ == '__main__':
     TransferTest().run_test()

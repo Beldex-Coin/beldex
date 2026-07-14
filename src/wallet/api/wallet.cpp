@@ -2571,14 +2571,17 @@ std::vector<bnsInfo>* WalletImpl::MyBns() const
         info.update_height = entry["update_height"].get<uint64_t>();
         info.expiration_height = entry["expiration_height"].get<uint64_t>();
     
-        auto tmp = entry["encrypted_bchat_value"].get<std::string>();
-        info.encrypted_bchat_value = tmp.empty() ? "(none)" : tmp;
-        auto wallet_val = entry["encrypted_wallet_value"].get<std::string>();
-        info.encrypted_wallet_value = wallet_val.empty() ? "(none)" : wallet_val;
-        auto belnet_val = entry["encrypted_belnet_value"].get<std::string>();
-        info.encrypted_belnet_value = belnet_val.empty() ? "(none)" : belnet_val;
-        auto eth_addr_val = entry["encrypted_eth_addr_value"].get<std::string>();
-        info.encrypted_eth_addr_value = eth_addr_val.empty() ? "(none)" : eth_addr_val;
+        auto get_optional_string = [&entry](const char *key) {
+            auto it = entry.find(key);
+            if (it == entry.end() || !it->is_string())
+                return std::string("(none)");
+            const auto &value = it->get_ref<const std::string &>();
+            return value.empty() ? std::string("(none)") : value;
+        };
+        info.encrypted_bchat_value = get_optional_string("encrypted_bchat_value");
+        info.encrypted_wallet_value = get_optional_string("encrypted_wallet_value");
+        info.encrypted_belnet_value = get_optional_string("encrypted_belnet_value");
+        info.encrypted_eth_addr_value = get_optional_string("encrypted_eth_addr_value");
 
     }
     return my_bns;

@@ -154,6 +154,8 @@ void TransactionHistoryImpl::refresh()
         ti->m_confirmations = (wallet_height > pd.m_block_height) ? wallet_height - pd.m_block_height : 0;
         ti->m_unlock_time = pd.m_unlock_time;
         ti->m_reward_type = from_pay_type(pd.m_type);
+        ti->m_coinbase = pd.is_coinbase();
+        ti->m_description = w->get_tx_note(pd.m_tx_hash);
         m_history.push_back(ti);
 
     }
@@ -204,6 +206,8 @@ void TransactionHistoryImpl::refresh()
         for (const auto &d: pd.m_dests) {
             ti->m_transfers.push_back({d.amount, d.address(w->nettype(), pd.m_payment_id)});
         }
+        ti->m_coinbase = false;
+        ti->m_description = w->get_tx_note(hash);
         m_history.push_back(ti);
     }
 
@@ -236,6 +240,8 @@ void TransactionHistoryImpl::refresh()
         ti->m_label = pd.m_subaddr_indices.size() == 1 ? w->get_subaddress_label({pd.m_subaddr_account, *pd.m_subaddr_indices.begin()}) : "";
         ti->m_timestamp = pd.m_timestamp;
         ti->m_confirmations = 0;
+        ti->m_coinbase = false;
+        ti->m_description = w->get_tx_note(hash);
         m_history.push_back(ti);
     }
     
@@ -264,6 +270,8 @@ void TransactionHistoryImpl::refresh()
         ti->m_timestamp = pd.m_timestamp;
         ti->m_confirmations = 0;
         ti->m_reward_type = from_pay_type(pd.m_type);
+        ti->m_coinbase = pd.is_coinbase();
+        ti->m_description = w->get_tx_note(pd.m_tx_hash);
         m_history.push_back(ti);
         
         LOG_PRINT_L1(__FUNCTION__ << ": Unconfirmed payment found " << pd.m_amount);

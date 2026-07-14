@@ -67,7 +67,7 @@ namespace epee::misc_utils
   struct call_befor_die: public call_befor_die_base
   {
     t_scope_leave_handler m_func;
-    call_befor_die(t_scope_leave_handler f):m_func(f)
+    call_befor_die(t_scope_leave_handler f):m_func(std::move(f))
     {}
     ~call_befor_die()
     {
@@ -86,7 +86,7 @@ namespace epee::misc_utils
   template<class t_scope_leave_handler>
   auto_scope_leave_caller create_scope_leave_handler_shared(t_scope_leave_handler f)
   {
-    auto_scope_leave_caller slc = std::make_shared<call_befor_die<t_scope_leave_handler>>(f);
+    auto_scope_leave_caller slc = std::make_shared<call_befor_die<t_scope_leave_handler>>(std::move(f));
     return slc;
   }
 

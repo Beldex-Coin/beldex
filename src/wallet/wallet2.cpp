@@ -4378,6 +4378,7 @@ void validate_background_cache_password_usage(const tools::wallet2::BackgroundSy
 void get_custom_background_key(const epee::wipeable_string &password, crypto::chacha_key &custom_background_key, const uint64_t kdf_rounds)
 {
   crypto::chacha_key key;
+  crypto::generate_chacha_key(password.data(), password.size(), key, kdf_rounds);
   custom_background_key = derive_cache_key(key, hashkey::BACKGROUND_KEYS_FILE);
 }
 //----------------------------------------------------------------------------------------------------
@@ -4897,7 +4898,7 @@ bool wallet2::verify_password(const fs::path& keys_file_name, const epee::wipeab
     {
       get_custom_background_key(password, key, kdf_rounds);
       crypto::chacha20(keys_file_data.account_data.data(), keys_file_data.account_data.size(), key, keys_file_data.iv, &account_data[0]);
-      const bool is_background_wallet = json.Parse(account_data.c_str()).HasParseError() && json.IsObject();
+      const bool is_background_wallet = !json.Parse(account_data.c_str()).HasParseError() && json.IsObject();
       no_spend_key = no_spend_key || is_background_wallet;
     }
   }

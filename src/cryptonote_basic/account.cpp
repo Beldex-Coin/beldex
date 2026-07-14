@@ -157,7 +157,9 @@ DISABLE_VS_WARNINGS(4244 4345)
   {
     // make sure derived spend public key matches saved public spend key
     crypto::public_key spend_public_key;
-    crypto::secret_key_to_public_key(spend_secret_key, spend_public_key);
+    CHECK_AND_ASSERT_THROW_MES(
+        crypto::secret_key_to_public_key(spend_secret_key, spend_public_key),
+        "Failed to derive public spend key");
     CHECK_AND_ASSERT_THROW_MES(m_keys.m_account_address.m_spend_public_key == spend_public_key,
         "Unexpected derived public spend key");
 

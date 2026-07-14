@@ -1149,6 +1149,8 @@ private:
     BEGIN_SERIALIZE_OBJECT()
       MAGIC_FIELD("beldex wallet cache")
       VERSION_FIELD(2)
+      CHECK_AND_ASSERT_THROW_MES(magic == "beldex wallet cache", "Invalid wallet cache magic");
+      CHECK_AND_ASSERT_THROW_MES(version == 2, "Invalid wallet cache version");
       FIELD(m_blockchain)
       FIELD(m_transfers)
       FIELD(m_account_public_address)
