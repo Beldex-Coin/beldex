@@ -21,6 +21,7 @@ enum class txversion : uint16_t {
     coin_burn,
     register_gateway_address, // = 6 (HF22) — immediately after coin_burn (=5)
     update_gateway_address,   // = 7 (HF22)
+    bridge_registration,      // = 8 (HF23) — bonded bridge-seat registration
     _count
     // NOTE: get_max_type_for_hf is a range check, so types enabled at an
     // earlier HF must have numerically smaller values. Gateway ships first

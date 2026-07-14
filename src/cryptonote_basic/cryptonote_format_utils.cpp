@@ -1026,6 +1026,14 @@ namespace cryptonote
     return result;
   }
   //---------------------------------------------------------------
+  bool add_bridge_registration_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_bridge_registration& reg)
+  {
+    tx_extra_field field = reg;
+    bool result = add_tx_extra_field_to_tx_extra(tx_extra, field);
+    CHECK_AND_NO_ASSERT_MES_L1(result, false, "failed to serialize bridge registration");
+    return result;
+  }
+  //---------------------------------------------------------------
   bool get_inputs_money_amount(const transaction& tx, uint64_t& money)
   {
     money = 0;

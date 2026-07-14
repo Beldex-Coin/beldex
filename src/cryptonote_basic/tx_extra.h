@@ -67,6 +67,7 @@ constexpr uint8_t
   TX_EXTRA_TAG_GATEWAY_FREEZE               = 0x7D, // HF23 (Sovereign Bridge governance)
   TX_EXTRA_TAG_GATEWAY_REPOINT              = 0x7E, // HF23 (Sovereign Bridge governance)
   TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO         = 0x7F, // HF23 (bridge deposit routing)
+  TX_EXTRA_TAG_BRIDGE_REGISTRATION          = 0x80, // HF23 (bonded bridge set)
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
@@ -668,6 +669,33 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Bridge seat registration (HF23, plan §6.1 B.1). Opts an existing, funded
+  // masternode into the bonded bridge set by locking a *separate, additional*
+  // BRIDGE_BOND (100k BDX) via the ordinary key-image locked-contribution
+  // machinery (the locked stake outputs live in the tx body; consensus records
+  // their key images against this seat so the bond can later be unlocked or
+  // slashed independently of the base stake). Carries the operator's bridge
+  // signer (TSS transport) ed25519 identity so the committee can be addressed,
+  // and a signature by the masternode key proving the operator authorizes this
+  // registration and binds that signer identity. Seat/queue placement, the
+  // seat cap, and the activation floor are enforced during processing.
+  struct tx_extra_bridge_registration
+  {
+    uint8_t                    version = 0;
+    crypto::public_key         master_node_pubkey{}; // the operating MN opting into a bridge seat
+    crypto::ed25519_public_key signer_ed25519{};     // bridge-signer / TSS transport identity
+    uint64_t                   expiration_timestamp = 0; // registration validity window (replay bound)
+    crypto::signature          signature{};          // by master_node_pubkey over the registration message
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      FIELD(master_node_pubkey)
+      FIELD(signer_ed25519)
+      VARINT_FIELD(expiration_timestamp)
+      FIELD(signature)
+    END_SERIALIZE()
+  };
+
   struct tx_extra_beldex_name_system
   {
     uint8_t                 version = 0;
@@ -769,6 +797,7 @@ namespace cryptonote
       tx_extra_gateway_freeze,
       tx_extra_gateway_repoint,
       tx_extra_gateway_deposit_memo,
+      tx_extra_bridge_registration,
       tx_extra_merge_mining_tag,
       tx_extra_mysterious_minergate,
       tx_extra_padding,
@@ -799,5 +828,6 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_descriptor_operation, cryptonote
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_freeze,               cryptonote::TX_EXTRA_TAG_GATEWAY_FREEZE);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_repoint,              cryptonote::TX_EXTRA_TAG_GATEWAY_REPOINT);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_deposit_memo,         cryptonote::TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_registration,          cryptonote::TX_EXTRA_TAG_BRIDGE_REGISTRATION);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_beldex_name_system,            cryptonote::TX_EXTRA_TAG_BELDEX_NAME_SYSTEM);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_security_signature,            cryptonote::TX_EXTRA_TAG_SECURITY_SIGNATURE);

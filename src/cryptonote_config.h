@@ -94,6 +94,36 @@ inline constexpr uint32_t GATEWAY_GOVERNANCE_SUPERMAJORITY_DEN = 5;
 // plaintext (stream-XOR against a view-key-derived mask, like GW_OUT_PID_MASK).
 inline constexpr size_t   GATEWAY_DEPOSIT_MEMO_MAX_BYTES       = 64;
 
+// ---- Sovereign Bridge (HF23) Phase B: bonded bridge set --------------------
+// The bridge committee is drawn per epoch from an opt-in, separately-bonded
+// subset of masternodes (whitepaper §3.3, plan §6). All amounts are atomic
+// units (COIN = 10^9). These are governance-adjustable chain parameters; the
+// plan's hard rule is "raise the bond/seats before the caps" (§7-bis).
+//
+// BRIDGE_BOND is 10× the base masternode stake (base ≈ 10,000 BDX post the
+// MODIFIED_STAKING_REQUIREMENT height) and is *additional* to that base stake.
+// It is the amount slashed on a provable signing fault (Phase F) — never the
+// base stake.
+inline constexpr uint64_t BRIDGE_BOND                         = UINT64_C(100000000000000); // 100,000 BDX per seat
+// Hard cap on the number of bonded bridge seats. Registrations past the cap
+// enter a FIFO waiting queue that no stake amount can jump (ordered by
+// registration height then txid — never by stake).
+inline constexpr uint64_t BRIDGE_SEAT_CAP                     = 100;
+// The bridge activates (a committee can be selected / signing can occur) only
+// once at least this many seats are held by DISTINCT operator identities. Below
+// the floor the bridge is dormant (no committee), which is fail-safe.
+inline constexpr uint64_t BRIDGE_ACTIVATION_FLOOR             = 60;
+// Committee size n and threshold t+1 (shared by both Pevm and Pgw). Larger t
+// shrinks the detection-to-freeze exposure but raises latency/liveness cost.
+inline constexpr uint64_t BRIDGE_COMMITTEE_SIZE               = 20; // n
+inline constexpr uint64_t BRIDGE_COMMITTEE_THRESHOLD          = 14; // t+1
+// Bridge epoch length: the committee (and both keys) are epoch-scoped. 2880
+// blocks = 24h at TARGET_BLOCK_TIME (30s).
+inline constexpr uint64_t BRIDGE_EPOCH_BLOCKS                 = 2880;
+// Minimum unbonding period before a released bridge bond unlocks: ≥ 30 days and
+// must span ≥ 1 refresh (plan §6.1 B.2). Expressed in blocks.
+inline constexpr uint64_t BRIDGE_BOND_UNLOCK_BLOCKS           = 30 * 2880; // ~30 days
+
 inline constexpr uint64_t FINAL_SUBSIDY_PER_MINUTE             = 500000000; // 3 * pow(10, 7)
 
 inline constexpr uint64_t BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW    = 11;
