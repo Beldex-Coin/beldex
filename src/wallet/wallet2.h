@@ -371,6 +371,7 @@ private:
         VARINT_FIELD(m_block_height)
         VARINT_FIELD(m_unlock_time)
         VARINT_FIELD(m_timestamp)
+        VARINT_FIELD(m_type)
         FIELD(m_subaddr_index)
         FIELD(m_unmined_flash)
         FIELD(m_was_flash)
@@ -383,6 +384,7 @@ private:
       bool m_incoming;
 
       BEGIN_SERIALIZE_OBJECT()
+        payment_details::serialize_value(ar);
         FIELD(m_mempool)
         FIELD(m_incoming)
       END_SERIALIZE()
@@ -431,6 +433,7 @@ private:
         VARINT_FIELD(m_subaddr_account)
         FIELD(m_subaddr_indices)
         FIELD(m_rings)
+        VARINT_FIELD(m_pay_type)
       END_SERIALIZE()
     };
 
@@ -463,9 +466,11 @@ private:
         FIELD(m_payment_id)
         VARINT_FIELD(m_timestamp)
         VARINT_FIELD(m_unlock_time)
+        FIELD(m_unlock_times)
         VARINT_FIELD(m_subaddr_account)
         FIELD(m_subaddr_indices)
         FIELD(m_rings)
+        VARINT_FIELD(m_pay_type)
       END_SERIALIZE()
 
       confirmed_transfer_details(): m_amount_in(0), m_amount_out(0), m_change((uint64_t)-1), m_block_height(0), m_payment_id(crypto::null_hash), m_timestamp(0), m_unlock_time(0), m_subaddr_account((uint32_t)-1) {}

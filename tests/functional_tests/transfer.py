@@ -86,8 +86,10 @@ class TransferTest():
         for i in range(len(self.seeds)):
             self.wallet[i] = Wallet(idx = i)
             # close the wallet if any, will throw if none is loaded
-            try: self.wallet[i].close_wallet()
-            except: pass
+            try:
+                self.wallet[i].close_wallet()
+            except Exception:
+                pass
             res = self.wallet[i].restore_deterministic_wallet(seed = self.seeds[i])
 
     def mine(self):

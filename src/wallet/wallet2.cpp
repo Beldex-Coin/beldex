@@ -3985,9 +3985,6 @@ void wallet2::handle_reorg(uint64_t height, std::map<std::pair<uint64_t, uint64_
 
   detached_blockchain_data dbd = detach_blockchain(height, output_tracker_cache);
 
-  if (m_background_syncing && height < m_background_sync_data.start_height)
-    m_background_sync_data.start_height = height;
-  
   if (m_callback)
     m_callback->on_reorg(height, dbd.detached_blockchain.size(), dbd.detached_tx_hashes.size());
 }
@@ -4057,6 +4054,7 @@ void wallet2::clear_user_data()
   for (auto i = m_transfers.begin(); i != m_transfers.end(); ++i)
     i->m_frozen = false;
   m_tx_keys.clear();
+  m_additional_tx_keys.clear();
   m_tx_notes.clear();
   m_address_book.clear();
   m_subaddress_labels.clear();
@@ -4109,7 +4107,10 @@ bool wallet2::store_keys_file_data(const fs::path& keys_file_name, wallet2::keys
   fs::remove(keys_file_name, e);
 #endif
   fs::rename(tmp_file_name, keys_file_name, e);
-  lock_keys_file();
+  if (background_keys_file)
+    lock_background_keys_file(keys_file_name.string());
+  else
+    lock_keys_file();
 
   if (e) {
     fs::remove(tmp_file_name);
