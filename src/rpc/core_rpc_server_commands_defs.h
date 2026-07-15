@@ -2846,6 +2846,56 @@ namespace cryptonote::rpc {
     } request;
   };
 
+  /// RPC: bridge/bridge_get_committee
+  ///
+  /// The Sovereign Bridge signing committee for an epoch (plan §6.2 B.9). The
+  /// Rust signer reads its membership/epoch from here rather than recomputing
+  /// consensus — the daemon is the single source of truth. Epoch-scoped: the
+  /// committee is defined at epoch-boundary heights; a request resolves to the
+  /// boundary height of the epoch containing `height` (default: current tip).
+  ///
+  /// Inputs:
+  /// - `height` -- optional; the epoch containing this height (default: tip).
+  ///
+  /// Output:
+  /// - `epoch` -- epoch index (floor(height / BRIDGE_EPOCH_BLOCKS)).
+  /// - `height` -- the epoch-boundary height the committee was selected at.
+  /// - `members` -- ordered list of committee master-node pubkeys (hex).
+  /// - `threshold` -- t+1 signers required.
+  /// - `size` -- committee size n.
+  /// - `active` -- whether a committee exists (bridge above the activation floor).
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct BRIDGE_GET_COMMITTEE : PUBLIC
+  {
+    static constexpr auto names() { return NAMES("bridge_get_committee"); }
+    struct request_parameters
+    {
+      uint64_t height = 0; // 0 => current tip
+    } request;
+  };
+
+  /// RPC: bridge/bridge_get_seats
+  ///
+  /// The bonded bridge set: seated operators, the FIFO queue, and activation /
+  /// concentration signals (plan §6.1). ASN/geo concentration is a monitored
+  /// selection signal, not a hard consensus rule, and is surfaced here.
+  ///
+  /// Output:
+  /// - `seats` -- list of {master_node_pubkey (hex), seated (bool), bond,
+  ///   signer_ed25519 (hex), registration_height}.
+  /// - `seated_count` -- number of seated operators.
+  /// - `queued_count` -- number waiting in the FIFO queue.
+  /// - `distinct_operators` -- distinct operator identities in the set.
+  /// - `activation_floor` -- distinct-operator floor for the bridge to activate.
+  /// - `seat_cap` -- hard seat cap.
+  /// - `active` -- whether the bridge is above the activation floor.
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct BRIDGE_GET_SEATS : PUBLIC
+  {
+    static constexpr auto names() { return NAMES("bridge_get_seats"); }
+    struct request_parameters {} request;
+  };
+
   // List of all supported rpc command structs to allow compile-time enumeration of all supported
   // RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   // a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2858,6 +2908,8 @@ namespace cryptonote::rpc {
     GATEWAY_SUBMIT_TRANSFER,
     BRIDGE_GET_RESERVES,
     GATEWAY_GET_HISTORY,
+    BRIDGE_GET_COMMITTEE,
+    BRIDGE_GET_SEATS,
     BANNED,
     FLUSH_CACHE,
     FLUSH_TRANSACTION_POOL,

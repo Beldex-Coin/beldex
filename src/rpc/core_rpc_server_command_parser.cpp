@@ -418,6 +418,13 @@ namespace cryptonote::rpc {
         "max_events",  c.request.max_events);
   }
 
+  void parse_request(BRIDGE_GET_COMMITTEE& c, rpc_input in) {
+    get_values(in, "height", c.request.height);
+  }
+
+  void parse_request(BRIDGE_GET_SEATS&, rpc_input) {
+  }
+
   void parse_request(BNS_RESOLVE& resolve, rpc_input in) {
     get_values(in,
         "name_hash", required{resolve.request.name_hash},

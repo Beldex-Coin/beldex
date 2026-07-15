@@ -765,6 +765,15 @@ namespace cryptonote::rpc {
         }, x.new_owner_descriptor.owner_key);
         set("gateway_repoint", std::move(gw));
       }
+      void operator()(const tx_extra_bridge_registration& x) {
+        set("bridge_registration", json{
+            {"version", x.version},
+            {"mn_pubkey", tools::type_to_hex(x.master_node_pubkey)},
+            {"signer_ed25519", tools::type_to_hex(x.signer_ed25519)},
+            {"expiration_timestamp", x.expiration_timestamp},
+            {"signature", tools::type_to_hex(x.signature)},
+        });
+      }
       void operator()(const tx_extra_gateway_deposit_memo& x) {
         auto& memo = set("gateway_deposit_memo", json{
             {"version", x.version},
@@ -3990,6 +3999,61 @@ namespace cryptonote::rpc {
     cmd.response["next_height"] = h;   // resume point for the next page
     cmd.response["top_height"]  = top;
     cmd.response["status"]      = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(BRIDGE_GET_COMMITTEE& cmd, rpc_context context)
+  {
+    const uint64_t top    = m_core.get_current_blockchain_height();
+    const uint64_t height = cmd.request.height ? cmd.request.height : (top ? top - 1 : 0);
+    const uint64_t epoch  = height / cryptonote::BRIDGE_EPOCH_BLOCKS;
+    const uint64_t epoch_start = epoch * cryptonote::BRIDGE_EPOCH_BLOCKS;
+
+    auto q = m_core.get_quorum(master_nodes::quorum_type::bridge, epoch_start, true /*include_old*/);
+    auto members = json::array();
+    if (q)
+      for (const auto &pk : q->validators)
+        members.push_back(tools::type_to_hex(pk));
+
+    cmd.response["epoch"]     = epoch;
+    cmd.response["height"]    = epoch_start;
+    cmd.response["members"]   = std::move(members);
+    cmd.response["threshold"] = cryptonote::BRIDGE_COMMITTEE_THRESHOLD;
+    cmd.response["size"]      = cryptonote::BRIDGE_COMMITTEE_SIZE;
+    cmd.response["active"]    = (q && !q->validators.empty());
+    cmd.response["status"]    = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(BRIDGE_GET_SEATS& cmd, rpc_context context)
+  {
+    auto infos = m_core.get_master_node_list_state({});
+    auto seats = json::array();
+    size_t seated = 0, queued = 0;
+    std::vector<cryptonote::account_public_address> ops; // distinct operator identities
+    for (const auto &e : infos)
+    {
+      const auto &bs = e.info->bridge_seat;
+      if (!bs.registered)
+        continue;
+      if (bs.seated) ++seated; else ++queued;
+      if (std::find(ops.begin(), ops.end(), e.info->operator_address) == ops.end())
+        ops.push_back(e.info->operator_address);
+      seats.push_back(json{
+          {"master_node_pubkey", tools::type_to_hex(e.pubkey)},
+          {"seated", bs.seated},
+          {"bond", bs.bond_amount},
+          {"signer_ed25519", tools::type_to_hex(bs.signer_ed25519)},
+          {"registration_height", bs.registration_height}});
+    }
+    cmd.response["seats"]              = std::move(seats);
+    cmd.response["seated_count"]       = seated;
+    cmd.response["queued_count"]       = queued;
+    cmd.response["distinct_operators"] = ops.size();
+    cmd.response["activation_floor"]   = cryptonote::BRIDGE_ACTIVATION_FLOOR;
+    cmd.response["seat_cap"]           = cryptonote::BRIDGE_SEAT_CAP;
+    cmd.response["active"]             = (ops.size() >= cryptonote::BRIDGE_ACTIVATION_FLOOR);
+    cmd.response["status"]             = STATUS_OK;
   }
 
   //------------------------------------------------------------------------------------------------------------------------------
