@@ -1970,6 +1970,64 @@ namespace master_nodes
 
         // NOTE: NOP. POS quorums are generated pre-Master Node List changes for the block
         case quorum_type::POS: continue;
+
+        case quorum_type::bridge:
+        {
+          // HF23 Sovereign Bridge committee (plan §6.2). Epoch-scoped: the
+          // committee is (re)selected only at epoch-boundary heights and left
+          // unset in between (the signer queries the epoch-start height). This
+          // case fills quorum->validators itself and `continue`s (the generic
+          // index-fill tail below assumes selection over active_mnode_list).
+          if (state.height % cryptonote::BRIDGE_EPOCH_BLOCKS != 0)
+            continue; // not an epoch boundary: leave bridge quorum unset (nullptr)
+
+          // Candidate seats: active MNs that opted into the bridge set, are
+          // seated (not merely queued) and not exiting. sort_and_filter yields a
+          // deterministic (pubkey-sorted) order so every node agrees.
+          std::vector<pubkey_and_mninfo> seats =
+              sort_and_filter(state.master_nodes_infos,
+                              [](const master_node_info &info) { return info.is_bridge_seated(); },
+                              /*reserve=*/false);
+
+          // Activation floor: count DISTINCT operator identities (operator_address).
+          // One operator can hold at most one committee slot, so multiple seats by
+          // the same operator count once toward the floor and are deduped on pick.
+          std::vector<cryptonote::account_public_address> distinct_ops;
+          for (const auto &s : seats)
+          {
+            const auto &op = s.second->operator_address;
+            if (std::find(distinct_ops.begin(), distinct_ops.end(), op) == distinct_ops.end())
+              distinct_ops.push_back(op);
+          }
+
+          // Mark this epoch boundary as defined (non-null quorum). If below the
+          // activation floor the committee stays empty → the bridge is dormant
+          // (fail-safe: no committee can be selected, so no signing occurs).
+          state.quorums.bridge = quorum;
+          if (distinct_ops.size() < cryptonote::BRIDGE_ACTIVATION_FLOOR)
+            continue;
+
+          // Deterministic, seed-based shuffle (unpredictable until the boundary
+          // block exists, deterministic after), then pick n with one slot per
+          // operator identity.
+          std::mt19937_64 rng = quorum_rng(hf_version, state.block_hash, type);
+          tools::shuffle_portable(seats.begin(), seats.end(), rng);
+
+          std::vector<cryptonote::account_public_address> used_ops;
+          quorum->validators.reserve(cryptonote::BRIDGE_COMMITTEE_SIZE);
+          for (const auto &s : seats)
+          {
+            if (quorum->validators.size() >= cryptonote::BRIDGE_COMMITTEE_SIZE)
+              break;
+            const auto &op = s.second->operator_address;
+            if (std::find(used_ops.begin(), used_ops.end(), op) != used_ops.end())
+              continue; // one committee slot per operator identity
+            used_ops.push_back(op);
+            quorum->validators.push_back(s.first);
+          }
+          continue;
+        }
+
         default: MERROR("Unhandled quorum type enum with value: " << type_int); continue;
       }
 
@@ -1990,6 +2048,147 @@ namespace master_nodes
         else
           quorum->workers.push_back(decomm_mnode_list[j - active_mnode_list.size()].first);
       }
+    }
+  }
+
+  size_t master_node_list::state_t::bridge_seated_count() const
+  {
+    size_t n = 0;
+    for (const auto &[pk, info] : master_nodes_infos)
+      if (info->bridge_seat.registered && info->bridge_seat.seated && info->bridge_seat.requested_unbond_height == 0)
+        ++n;
+    return n;
+  }
+
+  // Message the operating masternode key signs to authorize a bridge
+  // registration and bind the bridge-signer (TSS transport) identity:
+  //   H("BRIDGE_REGISTER_V1" || master_node_pubkey || signer_ed25519 || expiration_timestamp).
+  static crypto::hash bridge_registration_message(const cryptonote::tx_extra_bridge_registration &reg)
+  {
+    std::string buf;
+    buf += "BRIDGE_REGISTER_V1";
+    buf.append(reinterpret_cast<const char *>(&reg.master_node_pubkey), sizeof(reg.master_node_pubkey));
+    buf.append(reinterpret_cast<const char *>(&reg.signer_ed25519), sizeof(reg.signer_ed25519));
+    buf.append(reinterpret_cast<const char *>(&reg.expiration_timestamp), sizeof(reg.expiration_timestamp));
+    return crypto::cn_fast_hash(buf.data(), buf.size());
+  }
+
+  bool master_node_list::state_t::process_bridge_registration_tx(cryptonote::network_type nettype,
+                                                                 const cryptonote::block &block,
+                                                                 const cryptonote::transaction &tx, uint32_t /*index*/)
+  {
+    const uint64_t block_height = cryptonote::get_block_height(block);
+    const auto hf_version       = block.major_version;
+    if (hf_version < cryptonote::hf::hf23_bridge)
+      return false;
+
+    cryptonote::tx_extra_bridge_registration reg{};
+    if (!cryptonote::get_field_from_tx_extra(tx.extra, reg))
+      return false;
+
+    // The operating masternode must exist and be active (fully funded, not decommissioned).
+    auto iter = master_nodes_infos.find(reg.master_node_pubkey);
+    if (iter == master_nodes_infos.end() || !iter->second->is_active())
+    {
+      LOG_PRINT_L1("Bridge reg TX: unknown or inactive master node " << reg.master_node_pubkey
+                   << " on height " << block_height << " for tx " << cryptonote::get_transaction_hash(tx));
+      return false;
+    }
+    const master_node_info &curinfo = *iter->second;
+
+    if (curinfo.bridge_seat.registered)
+    {
+      LOG_PRINT_L1("Bridge reg TX: master node " << reg.master_node_pubkey << " already holds a bridge seat");
+      return false;
+    }
+
+    // Registration validity window + signature by the masternode key.
+    if (reg.expiration_timestamp < block.timestamp)
+    {
+      LOG_PRINT_L1("Bridge reg TX: expired registration for " << reg.master_node_pubkey);
+      return false;
+    }
+    const crypto::hash msg = bridge_registration_message(reg);
+    if (!crypto::check_signature(msg, reg.master_node_pubkey, reg.signature))
+    {
+      LOG_PRINT_L1("Bridge reg TX: bad master-node signature for " << reg.master_node_pubkey);
+      return false;
+    }
+
+    // One committee slot per operator identity: no other registered seat may
+    // share this operator's payout address.
+    for (const auto &[pk, info] : master_nodes_infos)
+      if (pk != reg.master_node_pubkey && info->bridge_seat.registered &&
+          info->operator_address == curinfo.operator_address)
+      {
+        LOG_PRINT_L1("Bridge reg TX: operator already holds a bridge seat (one slot per operator)");
+        return false;
+      }
+
+    // Bond: the tx must lock >= BRIDGE_BOND from the operator, decoded via the
+    // staking-components machinery. These key images are tracked separately from
+    // the base stake so the bond can be unlocked / slashed independently.
+    staking_components stake = {};
+    if (!tx_get_staking_components_and_amounts(nettype, hf_version, tx, block_height, &stake))
+    {
+      LOG_PRINT_L1("Bridge reg TX: could not decode the bonded stake for " << reg.master_node_pubkey);
+      return false;
+    }
+    if (stake.address != curinfo.operator_address)
+    {
+      LOG_PRINT_L1("Bridge reg TX: bond is not staked from the operator address");
+      return false;
+    }
+    uint64_t bond = 0;
+    for (const auto &c : stake.locked_contributions)
+      bond += c.amount;
+    if (bond < cryptonote::BRIDGE_BOND)
+    {
+      LOG_PRINT_L1("Bridge reg TX: bond " << bond << " below required " << cryptonote::BRIDGE_BOND);
+      return false;
+    }
+
+    // Record the seat as registered + queued; refresh_bridge_seats() assigns the
+    // actual seat (cap + FIFO) deterministically after all txs are processed.
+    auto &info = duplicate_info(iter->second);
+    info.bridge_seat.version                 = 0;
+    info.bridge_seat.registered              = true;
+    info.bridge_seat.seated                  = false;
+    info.bridge_seat.bond_amount             = bond;
+    info.bridge_seat.bond_contributions      = stake.locked_contributions;
+    info.bridge_seat.signer_ed25519          = reg.signer_ed25519;
+    info.bridge_seat.registration_height     = block_height;
+    info.bridge_seat.registration_txid       = cryptonote::get_transaction_hash(tx);
+    info.bridge_seat.requested_unbond_height = 0;
+    info.bridge_seat.bond_unlock_height      = 0;
+    return true;
+  }
+
+  void master_node_list::state_t::refresh_bridge_seats()
+  {
+    // Deterministic FIFO seat assignment: order the registered, non-exiting seats
+    // by (registration_height, registration_txid) — never by stake — and seat the
+    // first BRIDGE_SEAT_CAP, queue the rest. Only flip a seat's `seated` flag when
+    // it actually changes (duplicate_info is copy-on-write).
+    std::vector<crypto::public_key> registered;
+    for (const auto &[pk, info] : master_nodes_infos)
+      if (info->bridge_seat.registered && info->bridge_seat.requested_unbond_height == 0)
+        registered.push_back(pk);
+
+    std::sort(registered.begin(), registered.end(), [this](const crypto::public_key &a, const crypto::public_key &b) {
+      const auto &ia = master_nodes_infos.at(a)->bridge_seat;
+      const auto &ib = master_nodes_infos.at(b)->bridge_seat;
+      if (ia.registration_height != ib.registration_height)
+        return ia.registration_height < ib.registration_height;
+      return ia.registration_txid < ib.registration_txid;
+    });
+
+    for (size_t i = 0; i < registered.size(); ++i)
+    {
+      const bool should_seat = i < cryptonote::BRIDGE_SEAT_CAP;
+      auto iter              = master_nodes_infos.find(registered[i]);
+      if (iter->second->bridge_seat.seated != should_seat)
+        duplicate_info(iter->second).bridge_seat.seated = should_seat;
     }
   }
 
@@ -2102,7 +2301,16 @@ namespace master_nodes
       {
         process_key_image_unlock_tx(nettype, block_height, tx, hf_version);
       }
+      else if (tx.type == cryptonote::txtype::bridge_registration)
+      {
+        process_bridge_registration_tx(nettype, block, tx, index);
+      }
     }
+
+    // HF23: (re)assign bridge seats deterministically after all txs are applied,
+    // so the cap + FIFO queue hold and a freed seat promotes the queue head.
+    if (hf_version >= cryptonote::hf::hf23_bridge)
+      refresh_bridge_seats();
 
     // Filtered pubkey-sorted vector of master nodes that are active (fully funded and *not* decommissioned).
     std::vector<pubkey_and_mninfo> active_mnode_list = sort_and_filter(master_nodes_infos, [](const master_node_info &info) { return info.is_active(); });
@@ -2635,9 +2843,13 @@ namespace master_nodes
   static master_node_list::quorum_for_serialization serialize_quorum_state(hf hf_version, uint64_t height, quorum_manager const &quorums)
   {
     master_node_list::quorum_for_serialization result = {};
+    // version 1 (HF23) additionally persists the bridge committee; pre-HF23 stays
+    // version 0 so the serialized bytes are byte-identical to the old format.
+    result.version                                     = (hf_version >= cryptonote::hf::hf23_bridge) ? 1 : 0;
     result.height                                      = height;
     if (quorums.obligations)   result.quorums[static_cast<uint8_t>(quorum_type::obligations)] = *quorums.obligations;
     if (quorums.checkpointing) result.quorums[static_cast<uint8_t>(quorum_type::checkpointing)] = *quorums.checkpointing;
+    if (quorums.bridge)        result.quorums[static_cast<uint8_t>(quorum_type::bridge)] = *quorums.bridge;
     return result;
   }
 
@@ -2809,6 +3021,13 @@ namespace master_nodes
   }
 
   proof_info::proof_info(): proof(std::make_unique<uptime_proof::Proof>()) {};
+  // Out-of-line special members: defined here where uptime_proof::Proof is a
+  // complete type, so the unique_ptr<Proof> move/destroy machinery is emitted in
+  // this TU only. Semantics are identical to the previously-implicit ones
+  // (move-only; copy remains deleted via the unique_ptr member).
+  proof_info::proof_info(proof_info&&) = default;
+  proof_info& proof_info::operator=(proof_info&&) = default;
+  proof_info::~proof_info() = default;
 
 
   void proof_info::store(const crypto::public_key &pubkey, cryptonote::Blockchain &blockchain )
@@ -3281,6 +3500,10 @@ namespace master_nodes
     if ((source.height + REORG_SAFETY_BUFFER_BLOCKS_POST_HF12) % CHECKPOINT_INTERVAL == 0)
       result.checkpointing = std::make_shared<quorum>(source.quorums[static_cast<uint8_t>(quorum_type::checkpointing)]);
 
+    // HF23: the bridge committee is persisted from serialization version 1 onward.
+    if (source.version >= 1)
+      result.bridge = std::make_shared<quorum>(source.quorums[static_cast<uint8_t>(quorum_type::bridge)]);
+
     return result;
   }
 
@@ -3334,6 +3557,13 @@ namespace master_nodes
       {
         // Nothing to do here (leave consensus reasons as 0s)
         info.version = version_t::v7_decommission_reason;
+      }
+      if (info.version < version_t::v8_bridge)
+      {
+        // HF23: nothing to migrate — bridge_seat defaults to a non-registered
+        // (empty) seat. Deterministic across nodes; the master-node state
+        // serialization is a local derived-state cache, not a consensus commitment.
+        info.version = version_t::v8_bridge;
       }
       // Make sure we handled any future state version upgrades:
       assert(info.version == tools::enum_top<decltype(info.version)>);

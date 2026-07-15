@@ -72,6 +72,7 @@ namespace master_nodes
     std::shared_ptr<const quorum> checkpointing;
     std::shared_ptr<const quorum> flash;
     std::shared_ptr<const quorum> POS;
+    std::shared_ptr<const quorum> bridge; // HF23: Sovereign Bridge signing committee
 
     std::shared_ptr<const quorum> get(quorum_type type) const
     {
@@ -79,6 +80,7 @@ namespace master_nodes
       else if (type == quorum_type::checkpointing) return checkpointing;
       else if (type == quorum_type::flash) return flash;
       else if (type == quorum_type::POS) return POS;
+      else if (type == quorum_type::bridge) return bridge;
       MERROR("Developer error: Unhandled quorum enum with value: " << (size_t)type);
       assert(!"Developer error: Unhandled quorum enum with value: ");
       return nullptr;

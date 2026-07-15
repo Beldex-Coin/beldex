@@ -262,7 +262,8 @@ namespace master_nodes {
         hf_version <= cryptonote::hf::hf13_checkpointing ? quorum_type::obligations :
         hf_version <  cryptonote::hf::hf15_flash         ? quorum_type::checkpointing :
         hf_version <  cryptonote::hf::hf17_POS           ? quorum_type::flash :
-        quorum_type::POS;
+        hf_version <  cryptonote::hf::hf23_bridge        ? quorum_type::POS :
+        quorum_type::bridge;
   }
 
   constexpr uint64_t staking_num_lock_blocks(cryptonote::network_type nettype, cryptonote::hf hf_version)

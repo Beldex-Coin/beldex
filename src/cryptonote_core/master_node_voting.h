@@ -60,6 +60,7 @@ namespace master_nodes
     checkpointing,
     flash,
     POS,
+    bridge,       // HF23: Sovereign Bridge signing committee, drawn from the bonded bridge set
     _count
   };
 
@@ -70,6 +71,7 @@ namespace master_nodes
       case quorum_type::checkpointing: return os << "checkpointing";
       case quorum_type::flash:         return os << "flash";
       case quorum_type::POS:           return os << "POS";
+      case quorum_type::bridge:        return os << "bridge";
       default: assert(false);          return os << "xx_unhandled_type";
     }
   }

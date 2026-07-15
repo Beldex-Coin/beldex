@@ -117,6 +117,14 @@ namespace master_nodes
   struct proof_info
   {
     proof_info();
+    // proof_info holds a std::unique_ptr<uptime_proof::Proof> to a forward-declared
+    // type, so its special members must be defined out-of-line (in master_node_list.cpp,
+    // where uptime_proof::Proof is complete). Otherwise every TU that emits proof_info's
+    // machinery (e.g. a BaseTestDB vtable's inline proof map) would need the complete
+    // type. Move-only (the unique_ptr deletes copy); moves are used by the proofs map.
+    proof_info(proof_info&&);
+    proof_info& operator=(proof_info&&);
+    ~proof_info();
 
     participation_history<POS_participation_entry> POS_participation;
     participation_history<checkpoint_participation_entry> checkpoint_participation;
@@ -207,6 +215,7 @@ namespace master_nodes
       v5_POS_recomm_credit,
       v6_reassign_sort_keys,
       v7_decommission_reason,
+      v8_bridge,                      // HF23: bonded bridge-seat state
       _count
     };
 
@@ -260,6 +269,42 @@ namespace master_nodes
       END_SERIALIZE()
     };
 
+    // HF23 bonded bridge-seat state (plan §6.1). Present on every master_node_info
+    // once HF23 is active (version >= v8_bridge); `registered == false` means the
+    // operator has not opted into the bridge set. The bond is tracked separately
+    // from the base stake (its own locked_contributions / key images) so it can be
+    // unlocked or slashed independently (the slashing target — Phase F). Seat vs
+    // queue and the activation floor are decided by master_node_list processing;
+    // `seated` is the materialized result for the current state.
+    struct bridge_seat_info
+    {
+      uint8_t                     version = 0;
+      bool                        registered = false;       // operator opted into the bridge set
+      bool                        seated = false;           // holds a seat (vs waiting in the FIFO queue)
+      uint64_t                    bond_amount = 0;          // locked bridge bond (atomic units)
+      std::vector<contribution_t> bond_contributions;       // key images locking the bond (independent of base stake)
+      crypto::ed25519_public_key  signer_ed25519{};         // TSS transport / bridge-signer identity
+      uint64_t                    registration_height = 0;  // FIFO order key (registration acceptance height)
+      crypto::hash                registration_txid{};      // FIFO tie-break within a block
+      uint64_t                    requested_unbond_height = 0; // 0 = active; else the height an exit/eject was requested
+      uint64_t                    bond_unlock_height = 0;      // height at which a released bond becomes spendable
+
+      bool is_active_seat() const { return registered && seated && requested_unbond_height == 0; }
+
+      BEGIN_SERIALIZE_OBJECT()
+        VARINT_FIELD(version)
+        FIELD(registered)
+        FIELD(seated)
+        VARINT_FIELD(bond_amount)
+        FIELD(bond_contributions)
+        FIELD(signer_ed25519)
+        VARINT_FIELD(registration_height)
+        FIELD(registration_txid)
+        VARINT_FIELD(requested_unbond_height)
+        VARINT_FIELD(bond_unlock_height)
+      END_SERIALIZE()
+    };
+
     uint64_t                           registration_height = 0;
     uint64_t                           requested_unlock_height = 0;
     // block_height and transaction_index are to record when the master node last received a reward.
@@ -282,11 +327,15 @@ namespace master_nodes
     version_t                          version = tools::enum_top<version_t>;
     cryptonote::hf                     registration_hf_version = cryptonote::hf::none;
     POS_sort_key                     POS_sorter;
+    bridge_seat_info                   bridge_seat{}; // HF23 (version >= v8_bridge)
 
     master_node_info() = default;
     bool is_fully_funded() const { return total_contributed >= staking_requirement; }
     bool is_decommissioned() const { return active_since_height < 0; }
     bool is_active() const { return is_fully_funded() && !is_decommissioned(); }
+    // Holds an active bridge committee-eligible seat: an active MN that opted in,
+    // is seated (not merely queued), and is not exiting.
+    bool is_bridge_seated() const { return is_active() && bridge_seat.is_active_seat(); }
 
     bool can_transition_to_state(cryptonote::hf hf_version, uint64_t block_height, new_state proposed_state) const;
     bool can_be_voted_on        (uint64_t block_height) const;
@@ -335,6 +384,8 @@ namespace master_nodes
         VARINT_FIELD(last_decommission_reason_consensus_all)
         VARINT_FIELD(last_decommission_reason_consensus_any)
       }
+      if (version >= version_t::v8_bridge)
+        FIELD(bridge_seat)
     END_SERIALIZE()
   };
 
@@ -593,6 +644,8 @@ namespace master_nodes
         FIELD(height)
         FIELD_N("obligations_quorum", quorums[static_cast<uint8_t>(quorum_type::obligations)])
         FIELD_N("checkpointing_quorum", quorums[static_cast<uint8_t>(quorum_type::checkpointing)])
+        if (version >= 1) // HF23: persist the bridge committee for historical (slashing) verification
+          FIELD_N("bridge_quorum", quorums[static_cast<uint8_t>(quorum_type::bridge)])
       END_SERIALIZE()
     };
 
@@ -686,6 +739,15 @@ namespace master_nodes
           const cryptonote::transaction& tx,
           const master_node_keys *my_keys);
       bool process_key_image_unlock_tx(cryptonote::network_type nettype, uint64_t block_height, const cryptonote::transaction &tx,cryptonote::hf version);
+      // Returns true if a bridge seat/queue entry was added (HF23):
+      bool process_bridge_registration_tx(cryptonote::network_type nettype, cryptonote::block const &block, const cryptonote::transaction& tx, uint32_t index);
+      // Number of currently seated (not merely queued) bridge operators.
+      size_t bridge_seated_count() const;
+      // Deterministically (re)assign seats from the registered set: the first
+      // BRIDGE_SEAT_CAP entries in FIFO order (registration height, then txid —
+      // never by stake) are seated, the rest queued. Idempotent and reorg-safe;
+      // run each block after tx processing so a freed seat promotes the queue head.
+      void refresh_bridge_seats();
       payout get_block_leader() const;
       payout get_block_producer(uint8_t POS_round) const;
       master_node_info get_master_node_details(crypto::public_key mnode_key);
