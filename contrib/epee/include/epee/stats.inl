@@ -64,7 +64,7 @@ Tpod Stats<T, Tpod>::get_max() const
   {
     max = std::numeric_limits<Tpod>::min();
     for (const T &v: values)
-      max = std::max<Tpod>(max, v);
+      max = std::max<Tpod>(max, static_cast<Tpod>(v));
     set_cached(bit_max);
   }
   return max;

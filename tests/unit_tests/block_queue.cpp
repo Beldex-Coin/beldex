@@ -32,15 +32,17 @@
 #include "cryptonote_protocol/cryptonote_protocol_defs.h"
 #include "cryptonote_protocol/block_queue.h"
 
-static const boost::uuids::uuid &uuid1()
+// connection_id_t was migrated from boost::uuids::uuid to a std::array-derived
+// epee type with a random() factory; use it (and its type) here.
+static const epee::connection_id_t &uuid1()
 {
-  static const boost::uuids::uuid uuid = crypto::rand<boost::uuids::uuid>();
+  static const epee::connection_id_t uuid = epee::connection_id_t::random();
   return uuid;
 }
 
-static const boost::uuids::uuid &uuid2()
+static const epee::connection_id_t &uuid2()
 {
-  static const boost::uuids::uuid uuid = crypto::rand<boost::uuids::uuid>();
+  static const epee::connection_id_t uuid = epee::connection_id_t::random();
   return uuid;
 }
 

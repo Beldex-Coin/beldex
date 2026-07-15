@@ -219,19 +219,24 @@ void wallet_tools::gen_block_data(block_tracker &bt, const cryptonote::block *bl
   parsed_block.block = *bl;
   parsed_block.txes.reserve(bl->tx_hashes.size());
 
-  auto & o_indices = parsed_block.o_indices.indices;
-  o_indices.reserve(bl->tx_hashes.size() + 1);
+  // parsed_block.o_indices is now an nlohmann::json (the RPC output-indices were
+  // migrated from a typed struct to json). Build the shape wallet2 consumes:
+  //   { "indices": [ { "indices": [g0, g1, ...] }, ... ] }
+  // one entry per tx, miner tx first.
+  nlohmann::json indices_array = nlohmann::json::array();
 
   size_t cur = 0;
   for (const transaction *tx : vtx){
     cur += 1;
-    o_indices.emplace_back();
+    std::vector<uint64_t> tx_indices;
     bt.process(bl, tx, cur - 1);
-    bt.global_indices(tx, o_indices.back().indices);
+    bt.global_indices(tx, tx_indices);
+    indices_array.push_back(nlohmann::json{{"indices", std::move(tx_indices)}});
 
     if (cur > 1)  // miner not included
       parsed_block.txes.push_back(*tx);
   }
+  parsed_block.o_indices = nlohmann::json{{"indices", std::move(indices_array)}};
 }
 
 void wallet_tools::compute_subaddresses(std::unordered_map<crypto::public_key, cryptonote::subaddress_index> &subaddresses, cryptonote::account_base & creds, size_t account, size_t minors)
