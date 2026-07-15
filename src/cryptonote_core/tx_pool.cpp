@@ -758,7 +758,25 @@ namespace cryptonote
     {
       if (!stc_it)
       {
-        MWARNING("remove_tx: tx " << txid << " not in sorted container, treating as already-removed");
+        // Not in the sorted container. Usually fully removed, but a tx can be sorted-erased while
+        // still present in the backing store (DB row, key images, counted weight). Check the backend
+        // before returning success so we don't leave orphaned key images behind.
+        txpool_tx_meta_t orphan_meta;
+        if (!m_blockchain.get_txpool_tx_meta(txid, orphan_meta))
+        {
+          MWARNING("remove_tx: tx " << txid << " not in sorted container or backend, treating as already-removed");
+          return true;
+        }
+        cryptonote::blobdata orphan_blob = m_blockchain.get_txpool_tx_blob(txid);
+        cryptonote::transaction_prefix orphan_tx;
+        if (!parse_and_validate_tx_prefix_from_blob(orphan_blob, orphan_tx))
+        {
+          MERROR("remove_tx: tx " << txid << " present in backend but unparseable; leaving for manual cleanup");
+          return false;
+        }
+        m_blockchain.remove_txpool_tx(txid);
+        m_txpool_weight -= orphan_meta.weight;
+        remove_transaction_keyimages(orphan_tx, txid);
         return true;
       }
       MERROR("Failed to find tx in txpool sorted list");
