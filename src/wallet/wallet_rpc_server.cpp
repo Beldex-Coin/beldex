@@ -63,6 +63,30 @@
 namespace rpc = cryptonote::rpc;
 using namespace tools::wallet_rpc;
 
+#define CHECK_IF_BACKGROUND_SYNCING() \
+  do \
+  { \
+    if (!m_wallet) \
+      throw wallet_rpc_error{error_code::NOT_OPEN, "No wallet file"}; \
+    if (m_wallet->is_background_wallet()) \
+      throw wallet_rpc_error{error_code::WALLET_RPC_ERROR_CODE_IS_BACKGROUND_WALLET, "This command is disabled for background wallets."}; \
+    if (m_wallet->is_background_syncing()) \
+      throw wallet_rpc_error{error_code::WALLET_RPC_ERROR_CODE_IS_BACKGROUND_SYNCING, "This command is disabled while background syncing. Stop background syncing to use this command."}; \
+  } while(0)
+
+#define PRE_VALIDATE_BACKGROUND_SYNC() \
+  do \
+  { \
+    if (!m_wallet) \
+      throw wallet_rpc_error{error_code::NOT_OPEN, "No wallet file"}; \
+    if (m_restricted) \
+      throw wallet_rpc_error{error_code::DENIED, "Command unavailable in restricted mode."}; \
+    if (m_wallet->key_on_device()) \
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Command not supported by HW wallet"}; \
+    if (m_wallet->watch_only()) \
+      throw wallet_rpc_error{error_code::WATCH_ONLY, "Watch-only wallet cannot enable background sync"}; \
+  } while (0)
+
 namespace
 {
   constexpr auto DEFAULT_AUTO_REFRESH_PERIOD = 20s;
@@ -728,6 +752,7 @@ namespace tools
   CREATE_ADDRESS::response wallet_rpc_server::invoke(CREATE_ADDRESS::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     CREATE_ADDRESS::response res{};
     {
       if (req.count < 1 || req.count > 64)
@@ -757,6 +782,7 @@ namespace tools
   LABEL_ADDRESS::response wallet_rpc_server::invoke(LABEL_ADDRESS::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     LABEL_ADDRESS::response res{};
     {
       m_wallet->set_subaddress_label(req.index, req.label);
@@ -800,6 +826,7 @@ namespace tools
   CREATE_ACCOUNT::response wallet_rpc_server::invoke(CREATE_ACCOUNT::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     CREATE_ACCOUNT::response res{};
     {
       m_wallet->add_subaddress_account(req.label);
@@ -812,6 +839,7 @@ namespace tools
   LABEL_ACCOUNT::response wallet_rpc_server::invoke(LABEL_ACCOUNT::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     LABEL_ACCOUNT::response res{};
     {
       m_wallet->set_subaddress_label({req.account_index, 0}, req.label);
@@ -822,6 +850,7 @@ namespace tools
   GET_ACCOUNT_TAGS::response wallet_rpc_server::invoke(GET_ACCOUNT_TAGS::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     GET_ACCOUNT_TAGS::response res{};
     const std::pair<std::map<std::string, std::string>, std::vector<std::string>> account_tags = m_wallet->get_account_tags();
     for (const auto& p : account_tags.first)
@@ -842,6 +871,7 @@ namespace tools
   TAG_ACCOUNTS::response wallet_rpc_server::invoke(TAG_ACCOUNTS::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     TAG_ACCOUNTS::response res{};
     {
       m_wallet->set_account_tag(req.accounts, req.tag);
@@ -852,6 +882,7 @@ namespace tools
   UNTAG_ACCOUNTS::response wallet_rpc_server::invoke(UNTAG_ACCOUNTS::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     UNTAG_ACCOUNTS::response res{};
     {
       m_wallet->set_account_tag(req.accounts, "");
@@ -862,6 +893,7 @@ namespace tools
   SET_ACCOUNT_TAG_DESCRIPTION::response wallet_rpc_server::invoke(SET_ACCOUNT_TAG_DESCRIPTION::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     SET_ACCOUNT_TAG_DESCRIPTION::response res{};
     {
       m_wallet->set_account_tag_description(req.tag, req.description);
@@ -901,6 +933,8 @@ namespace tools
   //------------------------------------------------------------------------------------------------------------------------------
   void wallet_rpc_server::validate_transfer(const std::list<wallet::transfer_destination>& destinations, const std::string& payment_id, std::vector<cryptonote::tx_destination_entry>& dsts, std::vector<uint8_t>& extra, bool at_least_one_destination)
   {
+    CHECK_IF_BACKGROUND_SYNCING();
+
     crypto::hash8 integrated_payment_id = crypto::null_hash8;
     std::string extra_nonce;
     for (auto it = destinations.begin(); it != destinations.end(); it++)
@@ -1211,6 +1245,8 @@ namespace tools
     if(m_wallet->watch_only())
       throw wallet_rpc_error{error_code::WATCH_ONLY, "command not supported by watch-only wallet"};
 
+    CHECK_IF_BACKGROUND_SYNCING();
+
     if (!oxenc::is_hex(req.unsigned_txset))
       throw wallet_rpc_error{error_code::BAD_HEX, "Failed to parse hex."};
     auto blob = oxenc::from_hex(req.unsigned_txset);
@@ -1257,6 +1293,7 @@ namespace tools
       throw wallet_rpc_error{error_code::WATCH_ONLY, "command not supported by watch-only wallet"};
     if(req.unsigned_txset.empty() && req.multisig_txset.empty())
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "no txset provided"};
+    CHECK_IF_BACKGROUND_SYNCING();
 
     std::vector <wallet::tx_construction_data> tx_constructions;
     if (!req.unsigned_txset.empty()) {
@@ -1434,6 +1471,7 @@ namespace tools
     require_open();
     SWEEP_DUST::response res{};
 
+    CHECK_IF_BACKGROUND_SYNCING();
     std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_unmixable_sweep_transactions();
 
     fill_response(ptx_vector, req.get_tx_keys, res.tx_key_list, res.amount_list, res.amounts_by_dest_list, res.fee_list, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
@@ -1789,6 +1827,7 @@ namespace tools
         {
           if (m_wallet->watch_only())
             throw wallet_rpc_error{error_code::WATCH_ONLY, "The wallet is watch-only. Cannot retrieve seed."};
+          CHECK_IF_BACKGROUND_SYNCING();
           if (!m_wallet->is_deterministic())
             throw wallet_rpc_error{error_code::NON_DETERMINISTIC, "The wallet is non-deterministic. Cannot display seed."};
           if (!m_wallet->get_seed(seed))
@@ -1806,6 +1845,7 @@ namespace tools
       {
           if (m_wallet->watch_only())
             throw wallet_rpc_error{error_code::WATCH_ONLY, "The wallet is watch-only. Cannot retrieve spend key."};
+          CHECK_IF_BACKGROUND_SYNCING();
           res.key.reserve(64);
           const auto& ssk_data = m_wallet->get_account().get_keys().m_spend_secret_key.data;
           oxenc::to_hex(std::begin(ssk_data), std::end(ssk_data), std::back_inserter(res.key));
@@ -1819,9 +1859,80 @@ namespace tools
   RESCAN_BLOCKCHAIN::response wallet_rpc_server::invoke(RESCAN_BLOCKCHAIN::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     m_wallet->rescan_blockchain(req.hard);
     return {};
   }
+  //------------------------------------------------------------------------------------------------------------------------------
+  SETUP_BACKGROUND_SYNC::response wallet_rpc_server::invoke(SETUP_BACKGROUND_SYNC::request&& req)
+  {
+    try
+    {
+      PRE_VALIDATE_BACKGROUND_SYNC();
+
+      const tools::wallet2::BackgroundSyncType background_sync_type =
+          tools::wallet2::background_sync_type_from_str(req.background_sync_type);
+
+      std::optional<epee::wipeable_string> background_cache_password = std::nullopt;
+      if (background_sync_type == tools::wallet2::BackgroundSyncCustomPassword)
+        background_cache_password = std::optional<epee::wipeable_string>(req.background_cache_password);
+
+      m_wallet->setup_background_sync(background_sync_type, req.wallet_password, background_cache_password);
+    }
+    catch (const std::exception& e)
+    {
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, std::string("Failed to setup background sync: ") + e.what()};
+    }
+    return {};
+  }
+  //------------------------------------------------------------------------------------------------------------------------------
+  START_BACKGROUND_SYNC::response wallet_rpc_server::invoke(START_BACKGROUND_SYNC::request&& req)
+  {
+    try
+    {
+      PRE_VALIDATE_BACKGROUND_SYNC();
+      m_wallet->start_background_sync();
+    }
+    catch (const std::exception& e)
+    {
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, std::string("Failed to start background sync: ") + e.what()};
+    }
+    return {};
+  }
+  //------------------------------------------------------------------------------------------------------------------------------
+  STOP_BACKGROUND_SYNC::response wallet_rpc_server::invoke(STOP_BACKGROUND_SYNC::request&& req)
+  {
+    try{
+      PRE_VALIDATE_BACKGROUND_SYNC();
+
+      crypto::secret_key spend_secret_key = crypto::null_skey;
+
+      // Load the spend key from seed if provided
+      if (!req.seed.empty())
+      {
+        crypto::secret_key recovery_key;
+        std::string language;
+
+        if (!crypto::ElectrumWords::words_to_bytes(req.seed, recovery_key, language))
+          throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Electrum-style word list failed verification"};
+
+        if (!req.seed_offset.empty())
+          recovery_key = cryptonote::decrypt_key(recovery_key, req.seed_offset);
+
+        cryptonote::account_base account;
+        account.generate(recovery_key, true, false);
+        spend_secret_key = account.get_keys().m_spend_secret_key;
+      }
+
+      m_wallet->stop_background_sync(req.wallet_password, spend_secret_key);
+    }
+    catch (const std::exception& e)
+    {
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, std::string("Failed to stop background sync: ") + e.what()};
+    }
+    return {};
+  }
+
   //------------------------------------------------------------------------------------------------------------------------------
   SIGN::response wallet_rpc_server::invoke(SIGN::request&& req)
   {
@@ -1829,6 +1940,7 @@ namespace tools
     if (m_wallet->watch_only())
       throw wallet_rpc_error{error_code::WATCH_ONLY, "Unable to sign a value using a watch-only wallet."};
 
+    CHECK_IF_BACKGROUND_SYNCING();
     SIGN::response res{};
 
     res.signature = m_wallet->sign(req.data, {req.account_index, req.address_index});
@@ -1855,6 +1967,7 @@ namespace tools
   SET_TX_NOTES::response wallet_rpc_server::invoke(SET_TX_NOTES::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
 
     if (req.txids.size() != req.notes.size())
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Different amount of txids and notes"};
@@ -1892,6 +2005,7 @@ namespace tools
   SET_ATTRIBUTE::response wallet_rpc_server::invoke(SET_ATTRIBUTE::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     m_wallet->set_attribute(req.key, req.value);
     return {};
   }
@@ -1908,6 +2022,7 @@ namespace tools
   GET_TX_KEY::response wallet_rpc_server::invoke(GET_TX_KEY::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     GET_TX_KEY::response res{};
 
     crypto::hash txid;
@@ -1956,6 +2071,7 @@ namespace tools
   GET_TX_PROOF::response wallet_rpc_server::invoke(GET_TX_PROOF::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     GET_TX_PROOF::response res{};
 
     crypto::hash txid;
@@ -2018,6 +2134,7 @@ namespace tools
   GET_RESERVE_PROOF::response wallet_rpc_server::invoke(GET_RESERVE_PROOF::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     GET_RESERVE_PROOF::response res{};
 
     std::optional<std::pair<uint32_t, uint64_t>> account_minreserve;
@@ -2190,6 +2307,7 @@ namespace tools
   EXPORT_OUTPUTS::response wallet_rpc_server::invoke(EXPORT_OUTPUTS::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     EXPORT_OUTPUTS::response res{};
     if (m_wallet->key_on_device())
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "command not supported by HW wallet"};
@@ -2234,6 +2352,7 @@ namespace tools
     IMPORT_OUTPUTS::response res{};
     if (m_wallet->key_on_device())
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "command not supported by HW wallet"};
+    CHECK_IF_BACKGROUND_SYNCING();
 
     if (!oxenc::is_hex(req.outputs_data_hex))
       throw wallet_rpc_error{error_code::BAD_HEX, "Failed to parse hex."};
@@ -2246,6 +2365,7 @@ namespace tools
   EXPORT_KEY_IMAGES::response wallet_rpc_server::invoke(EXPORT_KEY_IMAGES::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     EXPORT_KEY_IMAGES::response res{};
     {
       std::pair<size_t, std::vector<std::pair<crypto::key_image, crypto::signature>>> ski = m_wallet->export_key_images(req.requested_only);
@@ -2267,6 +2387,7 @@ namespace tools
     IMPORT_KEY_IMAGES::response res{};
     if (!m_wallet->is_trusted_daemon())
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "This command requires a trusted daemon."};
+    CHECK_IF_BACKGROUND_SYNCING();
     {
       std::vector<std::pair<crypto::key_image, crypto::signature>> ski;
       ski.resize(req.signed_key_images.size());
@@ -2314,6 +2435,7 @@ namespace tools
   {
     require_open();
     GET_ADDRESS_BOOK_ENTRY::response res{};
+    CHECK_IF_BACKGROUND_SYNCING();
     const auto ab = m_wallet->get_address_book();
     if (req.entries.empty())
     {
@@ -2349,6 +2471,7 @@ namespace tools
   ADD_ADDRESS_BOOK_ENTRY::response wallet_rpc_server::invoke(ADD_ADDRESS_BOOK_ENTRY::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     ADD_ADDRESS_BOOK_ENTRY::response res{};
 
     cryptonote::address_parse_info info = extract_account_addr(m_wallet->nettype(), req.address);
@@ -2362,7 +2485,8 @@ namespace tools
   EDIT_ADDRESS_BOOK_ENTRY::response wallet_rpc_server::invoke(EDIT_ADDRESS_BOOK_ENTRY::request&& req)
   {
     require_open();
-
+    
+    CHECK_IF_BACKGROUND_SYNCING();
     const auto ab = m_wallet->get_address_book();
     if (req.index >= ab.size())
       throw wallet_rpc_error{error_code::WRONG_INDEX, "Index out of range: " + std::to_string(req.index)};
@@ -2389,6 +2513,7 @@ namespace tools
   DELETE_ADDRESS_BOOK_ENTRY::response wallet_rpc_server::invoke(DELETE_ADDRESS_BOOK_ENTRY::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
 
     const auto ab = m_wallet->get_address_book();
     if (req.index >= ab.size())
@@ -2416,6 +2541,7 @@ namespace tools
   RESCAN_SPENT::response wallet_rpc_server::invoke(RESCAN_SPENT::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     m_wallet->rescan_spent();
     return {};
   }
@@ -2587,6 +2713,7 @@ namespace {
   CHANGE_WALLET_PASSWORD::response wallet_rpc_server::invoke(CHANGE_WALLET_PASSWORD::request&& req)
   {
     require_open();
+    CHECK_IF_BACKGROUND_SYNCING();
     if (m_wallet->verify_password(req.old_password))
     {
       m_wallet->change_password(m_wallet->get_wallet_file(), req.old_password, req.new_password);
@@ -2777,6 +2904,7 @@ namespace {
       throw wallet_rpc_error{error_code::ALREADY_MULTISIG, "This wallet is already multisig"};
     if (m_wallet->watch_only())
       throw wallet_rpc_error{error_code::WATCH_ONLY, "wallet is watch-only and cannot be made multisig"};
+    CHECK_IF_BACKGROUND_SYNCING();
 
     res.multisig_info = m_wallet->get_multisig_info();
     return res;
@@ -2790,7 +2918,8 @@ namespace {
       throw wallet_rpc_error{error_code::ALREADY_MULTISIG, "This wallet is already multisig"};
     if (m_wallet->watch_only())
       throw wallet_rpc_error{error_code::WATCH_ONLY, "wallet is watch-only and cannot be made multisig"};
-
+      
+    CHECK_IF_BACKGROUND_SYNCING();
     res.multisig_info = m_wallet->make_multisig(req.password, req.multisig_info, req.threshold);
     res.address = m_wallet->get_account().get_public_address_str(m_wallet->nettype());
 

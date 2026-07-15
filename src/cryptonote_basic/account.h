@@ -93,6 +93,7 @@ namespace cryptonote
     void set_createtime(uint64_t val) { m_creation_timestamp = val; }
 
     void forget_spend_key();
+    void set_spend_key(const crypto::secret_key& spend_secret_key);
     const std::vector<crypto::secret_key> &get_multisig_keys() const { return m_keys.m_multisig_keys; }
 
     void generate_public_edkey();

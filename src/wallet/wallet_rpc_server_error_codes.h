@@ -78,6 +78,8 @@ constexpr int16_t SIGN_UNSIGNED          = -42;
 constexpr int16_t NON_DETERMINISTIC      = -43;
 constexpr int16_t INVALID_LOG_LEVEL      = -44;
 constexpr int16_t ATTRIBUTE_NOT_FOUND    = -45;
+constexpr int16_t WALLET_RPC_ERROR_CODE_IS_BACKGROUND_WALLET = -51;
+constexpr int16_t WALLET_RPC_ERROR_CODE_IS_BACKGROUND_SYNCING = -52;
 
 // Beldex:
 constexpr int16_t FLASH_FAILED           = -1000;
