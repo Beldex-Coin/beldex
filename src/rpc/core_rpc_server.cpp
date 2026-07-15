@@ -710,9 +710,13 @@ namespace cryptonote::rpc {
       void operator()(const tx_extra_security_signature& x) { set("security_sig", tools::type_to_hex(x.m_security_signature)); }
       void operator()(const tx_extra_master_node_register& x) {
         json reservations{};
-        for (size_t i = 0; i < x.m_portions.size(); i++)
-          reservations[get_account_address_as_str(nettype, false, {x.m_public_spend_keys[i], x.m_public_view_keys[i]})]
-            = microportion(x.m_portions[i]);
+        if (x.m_public_spend_keys.size() == x.m_public_view_keys.size()
+            && x.m_public_spend_keys.size() == x.m_portions.size())
+        {
+          for (size_t i = 0; i < x.m_portions.size(); i++)
+            reservations[get_account_address_as_str(nettype, false, {x.m_public_spend_keys[i], x.m_public_view_keys[i]})]
+              = microportion(x.m_portions[i]);
+        }
         set("mn_registration", json{
           {"fee", microportion(x.m_portions_for_operator)},
           {"expiry", x.m_expiration_timestamp},
