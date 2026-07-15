@@ -68,6 +68,7 @@ constexpr uint8_t
   TX_EXTRA_TAG_GATEWAY_REPOINT              = 0x7E, // HF23 (Sovereign Bridge governance)
   TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO         = 0x7F, // HF23 (bridge deposit routing)
   TX_EXTRA_TAG_BRIDGE_REGISTRATION          = 0x80, // HF23 (bonded bridge set)
+  TX_EXTRA_TAG_BRIDGE_UNBOND                = 0x81, // HF23 (bonded bridge set)
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
@@ -696,6 +697,27 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Bridge seat voluntary unbond request (HF23, plan §6.1 B.2). An operator asks
+  // to release its bridge bond and exit the bonded set, signed by the same
+  // masternode key that registered the seat. On acceptance the seat immediately
+  // stops being committee-eligible for future epochs, and the bond unlocks only
+  // after BRIDGE_BOND_UNLOCK_BLOCKS (≥30 days) — during which the operator
+  // remains bonded and slashable, so it cannot escape accountability for duty it
+  // is still performing. Carried on a bridge_registration-type tx (dispatched by
+  // which field is present).
+  struct tx_extra_bridge_unbond
+  {
+    uint8_t            version = 0;
+    crypto::public_key master_node_pubkey{};
+    crypto::signature  signature{};
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      FIELD(master_node_pubkey)
+      FIELD(signature)
+    END_SERIALIZE()
+  };
+
   struct tx_extra_beldex_name_system
   {
     uint8_t                 version = 0;
@@ -798,6 +820,7 @@ namespace cryptonote
       tx_extra_gateway_repoint,
       tx_extra_gateway_deposit_memo,
       tx_extra_bridge_registration,
+      tx_extra_bridge_unbond,
       tx_extra_merge_mining_tag,
       tx_extra_mysterious_minergate,
       tx_extra_padding,
@@ -829,5 +852,6 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_freeze,               cryptonote
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_repoint,              cryptonote::TX_EXTRA_TAG_GATEWAY_REPOINT);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_deposit_memo,         cryptonote::TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_registration,          cryptonote::TX_EXTRA_TAG_BRIDGE_REGISTRATION);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_unbond,                cryptonote::TX_EXTRA_TAG_BRIDGE_UNBOND);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_beldex_name_system,            cryptonote::TX_EXTRA_TAG_BELDEX_NAME_SYSTEM);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_security_signature,            cryptonote::TX_EXTRA_TAG_SECURITY_SIGNATURE);

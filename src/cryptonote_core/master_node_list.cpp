@@ -2164,6 +2164,88 @@ namespace master_nodes
     return true;
   }
 
+  // Message the operating masternode key signs to authorize a voluntary unbond:
+  //   H("BRIDGE_UNBOND_V1" || master_node_pubkey).
+  static crypto::hash bridge_unbond_message(const cryptonote::tx_extra_bridge_unbond &op)
+  {
+    std::string buf;
+    buf += "BRIDGE_UNBOND_V1";
+    buf.append(reinterpret_cast<const char *>(&op.master_node_pubkey), sizeof(op.master_node_pubkey));
+    return crypto::cn_fast_hash(buf.data(), buf.size());
+  }
+
+  bool master_node_list::state_t::process_bridge_unbond_tx(cryptonote::network_type /*nettype*/,
+                                                           const cryptonote::block &block,
+                                                           const cryptonote::transaction &tx)
+  {
+    const uint64_t block_height = cryptonote::get_block_height(block);
+    const auto hf_version       = block.major_version;
+    if (hf_version < cryptonote::hf::hf23_bridge)
+      return false;
+
+    cryptonote::tx_extra_bridge_unbond op{};
+    if (!cryptonote::get_field_from_tx_extra(tx.extra, op))
+      return false;
+
+    auto iter = master_nodes_infos.find(op.master_node_pubkey);
+    if (iter == master_nodes_infos.end())
+    {
+      LOG_PRINT_L1("Bridge unbond TX: unknown master node " << op.master_node_pubkey
+                   << " on height " << block_height << " for tx " << cryptonote::get_transaction_hash(tx));
+      return false;
+    }
+    const master_node_info &curinfo = *iter->second;
+
+    if (!curinfo.bridge_seat.registered)
+    {
+      LOG_PRINT_L1("Bridge unbond TX: master node " << op.master_node_pubkey << " holds no bridge seat");
+      return false;
+    }
+    if (curinfo.bridge_seat.requested_unbond_height != 0)
+    {
+      LOG_PRINT_L1("Bridge unbond TX: master node " << op.master_node_pubkey << " is already unbonding");
+      return false;
+    }
+
+    const crypto::hash msg = bridge_unbond_message(op);
+    if (!crypto::check_signature(msg, op.master_node_pubkey, op.signature))
+    {
+      LOG_PRINT_L1("Bridge unbond TX: bad master-node signature for " << op.master_node_pubkey);
+      return false;
+    }
+
+    // Enter the unbonding state: the seat immediately stops being committee-
+    // eligible for future epochs (refresh_bridge_seats excludes exiting seats),
+    // but the bond stays locked — and the operator slashable — until
+    // bond_unlock_height. The ≥30-day window spans many epochs, so the operator
+    // remains accountable for any current-epoch duty it is still performing.
+    auto &info = duplicate_info(iter->second);
+    info.bridge_seat.requested_unbond_height = block_height;
+    info.bridge_seat.bond_unlock_height      = block_height + cryptonote::BRIDGE_BOND_UNLOCK_BLOCKS;
+    info.bridge_seat.seated                  = false;
+    return true;
+  }
+
+  void master_node_list::state_t::finalize_bridge_unbonds(uint64_t block_height)
+  {
+    // Release any seat whose unbonding period has elapsed: clear the bridge_seat
+    // entirely (bond returned, seat freed for the queue head to fill). Runs each
+    // block after tx processing; deterministic and reorg-safe via the master-node
+    // state_history snapshot mechanism (no explicit inverse-rewind needed).
+    std::vector<crypto::public_key> to_release;
+    for (const auto &[pk, info] : master_nodes_infos)
+    {
+      const auto &bs = info->bridge_seat;
+      if (bs.registered && bs.requested_unbond_height != 0 && block_height >= bs.bond_unlock_height)
+        to_release.push_back(pk);
+    }
+    for (const auto &pk : to_release)
+    {
+      auto iter = master_nodes_infos.find(pk);
+      duplicate_info(iter->second).bridge_seat = master_node_info::bridge_seat_info{}; // reset to unregistered default
+    }
+  }
+
   void master_node_list::state_t::refresh_bridge_seats()
   {
     // Deterministic FIFO seat assignment: order the registered, non-exiting seats
@@ -2303,14 +2385,24 @@ namespace master_nodes
       }
       else if (tx.type == cryptonote::txtype::bridge_registration)
       {
-        process_bridge_registration_tx(nettype, block, tx, index);
+        // A bridge-lifecycle tx carries either a voluntary unbond request or a
+        // seat registration; route by which field is present.
+        cryptonote::tx_extra_bridge_unbond unbond{};
+        if (cryptonote::get_field_from_tx_extra(tx.extra, unbond))
+          process_bridge_unbond_tx(nettype, block, tx);
+        else
+          process_bridge_registration_tx(nettype, block, tx, index);
       }
     }
 
-    // HF23: (re)assign bridge seats deterministically after all txs are applied,
-    // so the cap + FIFO queue hold and a freed seat promotes the queue head.
+    // HF23: release any elapsed unbonds, then (re)assign bridge seats
+    // deterministically after all txs are applied, so the cap + FIFO queue hold
+    // and a freed seat (from a completed unbond) promotes the queue head.
     if (hf_version >= cryptonote::hf::hf23_bridge)
+    {
+      finalize_bridge_unbonds(block_height);
       refresh_bridge_seats();
+    }
 
     // Filtered pubkey-sorted vector of master nodes that are active (fully funded and *not* decommissioned).
     std::vector<pubkey_and_mninfo> active_mnode_list = sort_and_filter(master_nodes_infos, [](const master_node_info &info) { return info.is_active(); });

@@ -741,6 +741,10 @@ namespace master_nodes
       bool process_key_image_unlock_tx(cryptonote::network_type nettype, uint64_t block_height, const cryptonote::transaction &tx,cryptonote::hf version);
       // Returns true if a bridge seat/queue entry was added (HF23):
       bool process_bridge_registration_tx(cryptonote::network_type nettype, cryptonote::block const &block, const cryptonote::transaction& tx, uint32_t index);
+      // Returns true if a bridge seat was moved into the unbonding state (HF23):
+      bool process_bridge_unbond_tx(cryptonote::network_type nettype, cryptonote::block const &block, const cryptonote::transaction& tx);
+      // Release (clear) any bridge seat whose bond unlock height has been reached.
+      void finalize_bridge_unbonds(uint64_t block_height);
       // Number of currently seated (not merely queued) bridge operators.
       size_t bridge_seated_count() const;
       // Deterministically (re)assign seats from the registered set: the first

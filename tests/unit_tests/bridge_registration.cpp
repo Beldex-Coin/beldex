@@ -58,6 +58,21 @@ TEST(BridgeRegistration, tx_extra_roundtrip)
   EXPECT_EQ(got.expiration_timestamp, reg.expiration_timestamp);
 }
 
+// --- tx_extra_bridge_unbond survives a tx_extra encode/decode ----------------
+TEST(BridgeRegistration, unbond_tx_extra_roundtrip)
+{
+  tx_extra_bridge_unbond op{};
+  op.master_node_pubkey = rand_pk();
+  op.signature          = crypto::signature{}; // zeroed; opaque to serialization
+
+  std::vector<uint8_t> extra;
+  ASSERT_TRUE(add_bridge_unbond_to_tx_extra(extra, op));
+
+  tx_extra_bridge_unbond got{};
+  ASSERT_TRUE(get_field_from_tx_extra(extra, got));
+  EXPECT_EQ(got.master_node_pubkey, op.master_node_pubkey);
+}
+
 // --- bridge_seat_info round-trips as part of a v8 master_node_info ------------
 TEST(BridgeRegistration, mn_info_bridge_seat_roundtrip)
 {

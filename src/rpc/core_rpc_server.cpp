@@ -774,6 +774,13 @@ namespace cryptonote::rpc {
             {"signature", tools::type_to_hex(x.signature)},
         });
       }
+      void operator()(const tx_extra_bridge_unbond& x) {
+        set("bridge_unbond", json{
+            {"version", x.version},
+            {"mn_pubkey", tools::type_to_hex(x.master_node_pubkey)},
+            {"signature", tools::type_to_hex(x.signature)},
+        });
+      }
       void operator()(const tx_extra_gateway_deposit_memo& x) {
         auto& memo = set("gateway_deposit_memo", json{
             {"version", x.version},
