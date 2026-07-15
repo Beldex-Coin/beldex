@@ -876,6 +876,8 @@ namespace master_nodes
   master_node_info master_node_list::state_t::get_master_node_details(crypto::public_key mnode_key)
   {
     auto it = master_nodes_infos.find(mnode_key);
+    if (it == master_nodes_infos.end())
+      throw std::invalid_argument("get_master_node_details: master node not found");
     return *it->second;
   }
 
