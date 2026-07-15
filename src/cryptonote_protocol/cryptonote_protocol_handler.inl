@@ -189,6 +189,13 @@ namespace cryptonote
       context.m_need_flash_sync = false;
       if (!r.heights.empty())
       {
+        // Cap the outbound request to the protocol object limit. A peer that enforces
+        // CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT (see handle_request_block_flashes) drops the
+        // connection on an oversized list, so never send more than the limit in one request. Heights
+        // beyond the cap stay flagged in m_flash_state and are re-requested when the peer next
+        // advertises a changed flash set.
+        if (r.heights.size() > CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT)
+          r.heights.resize(CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT);
         MLOG_P2P_MESSAGE("-->>NOTIFY_REQUEST_BLOCK_FLASHES: requesting flash tx lists for " << r.heights.size() << " blocks");
         context.m_requested_flash_heights.insert(r.heights.begin(), r.heights.end());
         post_notify<NOTIFY_REQUEST_BLOCK_FLASHES>(r, context);
