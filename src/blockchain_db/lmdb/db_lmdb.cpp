@@ -259,7 +259,7 @@ const char* const LMDB_GATEWAY_TX_HISTORY = "gateway_tx_history"; // HF22: gatew
 
 const char* const LMDB_PROPERTIES = "properties";
 
-constexpr unsigned int LMDB_DB_COUNT = 24; // Should agree with the number of db's above
+constexpr unsigned int LMDB_DB_COUNT = 25; // Should agree with the number of db's above
 
 const char zerokey[8] = {0};
 const MDB_val zerokval = { sizeof(zerokey), (void *)zerokey };

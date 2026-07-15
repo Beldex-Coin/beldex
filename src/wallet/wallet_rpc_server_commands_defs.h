@@ -2312,7 +2312,7 @@ gateway is thereafter operated via the owner key.)";
 
     struct request
     {
-      std::string        gateway_id;       // 64-char hex gateway address id (registrant view pubkey).
+      std::string        gateway_secret;   // 64-char hex SECRET key of the gateway id. The id (pubkey) is derived from it and the register tx is self-signed with it to prove control of the id.
       std::string        owner_key_type;   // Owner key type: "schnorr" (native), "eth" (secp256k1), or "eddsa".
       std::string        owner_key;        // Hex owner key (64 for schnorr/eddsa, 66 for eth-compressed).
       std::string        meta_info;        // (Optional) descriptor meta string.

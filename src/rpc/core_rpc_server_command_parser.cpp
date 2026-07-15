@@ -389,6 +389,13 @@ namespace cryptonote::rpc {
         "from",  c.request.from);
   }
 
+  void parse_request(GET_GATEWAY_HISTORY& c, rpc_input in) {
+    get_values(in,
+        "count",      c.request.count,
+        "from",       c.request.from,
+        "gateway_id", required{c.request.gateway_id});
+  }
+
   void parse_request(GATEWAY_CREATE_TRANSFER& c, rpc_input in) {
     get_values(in,
         "amounts",      required{c.request.amounts},

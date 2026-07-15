@@ -495,6 +495,44 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
                  std::to_string(GATEWAY_ADDRESS_REGISTRATION_FEE) + ")";
         return false;
       }
+
+
+      // Proof-of-ownership of the gateway id (F2). The registrant must sign the
+      // register with address_id's OWN secret key. Without this, anyone could
+      // squat/front-run a gateway id they do not control, set themselves as
+      // owner, and later drain deposits made to it. The signature is over the tx
+      // prefix hash (which covers address_id + the chosen owner_key + meta), so a
+      // captured proof cannot be replayed onto a different registration. See
+      // docs/GATEWAY_SECURITY_FIXES.md (F2).
+      const gateway_ownership_proof* reg_proof = nullptr;
+      for (const auto& p : tx.gateway_proofs)
+      {
+        if (const auto* rp = std::get_if<gateway_ownership_proof>(&p))
+        {
+          if (reg_proof)
+          {
+            reason = "register tx carries more than one ownership proof";
+            return false;
+          }
+          reg_proof = rp;
+        }
+      }
+      if (!reg_proof)
+      {
+        reason = "register tx is missing its gateway-id ownership proof";
+        return false;
+      }
+      {
+        // address_id is a native ed25519 key, so the proof must be the native
+        // Schnorr variant; verify_gateway_owner_signature enforces the match.
+        const crypto::hash msg = gateway_ownership_message(nettype, tx);
+        if (!verify_gateway_owner_signature(gateway_owner_key_v{op.address_id}, reg_proof->sig, msg))
+        {
+          reason = "gateway-id ownership proof verification failed";
+          return false;
+        }
+      }
+
       // The declared burn must be genuinely realized. Burning is applied by
       // reducing the miner-claimable fee (get_tx_miner_fee: fee -= min(fee, burned)),
       // so a burn exceeding the tx fee is NOT actually removed from supply — only

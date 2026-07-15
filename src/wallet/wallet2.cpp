@@ -8958,7 +8958,7 @@ std::vector<wallet2::pending_tx> wallet2::bns_create_buy_mapping_tx(bns::mapping
   return result;
 }
 
-std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypto::public_key& gateway_id,
+std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypto::secret_key& gateway_skey,
                                                                     const cryptonote::gateway_owner_key_v& owner_key,
                                                                     const std::string& meta_info,
                                                                     std::string *reason,
@@ -8978,10 +8978,12 @@ std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypt
     return {};
   }
 
-  // The gateway id must be a valid public key (DH key for deposit decryption).
-  if (!crypto::check_key(gateway_id))
+  // The gateway id (pubkey) is derived from its secret key. We sign the register
+  // with this secret so consensus can verify the registrant controls the id (F2).
+  crypto::public_key gateway_id{};
+  if (!crypto::secret_key_to_public_key(gateway_skey, gateway_id) || !crypto::check_key(gateway_id))
   {
-    if (reason) *reason = "invalid gateway id: not a valid public key";
+    if (reason) *reason = "invalid gateway secret key: does not yield a valid public key";
     return {};
   }
 
@@ -9011,14 +9013,28 @@ std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypt
   beldex_construct_tx_params tx_params =
       wallet2::construct_params(*hf_version, txtype::register_gateway_address, priority, cryptonote::GATEWAY_ADDRESS_REGISTRATION_FEE);
 
-  return create_transactions_2({} /*dsts*/,
-                               cryptonote::TX_OUTPUT_DECOYS,
-                               0 /*unlock_at_block*/,
-                               priority,
-                               extra,
-                               account_index,
-                               subaddr_indices,
-                               tx_params);
+  auto ptx_vector = create_transactions_2({} /*dsts*/,
+                                          cryptonote::TX_OUTPUT_DECOYS,
+                                          0 /*unlock_at_block*/,
+                                          priority,
+                                          extra,
+                                          account_index,
+                                          subaddr_indices,
+                                          tx_params);
+
+  // Self-sign each built register tx with the gateway secret key (F2). The
+  // signature is over the final tx prefix (which carries the register op), so it
+  // is attached here, after construction. gateway_proofs is prunable and not part
+  // of the prefix, so this does not disturb the change output's RCT signatures.
+  for (auto& ptx : ptx_vector)
+  {
+    if (!cryptonote::sign_gateway_register_tx(nettype(), ptx.tx, gateway_skey))
+    {
+      if (reason) *reason = "failed to sign gateway registration with the gateway secret key";
+      return {};
+    }
+  }
+  return ptx_vector;
 }
 
 std::optional<bns::mapping_years> wallet2::bns_validate_years(std::string_view map_years, std::string *reason)
