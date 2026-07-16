@@ -4085,6 +4085,45 @@ namespace cryptonote::rpc {
   }
 
   //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GET_BRIDGE_REGISTRATION_CMD& cmd, rpc_context context)
+  {
+    PERF_TIMER(on_get_bridge_registration_cmd);
+
+    if (!m_core.master_node())
+      throw rpc_error{ERROR_WRONG_PARAM, "Daemon has not been started in master node mode, please relaunch with --master-node flag."};
+
+    const auto &keys = m_core.get_master_keys();
+    if (!keys.pub)
+      throw rpc_error{ERROR_INTERNAL, "Daemon has no master node keys"};
+
+    cryptonote::tx_extra_bridge_registration reg{};
+    reg.version            = 0;
+    reg.master_node_pubkey = keys.pub;
+    reg.signer_ed25519     = keys.pub_ed25519;
+
+    const uint64_t window = cmd.request.expiration_window
+        ? cmd.request.expiration_window
+        : tools::to_seconds(cryptonote::old::STAKING_AUTHORIZATION_EXPIRATION_WINDOW);
+    reg.expiration_timestamp = static_cast<uint64_t>(time(nullptr)) + window;
+
+    const crypto::hash msg = master_nodes::bridge_registration_message(reg);
+    crypto::generate_signature(msg, keys.pub, keys.key, reg.signature);
+
+    // The blob is a serialized tx_extra fragment containing exactly the signed
+    // registration field: the wallet validates it via get_field_from_tx_extra
+    // and carries it verbatim into the bond transaction's extra.
+    std::vector<uint8_t> extra;
+    if (!cryptonote::add_bridge_registration_to_tx_extra(extra, reg))
+      throw rpc_error{ERROR_INTERNAL, "Failed to serialize bridge registration"};
+
+    cmd.response["registration_hex"]     = oxenc::to_hex(extra.begin(), extra.end());
+    cmd.response["master_node_pubkey"]   = tools::type_to_hex(keys.pub);
+    cmd.response["signer_ed25519"]       = tools::type_to_hex(keys.pub_ed25519);
+    cmd.response["expiration_timestamp"] = reg.expiration_timestamp;
+    cmd.response["status"]               = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
   void core_rpc_server::invoke(BNS_RESOLVE& resolve, rpc_context context)
   {
     auto& req = resolve.request;

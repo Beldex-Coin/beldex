@@ -2116,6 +2116,31 @@ BELDEX_RPC_DOC_INTROSPECT
   };
 
   BELDEX_RPC_DOC_INTROSPECT
+  // Register a bonded bridge seat for this wallet's masternode (HF23 Sovereign
+  // Bridge). Takes the signed registration blob produced by the daemon's
+  // get_bridge_registration_cmd RPC and builds/submits the transaction that
+  // locks the BRIDGE_BOND (separate from, and additional to, the base stake)
+  // from this operator wallet.
+  struct BRIDGE_REGISTER : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("bridge_register"); }
+
+    struct request
+    {
+      std::string registration_hex; // Hex blob from the daemon's get_bridge_registration_cmd.
+      uint32_t    priority;         // (Optional) Transaction priority (flash not allowed).
+      bool        get_tx_key;       // (Optional) Return the transaction key after sending.
+      bool        do_not_relay;     // (Optional) If true, the newly created transaction will not be relayed. (Defaults to false)
+      bool        get_tx_hex;       // Return the transaction as hex string after sending (Defaults to false)
+      bool        get_tx_metadata;  // Return the metadata needed to relay the transaction. (Defaults to false)
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    using response = REGISTER_MASTER_NODE::response;
+  };
+
+  BELDEX_RPC_DOC_INTROSPECT
   // Request to unlock stake by deregistering Master Node.
   struct REQUEST_STAKE_UNLOCK : RESTRICTED
   {
@@ -2707,6 +2732,7 @@ This command is only required if the open wallet is one of the owners of a BNS r
     GET_VERSION,
     STAKE,
     REGISTER_MASTER_NODE,
+    BRIDGE_REGISTER,
     REQUEST_STAKE_UNLOCK,
     CAN_REQUEST_STAKE_UNLOCK,
     VALIDATE_ADDRESS,

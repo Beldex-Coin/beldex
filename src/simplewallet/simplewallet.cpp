@@ -252,6 +252,7 @@ namespace
   // Beldex
   //
   const char* USAGE_REGISTER_MASTER_NODE("register_master_node [index=<N1>[,<N2>,...]] [<priority>] <operator cut> <address1> <fraction1> [<address2> <fraction2> [...]] <expiration timestamp> <pubkey> <signature>");
+  const char* USAGE_BRIDGE_REGISTER("bridge_register [<priority>] <registration_hex>");
   const char* USAGE_STAKE("stake [index=<N1>[,<N2>,...]] [<priority>] <master node pubkey> <amount|percent%>");
   const char* USAGE_REQUEST_STAKE_UNLOCK("request_stake_unlock <master_node_pubkey>");
   const char* USAGE_PRINT_LOCKED_STAKES("print_locked_stakes [key_images]");
@@ -3121,6 +3122,10 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
                            [this](const auto& x) { return register_master_node(x); },
                            tr(USAGE_REGISTER_MASTER_NODE),
                            tr("Send <amount> to this wallet's main account and lock it as an operator stake for a new Master Node. This command is typically generated on the Master Node via the `prepare_registration' beldexd command. The optional index= and <priority> parameters work as in the `transfer' command."));
+  m_cmd_binder.set_handler("bridge_register",
+                           [this](const auto& x) { return bridge_register(x); },
+                           tr(USAGE_BRIDGE_REGISTER),
+                           tr("Lock the bridge bond from this (operator) wallet and register a bonded bridge seat for this wallet's Master Node (HF23 Sovereign Bridge). <registration_hex> is produced on the Master Node by the daemon's `get_bridge_registration_cmd' RPC."));
   m_cmd_binder.set_handler("stake",
                            [this](const auto& x) { return stake(x); },
                            tr(USAGE_STAKE),
@@ -6184,6 +6189,61 @@ bool simple_wallet::register_master_node(const std::vector<std::string> &args_)
     if (!sweep_main_internal(sweep_type_t::register_stake, ptx_vector, info, false /* don't flash */))
     {
       fail_msg_writer() << tr("Sending register transaction failed");
+      return true;
+    }
+  }
+  catch (const std::exception& e)
+  {
+    handle_transfer_exception(std::current_exception(), m_wallet->is_trusted_daemon());
+  }
+  catch (...)
+  {
+    LOG_ERROR("unknown error");
+    fail_msg_writer() << tr("unknown error");
+  }
+
+  return true;
+}
+//----------------------------------------------------------------------------------------------------
+bool simple_wallet::bridge_register(const std::vector<std::string> &args_)
+{
+  if (!try_connect_to_daemon())
+    return true;
+
+  // bridge_register [<priority>] <registration_hex>
+  std::vector<std::string> local_args = args_;
+  uint32_t priority = 0;
+  if (local_args.size() == 2)
+  {
+    if (!epee::string_tools::get_xtype_from_string(priority, local_args[0]))
+    {
+      fail_msg_writer() << tr(USAGE_BRIDGE_REGISTER);
+      return true;
+    }
+    local_args.erase(local_args.begin());
+  }
+  if (local_args.size() != 1)
+  {
+    fail_msg_writer() << tr(USAGE_BRIDGE_REGISTER);
+    return true;
+  }
+
+  SCOPED_WALLET_UNLOCK()
+  tools::wallet2::bridge_register_result result = m_wallet->create_bridge_registration_tx(local_args[0], priority);
+  if (!result.success)
+  {
+    fail_msg_writer() << result.msg;
+    return true;
+  }
+
+  address_parse_info info = {};
+  info.address            = m_wallet->get_address();
+  try
+  {
+    std::vector<tools::wallet2::pending_tx> ptx_vector = {result.ptx};
+    if (!sweep_main_internal(sweep_type_t::register_stake, ptx_vector, info, false /* don't flash */))
+    {
+      fail_msg_writer() << tr("Sending bridge registration transaction failed");
       return true;
     }
   }

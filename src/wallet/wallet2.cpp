@@ -8319,6 +8319,96 @@ wallet2::stake_result wallet2::create_stake_tx(const crypto::public_key& master_
   return result;
 }
 
+wallet2::bridge_register_result wallet2::create_bridge_registration_tx(const std::string& registration_hex, uint32_t priority, std::set<uint32_t> subaddr_indices)
+{
+  bridge_register_result result{};
+
+  // Parse + validate the daemon-produced signed registration blob (a serialized
+  // tx_extra fragment holding exactly one tx_extra_bridge_registration).
+  if (registration_hex.empty() || !oxenc::is_hex(registration_hex))
+  {
+    result.msg = tr("Invalid registration blob: expected the hex string produced by the daemon's get_bridge_registration_cmd");
+    return result;
+  }
+  const std::string blob = oxenc::from_hex(registration_hex);
+  const std::vector<uint8_t> reg_extra(blob.begin(), blob.end());
+  cryptonote::tx_extra_bridge_registration reg{};
+  if (!cryptonote::get_field_from_tx_extra(reg_extra, reg))
+  {
+    result.msg = tr("Invalid registration blob: could not decode a bridge registration from it");
+    return result;
+  }
+
+  // Leave some margin so the tx does not expire while sitting in the pool.
+  if (reg.expiration_timestamp < static_cast<uint64_t>(time(nullptr)) + 600)
+  {
+    result.msg = tr("The bridge registration has expired (or expires too soon); request a fresh one from the daemon");
+    return result;
+  }
+
+  if (priority == tx_priority_flash)
+  {
+    result.msg = tr("Bridge registrations cannot use flash priority");
+    return result;
+  }
+
+  auto hf_version = get_hard_fork_version();
+  if (!hf_version)
+  {
+    result.msg = ERR_MSG_NETWORK_VERSION_QUERY_FAILED;
+    return result;
+  }
+  if (*hf_version < cryptonote::hf::hf23_bridge)
+  {
+    result.msg = tr("Bridge registrations require the bridge hard fork (HF23)");
+    return result;
+  }
+
+  // The bond must be staked from (and return to) the operator wallet's primary
+  // address: consensus checks stake.address == the MN's operator_address.
+  const cryptonote::account_public_address& address = get_address();
+
+  std::vector<uint8_t> extra;
+  add_master_node_pubkey_to_tx_extra(extra, reg.master_node_pubkey);
+  add_master_node_contributor_to_tx_extra(extra, address);
+  if (!cryptonote::add_bridge_registration_to_tx_extra(extra, reg))
+  {
+    result.msg = tr("Failed to serialize the bridge registration into the transaction");
+    return result;
+  }
+
+  std::vector<cryptonote::tx_destination_entry> dsts;
+  cryptonote::tx_destination_entry de = {};
+  de.addr          = address;
+  de.is_subaddress = false;
+  de.amount        = cryptonote::BRIDGE_BOND;
+  dsts.push_back(de);
+
+  try
+  {
+    constexpr uint64_t unlock_at_block = 0; // key-image locked, no time lock
+    beldex_construct_tx_params tx_params = tools::wallet2::construct_params(*hf_version, txtype::bridge_registration, priority);
+    auto ptx_vector = create_transactions_2(dsts, cryptonote::TX_OUTPUT_DECOYS, unlock_at_block, priority, extra, 0, subaddr_indices, tx_params);
+    if (ptx_vector.size() == 1)
+    {
+      result.success = true;
+      result.ptx     = ptx_vector[0];
+    }
+    else
+    {
+      result.msg = ERR_MSG_TOO_MANY_TXS_CONSTRUCTED;
+    }
+  }
+  catch (const std::exception& e)
+  {
+    result.msg = ERR_MSG_EXCEPTION_THROWN;
+    result.msg += e.what();
+    return result;
+  }
+
+  return result;
+}
+
 wallet2::register_master_node_result wallet2::create_register_master_node_tx(const std::vector<std::string> &args_, uint32_t subaddr_account)
 {
   std::vector<std::string> local_args = args_;

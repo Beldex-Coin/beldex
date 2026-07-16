@@ -52,6 +52,7 @@ namespace cryptonote::rpc {
   void parse_request(GATEWAY_GET_HISTORY& c, rpc_input in);
   void parse_request(BRIDGE_GET_COMMITTEE& c, rpc_input in);
   void parse_request(BRIDGE_GET_SEATS& c, rpc_input in);
+  void parse_request(GET_BRIDGE_REGISTRATION_CMD& c, rpc_input in);
   void parse_request(OUT_PEERS& out_peers, rpc_input in);
   void parse_request(GET_OUTPUT_DISTRIBUTION& get_output_distribution, rpc_input in);
   void parse_request(POP_BLOCKS& pop_blocks, rpc_input in);

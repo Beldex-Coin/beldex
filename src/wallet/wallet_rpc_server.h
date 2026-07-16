@@ -156,6 +156,7 @@ namespace tools
     wallet_rpc::GET_VERSION::response                     invoke(wallet_rpc::GET_VERSION::request&& req);
     wallet_rpc::STAKE::response                           invoke(wallet_rpc::STAKE::request&& req);
     wallet_rpc::REGISTER_MASTER_NODE::response            invoke(wallet_rpc::REGISTER_MASTER_NODE::request&& req);
+    wallet_rpc::BRIDGE_REGISTER::response                 invoke(wallet_rpc::BRIDGE_REGISTER::request&& req);
     wallet_rpc::CAN_REQUEST_STAKE_UNLOCK::response        invoke(wallet_rpc::CAN_REQUEST_STAKE_UNLOCK::request&& req);
     wallet_rpc::REQUEST_STAKE_UNLOCK::response            invoke(wallet_rpc::REQUEST_STAKE_UNLOCK::request&& req);
     wallet_rpc::BNS_BUY_MAPPING::response                 invoke(wallet_rpc::BNS_BUY_MAPPING::request&& req);

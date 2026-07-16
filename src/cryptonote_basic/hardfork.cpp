@@ -67,14 +67,15 @@ static constexpr std::array testnet_hard_forks =
 
 static constexpr std::array devnet_hard_forks =
 {
-  hard_fork{hf::hf7,                    0,      0,  1599848400 },
-  hard_fork{hf::hf17_POS,               0,      2,  1599848400 },
-  hard_fork{hf::hf18_bns,               0,      3,  1599848401 },
-  hard_fork{hf::hf19_enhance_bns,       0,      4,  1599848402 },
-  hard_fork{hf::hf20_bulletproof_plus,  0,      5,  1599848403 },
-  hard_fork{hf::hf21_bulletproof_plus,  0,      6,  1599848404 },
-  hard_fork{hf::hf22_gateway_addresses, 0,      7,  1599848405 }, // gateway accounts (Sovereign Bridge prereq)
-  hard_fork{hf::hf23_bridge,            0,      8,  1599848406 }, // Sovereign Bridge Phase A/B: governance + bonded bridge set
+  hard_fork{hf::hf1,                    0,        1, 1548474440 },
+  hard_fork{hf::hf7,                    0,      2,  1599848400 },
+  hard_fork{hf::hf17_POS,               0,      3,  1599848400 },
+  hard_fork{hf::hf18_bns,               0,      4,  1599848401 },
+  hard_fork{hf::hf19_enhance_bns,       0,      5,  1599848402 },
+  hard_fork{hf::hf20_bulletproof_plus,  0,      6,  1599848403 },
+  hard_fork{hf::hf21_bulletproof_plus,  0,      7,  1599848404 },
+  hard_fork{hf::hf22_gateway_addresses, 0,      8,  1599848405 }, // gateway accounts (Sovereign Bridge prereq)
+  hard_fork{hf::hf23_bridge,            0,      9,  1599848406 }, // Sovereign Bridge Phase A/B: governance + bonded bridge set
 };
 
 template <size_t N>

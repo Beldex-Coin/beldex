@@ -851,6 +851,13 @@ namespace master_nodes
       std::string &cmd,
       bool make_friendly);
 
+  // HF23 Sovereign Bridge: the messages the operating masternode key signs to
+  // authorize a bridge-seat registration / voluntary unbond. Shared between
+  // consensus validation (process_bridge_registration_tx / process_bridge_unbond_tx)
+  // and the daemon RPC that produces the signed registration for the wallet.
+  crypto::hash bridge_registration_message(const cryptonote::tx_extra_bridge_registration &reg);
+  crypto::hash bridge_unbond_message(const cryptonote::tx_extra_bridge_unbond &op);
+
   master_nodes::quorum generate_POS_quorum(cryptonote::network_type nettype,
                                               crypto::public_key const &leader,
                                               cryptonote::hf hf_version,

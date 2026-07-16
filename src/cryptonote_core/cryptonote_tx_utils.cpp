@@ -1002,7 +1002,17 @@ namespace cryptonote
     tx.extra = extra;
     crypto::public_key txkey_pub;
 
-    if (tx.type == txtype::stake) {
+    // A bridge-seat registration (HF23) locks its bond via the ordinary
+    // key-image locked-contribution machinery, so it needs the same
+    // tx-secret-key + key-image-proof packing as a stake tx. A bridge *unbond*
+    // rides the same txtype but locks nothing, so it is excluded (it carries a
+    // tx_extra_bridge_unbond instead of a tx_extra_bridge_registration).
+    tx_extra_bridge_registration bridge_reg_probe{};
+    const bool is_bridge_bond_tx = tx.type == txtype::bridge_registration &&
+                                   get_field_from_tx_extra(tx.extra, bridge_reg_probe);
+    const bool is_staking_tx = tx.type == txtype::stake || is_bridge_bond_tx;
+
+    if (is_staking_tx) {
       crypto::secret_key tx_sk{tx_key};
       bool added = hwdev.update_staking_tx_secret_key(tx_sk);
       CHECK_AND_NO_ASSERT_MES(added, false, "Failed to add tx secret key to stake transaction");
@@ -1261,7 +1271,7 @@ namespace cryptonote
         }
       }
 
-      if (tx.type == txtype::stake)
+      if (is_staking_tx)
       {
         CHECK_AND_ASSERT_MES(dst_entr.addr == sender_account_keys.m_account_address, false, "A staking contribution must return back to the original sendee otherwise the pre-calculated key image is incorrect");
         CHECK_AND_ASSERT_MES(dst_entr.is_subaddress == false, false, "Staking back to a subaddress is not allowed"); // TODO(beldex): Maybe one day, revisit this
@@ -1292,12 +1302,12 @@ namespace cryptonote
     }
     CHECK_AND_ASSERT_MES(additional_tx_public_keys.size() == additional_tx_keys.size(), false, "Internal error creating additional public keys");
 
-    if (tx.type == txtype::stake)
+    if (is_staking_tx)
     {
       CHECK_AND_ASSERT_MES(key_image_proofs.proofs.size() >= 1, false, "No key image proofs were generated for staking tx");
       add_tx_key_image_proofs_to_tx_extra(tx.extra, key_image_proofs);
 
-      if (tx_params.hf_version <= hf::hf15_flash)
+      if (tx.type == txtype::stake && tx_params.hf_version <= hf::hf15_flash)
         tx.type = txtype::standard;
     }
 

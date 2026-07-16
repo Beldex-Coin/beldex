@@ -1395,6 +1395,18 @@ private:
     };
     register_master_node_result create_register_master_node_tx(const std::vector<std::string> &args_, uint32_t subaddr_account = 0);
 
+    // HF23 Sovereign Bridge: build the bonded bridge-seat registration tx from a
+    // daemon-produced signed registration blob (get_bridge_registration_cmd).
+    // Locks BRIDGE_BOND back to this (operator) wallet via the ordinary staking
+    // key-image machinery, with the signed tx_extra_bridge_registration attached.
+    struct bridge_register_result
+    {
+      bool        success = false;
+      std::string msg;
+      pending_tx  ptx;
+    };
+    bridge_register_result create_bridge_registration_tx(const std::string& registration_hex, uint32_t priority = 0, std::set<uint32_t> subaddr_indices = {});
+
     struct request_stake_unlock_result
     {
       bool        success;

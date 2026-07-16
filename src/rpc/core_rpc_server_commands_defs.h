@@ -2922,6 +2922,36 @@ namespace cryptonote::rpc {
     struct request_parameters {} request;
   };
 
+  /// RPC: bridge/get_bridge_registration_cmd
+  ///
+  /// Produce a signed bridge-seat registration blob for THIS masternode (HF23,
+  /// plan §6.1 B.1). Only callable on a daemon running in --master-node mode:
+  /// the daemon fills in its MN pubkey and its ed25519 (bridge-signer / TSS
+  /// transport) identity, sets an expiration window, and signs the registration
+  /// message with the MN key. The returned hex blob (a serialized
+  /// tx_extra_bridge_registration) is passed to the *operator wallet*'s
+  /// `bridge_register` command, which locks the BRIDGE_BOND and submits the
+  /// registration transaction.
+  ///
+  /// Inputs:
+  /// - `expiration_window` -- optional; seconds the registration stays valid.
+  ///   0 => the same default window as masternode registrations.
+  ///
+  /// Output:
+  /// - `registration_hex` -- serialized, signed tx_extra_bridge_registration.
+  /// - `master_node_pubkey` -- this daemon's MN pubkey (hex).
+  /// - `signer_ed25519` -- the bound bridge-signer ed25519 identity (hex).
+  /// - `expiration_timestamp` -- unix time the registration expires.
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GET_BRIDGE_REGISTRATION_CMD : RPC_COMMAND
+  {
+    static constexpr auto names() { return NAMES("get_bridge_registration_cmd"); }
+    struct request_parameters
+    {
+      uint64_t expiration_window = 0; // seconds; 0 => default
+    } request;
+  };
+
   // List of all supported rpc command structs to allow compile-time enumeration of all supported
   // RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   // a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2937,6 +2967,7 @@ namespace cryptonote::rpc {
     GATEWAY_GET_HISTORY,
     BRIDGE_GET_COMMITTEE,
     BRIDGE_GET_SEATS,
+    GET_BRIDGE_REGISTRATION_CMD,
     BANNED,
     FLUSH_CACHE,
     FLUSH_TRANSACTION_POOL,

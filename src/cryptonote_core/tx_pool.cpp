@@ -219,6 +219,50 @@ namespace cryptonote
         }
       }
     }
+    else if (tx.type == txtype::bridge_registration)
+    {
+      // HF23 bridge-lifecycle tx: a seat registration (tx_extra_bridge_registration)
+      // or a voluntary unbond (tx_extra_bridge_unbond). Dedupe on the master node
+      // pubkey so at most one pending bridge op per MN sits in the pool.
+      crypto::public_key mn_pubkey{};
+      {
+        tx_extra_bridge_registration reg{};
+        tx_extra_bridge_unbond unbond{};
+        if (cryptonote::get_field_from_tx_extra(tx.extra, reg))
+          mn_pubkey = reg.master_node_pubkey;
+        else if (cryptonote::get_field_from_tx_extra(tx.extra, unbond))
+          mn_pubkey = unbond.master_node_pubkey;
+        else
+        {
+          MERROR("Could not get bridge registration/unbond from tx: " << get_transaction_hash(tx) << ", tx to add is possibly invalid, rejecting");
+          return true;
+        }
+      }
+
+      std::vector<transaction> pool_txs;
+      get_transactions(pool_txs);
+      for (const transaction& pool_tx : pool_txs)
+      {
+        if (pool_tx.type != tx.type)
+          continue;
+
+        crypto::public_key pool_mn_pubkey{};
+        tx_extra_bridge_registration pool_reg{};
+        tx_extra_bridge_unbond pool_unbond{};
+        if (cryptonote::get_field_from_tx_extra(pool_tx.extra, pool_reg))
+          pool_mn_pubkey = pool_reg.master_node_pubkey;
+        else if (cryptonote::get_field_from_tx_extra(pool_tx.extra, pool_unbond))
+          pool_mn_pubkey = pool_unbond.master_node_pubkey;
+        else
+          continue;
+
+        if (pool_mn_pubkey == mn_pubkey)
+        {
+          LOG_PRINT_L1("New TX: " << get_transaction_hash(tx) << ", has TX: " << get_transaction_hash(pool_tx) << " from the pool with a pending bridge operation for the same master node already.");
+          return true;
+        }
+      }
+    }
     else
     {
       if (tx.type != txtype::standard && tx.type != txtype::stake && tx.type != txtype::coin_burn

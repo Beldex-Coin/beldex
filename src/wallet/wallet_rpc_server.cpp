@@ -3129,6 +3129,23 @@ namespace {
     return res;
   }
 
+  BRIDGE_REGISTER::response wallet_rpc_server::invoke(BRIDGE_REGISTER::request&& req)
+  {
+    require_open();
+    BRIDGE_REGISTER::response res{};
+
+    tools::wallet2::bridge_register_result bridge_result =
+        m_wallet->create_bridge_registration_tx(req.registration_hex, req.priority);
+    if (!bridge_result.success)
+      throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, bridge_result.msg};
+
+    std::vector<tools::wallet2::pending_tx> ptx_vector = {bridge_result.ptx};
+    fill_response(ptx_vector, req.get_tx_key, res.tx_key, res.amount, res.amounts_by_dest, res.fee, res.multisig_txset, res.unsigned_txset, req.do_not_relay, false /*flash*/,
+          res.tx_hash, req.get_tx_hex, res.tx_blob, req.get_tx_metadata, res.tx_metadata, res.spent_key_images);
+
+    return res;
+  }
+
   CAN_REQUEST_STAKE_UNLOCK::response wallet_rpc_server::invoke(CAN_REQUEST_STAKE_UNLOCK::request&& req)
   {
     require_open();

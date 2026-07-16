@@ -2108,7 +2108,7 @@ namespace master_nodes
   // Message the operating masternode key signs to authorize a bridge
   // registration and bind the bridge-signer (TSS transport) identity:
   //   H("BRIDGE_REGISTER_V1" || master_node_pubkey || signer_ed25519 || expiration_timestamp).
-  static crypto::hash bridge_registration_message(const cryptonote::tx_extra_bridge_registration &reg)
+  crypto::hash bridge_registration_message(const cryptonote::tx_extra_bridge_registration &reg)
   {
     std::string buf;
     buf += "BRIDGE_REGISTER_V1";
@@ -2211,7 +2211,7 @@ namespace master_nodes
 
   // Message the operating masternode key signs to authorize a voluntary unbond:
   //   H("BRIDGE_UNBOND_V1" || master_node_pubkey).
-  static crypto::hash bridge_unbond_message(const cryptonote::tx_extra_bridge_unbond &op)
+  crypto::hash bridge_unbond_message(const cryptonote::tx_extra_bridge_unbond &op)
   {
     std::string buf;
     buf += "BRIDGE_UNBOND_V1";

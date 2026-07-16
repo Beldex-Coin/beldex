@@ -50,30 +50,36 @@ def vprint(*args, timestamp=True, **kwargs):
 
 class MNNetwork:
     # 6 MNs = the Sovereign Bridge Phase C devnet committee (4-of-6, plan §7).
-    # Binaries default to the dkg-tss-implementation build tree; override with
-    # the BELDEX_BIN environment variable.
-    def __init__(self, datadir, *, binpath=None, mns=6, nodes=1):
+    # Consensus enforces ONE bridge seat per operator identity, so each of the
+    # first `bridge_seats` MNs is registered (and bonded) by its own operator
+    # wallet; any additional MNs are plain (non-bridge) MNs owned by Mike.
+    def __init__(
+        self,
+        datadir,
+        *,
+        binpath="/Users/mac/Niyas/projects/beldex/build/Darwin/dkg-tss-implementation/release/bin",
+        mns=6,
+        nodes=1,
+        bridge_seats=6,
+    ):
         self.datadir = datadir
         if not os.path.exists(self.datadir):
             os.makedirs(self.datadir)
-        self.binpath = binpath or os.environ.get(
-            "BELDEX_BIN", "../../build/Darwin/dkg-tss-implementation/release/bin"
-        )
+        self.binpath = binpath
 
         vprint("Using '{}' for data files and logs".format(datadir))
-        vprint("Using '{}' for binaries".format(self.binpath))
 
         nodeopts = dict(beldexd=self.binpath + "/beldexd", datadir=datadir)
 
-        # Pin the first MN's RPC port so bridge/signer/.env can point at it.
-        self.mns = [Daemon(master_node=True, rpc_port=19191, **nodeopts)]
-        self.mns += [Daemon(master_node=True, **nodeopts) for _ in range(mns - 1)]
+        self.mns = [Daemon(master_node=True, **nodeopts) for _ in range(mns)]
         self.nodes = [Daemon(**nodeopts) for _ in range(nodes)]
 
         self.all_nodes = self.mns + self.nodes
 
         self.wallets = []
-        for name in ("Alice", "Bob", "Mike"):
+        wallet_names = ["Alice", "Bob", "Mike"]
+        wallet_names += ["Op{}".format(i + 1) for i in range(min(bridge_seats, mns))]
+        for name in wallet_names:
             self.wallets.append(
                 Wallet(
                     node=self.nodes[len(self.wallets) % len(self.nodes)],
@@ -83,7 +89,8 @@ class MNNetwork:
                 )
             )
 
-        self.alice, self.bob, self.mike = self.wallets
+        self.alice, self.bob, self.mike = self.wallets[0:3]
+        self.operators = self.wallets[3:]  # one operator wallet per bridge seat
 
         # Interconnections
         for i in range(len(self.all_nodes)):
@@ -138,30 +145,41 @@ class MNNetwork:
             mn.ping()
             mn.send_uptime_proof()
 
-        # Mine some blocks; we need 100 per MN registration, and we can nearly 600 on fakenet before
-        # it hits HF16 and kills mining rewards.  This lets us submit the first 5 MN registrations a
-        # MN (at height 40, which is the earliest we can submit them without getting an occasional
-        # spurious "Not enough outputs to use" error).
-        # to unlock and the rest to have enough unlocked outputs for mixins), then more some more to
-        # earn MN rewards.  We need 100 per MN registration, and each mined block gives us an input
-        # of 18.9, which means each registration requires 6 inputs.  Thus we need a bare minimum of
-        # 6(N-5) blocks, plus the 30 lock time on coinbase TXes = 6N more blocks (after the initial
-        # 5 registrations).
+        # Mine some blocks. The height-1 "premine" block carries 1.4B BDX, which
+        # funds everything (devnet staking requirement is 10,000 BDX per MN and
+        # the bridge bond is 100,000 BDX per seat). We mine 100 blocks so the
+        # premine output is past the 30-block coinbase lock and there are plenty
+        # of coinbase outputs on chain for ring decoys.
         self.mine(100)
         self.print_wallet_balances()
+
+        # Fund each operator wallet from Mike's premine in ONE multi-destination
+        # transfer: 10,000 (stake) + 100,000 (bridge bond) + fee headroom.
+        if self.operators:
+            op_funding = coins(110050)
+            vprint(
+                "Funding {} operator wallets ({:.0f} BDX each)".format(
+                    len(self.operators), op_funding * 1e-9
+                )
+            )
+            self.mike.transfer_many([(op, op_funding) for op in self.operators])
+            self.sync_nodes(self.mine(11))  # confirm + pass DEFAULT_TX_SPENDABLE_AGE
+            self.refresh_wallets()
+
         vprint(
             "Submitting master node registrations (10,000 BDX stake each): ",
             end="",
             flush=True,
         )
-        for mn in self.mns:
-            self.mike.register_mn(mn)
-            # Each registration stakes the full requirement from one large premine output, so its
-            # change comes back locked. Mine enough to confirm the stake and unlock the change
-            # (DEFAULT_TX_SPENDABLE_AGE=10) before funding the next registration.
-            self.mine(11)
+        for i, mn in enumerate(self.mns):
+            owner = self.operators[i] if i < len(self.operators) else self.mike
+            owner.register_mn(mn)
+            # Each registration stakes from one large output, so its change comes
+            # back locked. Mine enough to confirm the stake and unlock the change
+            # (DEFAULT_TX_SPENDABLE_AGE=10) before that wallet spends again.
+            self.sync_nodes(self.mine(11))
             ping_and_proof(mn)
-            self.mike.refresh()
+            owner.refresh()
             vprint(".", end="", flush=True, timestamp=False)
         vprint(timestamp=False)
 
@@ -200,6 +218,56 @@ class MNNetwork:
         for mn in self.mns:
             ping_and_proof(mn)
         vprint("Done.")
+
+        # ---- Sovereign Bridge (HF23): bond the committee seats ----
+        # Each operator wallet locks the 100k BDX BRIDGE_BOND for its own MN via
+        # the daemon-signed registration blob (one seat per operator identity).
+        if self.operators:
+            vprint(
+                "Bonding {} bridge seats (100,000 BDX bond each): ".format(
+                    len(self.operators)
+                ),
+                end="",
+                flush=True,
+            )
+            for i, op in enumerate(self.operators):
+                op.bridge_register(self.mns[i])
+                self.sync_nodes(self.mine(2))
+                vprint(".", end="", flush=True, timestamp=False)
+            vprint(timestamp=False)
+            self.sync_nodes(self.mine(10))
+
+            seats = self.mns[0].json_rpc("bridge_get_seats").json()["result"]
+            vprint(
+                "Bridge seats: seated={} distinct_operators={} active={}".format(
+                    seats["seated_count"], seats["distinct_operators"], seats["active"]
+                )
+            )
+            if not seats["active"]:
+                raise RuntimeError("Bridge did not activate: {}".format(seats))
+
+            # The committee is (re)selected only at epoch-boundary heights
+            # (devnet epoch = 120 blocks, cryptonote_config.h bridge_epoch_blocks).
+            # Mine past the next boundary and verify the committee formed.
+            epoch_blocks = 120
+            height = self.mns[0].height()
+            pad = (epoch_blocks - (height % epoch_blocks)) % epoch_blocks + 1
+            vprint("Mining {} blocks to the next bridge epoch boundary".format(pad))
+            self.sync_nodes(self.mine(pad))
+
+            committee = self.mns[0].json_rpc("bridge_get_committee").json()["result"]
+            vprint(
+                "Bridge committee (epoch {}): {} members, threshold {}, active={}".format(
+                    committee["epoch"],
+                    len(committee["members"]),
+                    committee["threshold"],
+                    committee["active"],
+                )
+            )
+            if not committee["active"] or len(committee["members"]) < committee["threshold"]:
+                raise RuntimeError(
+                    "Bridge committee did not form: {}".format(committee)
+                )
 
         vprint("Local Devnet MN network setup complete!")
         vprint(

@@ -43,6 +43,11 @@ class RPCDaemon:
         self.name = name
         self.proc = None
         self.terminated = False
+        # When set, the process's stderr is appended to this file instead of
+        # being discarded — crash/abort messages (uncaught exceptions, assertion
+        # failures) only ever go to stderr, so without this a daemon crash is
+        # undiagnosable.
+        self.stderr_path = None
 
     def __del__(self):
         self.stop()
@@ -62,11 +67,14 @@ class RPCDaemon:
             verbose = False
         if self.proc and self.proc.poll() is None:
             raise RuntimeError("Cannot start process that is already running!")
+        serr = subprocess.DEVNULL
+        if self.stderr_path:
+            serr = open(self.stderr_path, "ab")
         self.proc = subprocess.Popen(
             self.arguments(),
             stdin=subprocess.DEVNULL,
             stdout=sout,
-            stderr=subprocess.DEVNULL,
+            stderr=serr,
         )
         self.terminated = False
 
@@ -175,6 +183,9 @@ class Daemon(RPCDaemon):
         self.qnet_port = qnet_port or next_port()
         self.ss_port = ss_port or next_port()
         self.peers = []
+        self.stderr_path = "{}/beldex-{}-{}.stderr.log".format(
+            datadir or ".", self.listen_ip, self.rpc_port
+        )
 
         self.args = [beldexd] + list(self.__class__.base_args)
         self.args += (
@@ -327,6 +338,9 @@ class Wallet(RPCDaemon):
         self.walletdir = "{}/wallet-{}-{}".format(
             datadir or ".", self.listen_ip, self.rpc_port
         )
+        self.stderr_path = "{}/wallet-{}-{}.stderr.log".format(
+            datadir or ".", self.listen_ip, self.rpc_port
+        )
         self.args = [rpc_wallet] + list(self.__class__.base_args)
         self.args += (
             "--rpc-bind-ip={}".format(self.listen_ip),
@@ -441,6 +455,23 @@ class Wallet(RPCDaemon):
             raise TransferFailed("Transfer failed: {}".format(r["error"]["message"]), r)
         return r["result"]
 
+    def transfer_many(self, dests, *, priority=None):
+        """Sends a single transfer_split with multiple (wallet, amount) destinations."""
+        if priority is None:
+            priority = 1
+        r = self.json_rpc(
+            "transfer_split",
+            {
+                "destinations": [
+                    {"address": w.address(), "amount": amount} for w, amount in dests
+                ],
+                "priority": priority,
+            },
+        ).json()
+        if "error" in r:
+            raise TransferFailed("Transfer failed: {}".format(r["error"]["message"]), r)
+        return r["result"]
+
     def find_transfers(
         self, txids, in_=True, pool=True, out=True, pending=False, failed=False
     ):
@@ -463,7 +494,7 @@ class Wallet(RPCDaemon):
         self.refresh()
         # Full single-operator stake. The daemon ignores the staking_requirement we pass and uses
         # get_staking_requirement(nettype, height), which on DEVNET is 10000*COIN (=1e13) at any
-        # height — mirroring current mainnet (master_node_rules.cpp DEVNET branch).
+        # height, mirroring current mainnet (master_node_rules.cpp DEVNET branch).
         # The contribution amount must equal that requirement so it maps to 100% of the portions;
         # anything less produces sub-minimum portions, which convert_registration_args silently drops
         # (returning empty addresses with success=true) and then the wallet segfaults on addresses[0].
@@ -491,3 +522,25 @@ class Wallet(RPCDaemon):
                     r["error"]["message"]
                 )
             )
+
+    def bridge_register(self, mn):
+        """Bonds a bridge seat for `mn` from this (operator) wallet (HF23 Sovereign
+        Bridge): asks the MN daemon for its signed registration blob via
+        get_bridge_registration_cmd, then submits the BRIDGE_BOND-locking tx via
+        the wallet's bridge_register RPC. This wallet must be the MN's operator
+        wallet (consensus checks the bond is staked from the operator address)."""
+        self.refresh()
+        r = mn.json_rpc("get_bridge_registration_cmd").json()
+        if "error" in r:
+            raise RuntimeError(
+                "get_bridge_registration_cmd failed: {}".format(r["error"]["message"])
+            )
+        reg_hex = r["result"]["registration_hex"]
+        r = self.json_rpc("bridge_register", {"registration_hex": reg_hex}).json()
+        if "error" in r:
+            raise RuntimeError(
+                "Failed to submit bridge registration tx: {}".format(
+                    r["error"]["message"]
+                )
+            )
+        return r["result"]

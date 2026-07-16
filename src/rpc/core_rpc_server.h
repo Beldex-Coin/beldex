@@ -203,6 +203,7 @@ namespace cryptonote::rpc {
     void invoke(GATEWAY_GET_HISTORY& gateway_get_history, rpc_context context);
     void invoke(BRIDGE_GET_COMMITTEE& bridge_get_committee, rpc_context context);
     void invoke(BRIDGE_GET_SEATS& bridge_get_seats, rpc_context context);
+    void invoke(GET_BRIDGE_REGISTRATION_CMD& get_bridge_registration_cmd, rpc_context context);
     void invoke(BNS_RESOLVE& resolve, rpc_context context);
     void invoke(BNS_LOOKUP& lookup, rpc_context context);
     void invoke(BNS_VALUE_DECRYPT& value_decrypt, rpc_context context);
