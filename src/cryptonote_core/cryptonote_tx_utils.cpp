@@ -761,6 +761,38 @@ namespace cryptonote
     return true;
   }
   //---------------------------------------------------------------
+  bool sign_gateway_register_tx(network_type nettype, transaction& tx,
+                                const crypto::secret_key& gateway_skey)
+  {
+    if (tx.type != txtype::register_gateway_address)
+    {
+      LOG_ERROR("gateway register sign: tx type is not register_gateway_address");
+      return false;
+    }
+    crypto::public_key gateway_pub{};
+    if (!crypto::secret_key_to_public_key(gateway_skey, gateway_pub))
+    {
+      LOG_ERROR("gateway register sign: invalid gateway secret key");
+      return false;
+    }
+    // The message binds to the tx prefix (which carries the register op's
+    // address_id + owner_key), so it must be signed after the prefix is final.
+    const crypto::hash msg = gateway_ownership_message(nettype, tx);
+    crypto::signature sig{};
+    crypto::generate_signature(msg, gateway_pub, gateway_skey, sig);
+
+    // Replace any existing ownership proof; keep any other proof kinds.
+    std::vector<gateway_proof_v> proofs;
+    proofs.reserve(tx.gateway_proofs.size() + 1);
+    for (const auto& p : tx.gateway_proofs)
+      if (!std::holds_alternative<gateway_ownership_proof>(p))
+        proofs.push_back(p);
+    proofs.emplace_back(gateway_ownership_proof{gateway_owner_sig_v{sig}});
+    tx.gateway_proofs = std::move(proofs);
+    tx.invalidate_hashes();
+    return true;
+  }
+  //---------------------------------------------------------------
   // Gateway → wallet withdrawal (HF22). Spends from a gateway's on-chain balance
   // via a single txin_gateway and pays normal wallet (stealth) outputs, fully
   // scannable by wallet2: per-output one-time keys, v2 ECDH-encoded amounts,

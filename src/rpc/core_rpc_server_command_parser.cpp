@@ -383,17 +383,17 @@ namespace cryptonote::rpc {
     get_values(in, "gateway_id", required{c.request.gateway_id});
   }
 
-  void parse_request(GET_GATEWAY_HISTORY& cmd, rpc_input in){
-    get_values(in,
-        "count",      cmd.request.count,
-        "from",       cmd.request.from,
-        "gateway_id", required{cmd.request.gateway_id});
-  }
-
   void parse_request(GET_ALL_GATEWAYS& c, rpc_input in) {
     get_values(in,
         "count", c.request.count,
         "from",  c.request.from);
+  }
+
+  void parse_request(GET_GATEWAY_HISTORY& c, rpc_input in) {
+    get_values(in,
+        "count",      c.request.count,
+        "from",       c.request.from,
+        "gateway_id", required{c.request.gateway_id});
   }
 
   void parse_request(GATEWAY_CREATE_TRANSFER& c, rpc_input in) {

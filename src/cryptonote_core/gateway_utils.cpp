@@ -20,6 +20,7 @@
 #include "crypto/eddsa_signature.h"
 #include "serialization/binary_utils.h"
 #include "ringct/rctOps.h"
+#include "ringct/rctSigs.h" // verRctSemanticsSimple (range-proof + balance)
 #include "beldex_economy.h"
 
 namespace cryptonote
@@ -293,29 +294,43 @@ bool generate_gateway_balance_proof(network_type nettype, const transaction& tx,
 
 bool verify_gateway_wallet_balance(const transaction& tx, std::string& reason)
 {
-  // Connection-time commitment-sum check for a gateway→wallet withdrawal,
-  // duplicating verRctSemanticsSimple's balance equation so it is guaranteed at
-  // block connection (check_tx_inputs), not only at pool ingress. Range proofs
-  // still come from the semantic path (as for every RCT tx), but this closes the
-  // most direct inflation vector (owner decrements `in` yet pays out more):
-  //   Σ outPk.mask + fee·H − Σ gw_in·H − mask_point  ==  0
-  // with mask_point proven to lie in <G> by verify_gateway_balance_proof.
+  // Authoritative connection-time check for a gateway→wallet withdrawal, run from
+  // check_tx_inputs. It must be SELF-CONTAINED: a gateway-only withdrawal has no
+  // pseudo-outs to absorb the derived output masks, so without range proofs an
+  // attacker could set one stealth output near 2^64 (a "negative" amount) and,
+  // balancing it against another, mint coins. Relying on the batched
+  // verRctSemanticsSimple elsewhere is fragile — a future refactor that reaches
+  // block-connect without that batch would silently reopen the vector. So verify
+  // the range proofs here too, alongside the balance equation:
+  //   Σ outPk.mask + fee·H − Σ gw_in·H − mask_point  ==  0   (== Σ pseudoOuts)
+  // with mask_point separately proven to lie in <G> by verify_gateway_balance_proof
+  // (so the residual cannot hide an amount/H component).
   const rct::rctSig& rv = tx.rct_signatures;
   if (rv.outPk.empty())
   {
     reason = "gateway->wallet withdrawal has no confidential outputs";
     return false;
   }
-  rct::keyV masks;
-  masks.reserve(rv.outPk.size());
-  for (const auto& o : rv.outPk)
-    masks.push_back(o.mask);
-  rct::key sum = rct::addKeys(masks);
-  rct::addKeys(sum, sum, rct::scalarmultH(rct::d2h(rv.txnFee)));
-  rct::addKeys(sum, sum, gateway_balance_offset(tx)); // −Σgw_in·H − mask_point
-  if (!rct::equalKeys(sum, rct::identity()))
+  // Reject any type without per-output range proofs (e.g. RCTType::Null): the
+  // stealth outputs MUST carry BulletproofPlus proofs covering every output.
+  if (!rct::is_rct_bulletproof_plus(rv.type))
   {
-    reason = "gateway->wallet withdrawal balance check failed";
+    reason = "gateway->wallet withdrawal must use BulletproofPlus range proofs";
+    return false;
+  }
+  if (rv.outPk.size() != rct::n_bulletproof_plus_amounts(rv.p.bulletproofs_plus))
+  {
+    reason = "gateway->wallet withdrawal range proofs do not cover every output";
+    return false;
+  }
+  // verRctSemanticsSimple verifies the BP+ range proofs AND the balance equation
+  // in one audited call. For a gateway-only withdrawal pseudoOuts is empty, so its
+  // sum(pseudoOuts) == sum(outPk) + fee·H + offset check reduces to the equation
+  // above. The gateway offset folds in −Σgw_in·H − mask_point.
+  const rct::key offset = gateway_balance_offset(tx);
+  if (!rct::verRctSemanticsSimple(rv, &offset))
+  {
+    reason = "gateway->wallet withdrawal balance/range-proof check failed";
     return false;
   }
   return true;
@@ -385,8 +400,12 @@ void store_gateway_account(BlockchainDB& db, const crypto::public_key& gateway_a
 
 bool is_valid_gateway_owner_key(const gateway_owner_key_v& owner_key)
 {
+  // Native ed25519 owner key: require prime-order main-subgroup membership (not
+  // just a decodable point), so a torsion/small-order key cannot create Schnorr
+  // signature ambiguities. eth (secp256k1, cofactor 1) and eddsa (libsodium
+  // is_valid_point already enforces the main subgroup) need no extra check.
   if (const auto* pk = std::get_if<crypto::public_key>(&owner_key))
-    return crypto::check_key(*pk);
+    return crypto::check_key_in_main_subgroup(*pk);
   if (const auto* pk = std::get_if<crypto::eth_public_key>(&owner_key))
     return crypto::check_eth_public_key(*pk);
   if (const auto* pk = std::get_if<crypto::eddsa_public_key>(&owner_key))
@@ -432,6 +451,21 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
     reason = "gateway descriptor has an invalid owner key";
     return false;
   }
+  // Bound the DB-persisted, append-only descriptor metadata (both register and
+  // update). Prevents cheap consensus-state bloat via oversized meta_info.
+  if (op.descriptor.meta_info.size() > GATEWAY_DESCRIPTOR_MAX_META_INFO_SIZE)
+  {
+    reason = "gateway descriptor meta_info exceeds " +
+             std::to_string(GATEWAY_DESCRIPTOR_MAX_META_INFO_SIZE) + " bytes";
+    return false;
+  }
+  // Reject unknown descriptor versions (only v0 exists at HF22); future formats
+  // must be gated by a future hard fork, not silently accepted.
+  if (op.descriptor.version != 0)
+  {
+    reason = "unsupported gateway descriptor version";
+    return false;
+  }
 
   switch (op.op_type)
   {
@@ -442,9 +476,11 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
         reason = "register gateway op in a tx whose type is not register_gateway_address";
         return false;
       }
-      if (!crypto::check_key(op.address_id))
+      // The gateway address id doubles as the on-chain identity and the DH key
+      // for payment-id decryption, so require canonical main-subgroup membership.
+      if (!crypto::check_key_in_main_subgroup(op.address_id))
       {
-        reason = "gateway address id is not a valid public key";
+        reason = "gateway address id is not a canonical main-subgroup public key";
         return false;
       }
       if (db.gateway_exists(op.address_id))
@@ -457,6 +493,59 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
       {
         reason = "insufficient burned registration fee (" + std::to_string(burned) + " < " +
                  std::to_string(GATEWAY_ADDRESS_REGISTRATION_FEE) + ")";
+        return false;
+      }
+
+
+      // Proof-of-ownership of the gateway id (F2). The registrant must sign the
+      // register with address_id's OWN secret key. Without this, anyone could
+      // squat/front-run a gateway id they do not control, set themselves as
+      // owner, and later drain deposits made to it. The signature is over the tx
+      // prefix hash (which covers address_id + the chosen owner_key + meta), so a
+      // captured proof cannot be replayed onto a different registration. See
+      // docs/GATEWAY_SECURITY_FIXES.md (F2).
+      const gateway_ownership_proof* reg_proof = nullptr;
+      for (const auto& p : tx.gateway_proofs)
+      {
+        if (const auto* rp = std::get_if<gateway_ownership_proof>(&p))
+        {
+          if (reg_proof)
+          {
+            reason = "register tx carries more than one ownership proof";
+            return false;
+          }
+          reg_proof = rp;
+        }
+      }
+      if (!reg_proof)
+      {
+        reason = "register tx is missing its gateway-id ownership proof";
+        return false;
+      }
+      {
+        // address_id is a native ed25519 key, so the proof must be the native
+        // Schnorr variant; verify_gateway_owner_signature enforces the match.
+        const crypto::hash msg = gateway_ownership_message(nettype, tx);
+        if (!verify_gateway_owner_signature(gateway_owner_key_v{op.address_id}, reg_proof->sig, msg))
+        {
+          reason = "gateway-id ownership proof verification failed";
+          return false;
+        }
+      }
+
+      // The declared burn must be genuinely realized. Burning is applied by
+      // reducing the miner-claimable fee (get_tx_miner_fee: fee -= min(fee, burned)),
+      // so a burn exceeding the tx fee is NOT actually removed from supply — only
+      // min(fee, burned) is. Without this upper bound a miner could self-include a
+      // register tx declaring burn == REGISTRATION_FEE while paying a negligible real
+      // fee (the pool min-fee check is bypassed for txs mined directly into a block),
+      // registering a gateway for almost free and defeating the anti-spam cost.
+      // Mirror the coin_burn rule (blockchain.cpp: burn <= fee).
+      const uint64_t tx_fee = tx.rct_signatures.txnFee;
+      if (burned > tx_fee)
+      {
+        reason = "gateway registration burn (" + std::to_string(burned) +
+                 ") exceeds tx fee (" + std::to_string(tx_fee) + "); burn is not realized";
         return false;
       }
       return true;
@@ -520,6 +609,12 @@ namespace
       const auto* g = std::get_if<tx_out_gateway>(&o.target);
       if (!g)
         continue;
+
+      if (g->version != 0)
+      {
+        reason = "unsupported gateway output version";
+        return false;
+      }
 
       // HF22: native BDX only.
       if (hf_version < feature::GATEWAY_ADDRESSES && g->asset_id != crypto::null_aid)
@@ -620,6 +715,12 @@ namespace
       if (!g)
         continue;
 
+      if (g->version != 0)
+      {
+        reason = "unsupported gateway input version";
+        return false;
+      }
+
       if (g->asset_id != crypto::null_aid)
       {
         reason = "gateway input asset_id must be null_aid at HF22";
@@ -699,6 +800,27 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
     if (has_gw_out && get_field_from_tx_extra(tx.extra, nonce))
     {
       reason = "legacy tx-wide payment id is not allowed alongside gateway outputs";
+      return false;
+    }
+  }
+
+  // ---- per-tx gateway construct caps (DoS bound on persisted state churn) ----
+  {
+    size_t gw_ins = 0, gw_outs = 0;
+    for (const auto& in : tx.vin)
+      if (std::holds_alternative<txin_gateway>(in)) ++gw_ins;
+    for (const auto& o : tx.vout)
+      if (std::holds_alternative<tx_out_gateway>(o.target)) ++gw_outs;
+    if (gw_ins > GATEWAY_TX_MAX_INPUTS)
+    {
+      reason = "too many gateway inputs (" + std::to_string(gw_ins) + " > " +
+               std::to_string(GATEWAY_TX_MAX_INPUTS) + ")";
+      return false;
+    }
+    if (gw_outs > GATEWAY_TX_MAX_OUTPUTS)
+    {
+      reason = "too many gateway outputs (" + std::to_string(gw_outs) + " > " +
+               std::to_string(GATEWAY_TX_MAX_OUTPUTS) + ")";
       return false;
     }
   }

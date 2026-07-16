@@ -63,6 +63,19 @@ inline constexpr uint64_t PUBLIC_ADDRESS_TEXTBLOB_VER          = 0;
 // literal here because beldex_economy.h (which defines COIN) includes this file.
 inline constexpr uint64_t GATEWAY_ADDRESS_REGISTRATION_FEE     = UINT64_C(100000000000); // 100 * pow(10, 9)
 
+// Max length (bytes) of a gateway descriptor's meta_info string. The descriptor
+// is persisted append-only into the consensus DB and an update tx pays only a
+// normal fee (no 100 BDX burn), so an unbounded meta_info would let a gateway
+// owner bloat consensus state cheaply. Cap it to a small label/URL-sized field.
+inline constexpr size_t   GATEWAY_DESCRIPTOR_MAX_META_INFO_SIZE = 255;
+
+// Per-tx caps on gateway constructs. Each gateway input/output mutates persisted
+// consensus balance state, so bound how many a single tx may carry (defence in
+// depth on top of the general MAX_TX_SIZE / block-weight limits). Generous enough
+// for legitimate batch deposits/withdrawals; a rise would need a hard fork.
+inline constexpr size_t   GATEWAY_TX_MAX_INPUTS                 = 1;
+inline constexpr size_t   GATEWAY_TX_MAX_OUTPUTS                = 15;
+
 inline constexpr uint64_t FINAL_SUBSIDY_PER_MINUTE             = 500000000; // 3 * pow(10, 7)
 
 inline constexpr uint64_t BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW    = 11;

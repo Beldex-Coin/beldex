@@ -265,6 +265,15 @@ namespace cryptonote
                                     const gateway_owner_key_v& owner_key,
                                     const gateway_owner_sig_v& owner_sig);
 
+  // Sign a register_gateway_address tx with the gateway id's OWN secret key and
+  // attach the resulting gateway_ownership_proof — the registrant's proof that
+  // it controls the gateway id (consensus requires it; see F2 in
+  // docs/GATEWAY_SECURITY_FIXES.md). The public key derived from gateway_skey
+  // must equal the register op's address_id already present in tx.extra. The
+  // signature is over the tx prefix hash, so it must be attached AFTER the prefix
+  // (vin/vout/extra) is final. Returns false on a type/key mismatch.
+  bool sign_gateway_register_tx(network_type nettype, transaction& tx,
+                                const crypto::secret_key& gateway_skey);
   struct gateway_wallet_destination
   {
     account_public_address addr; // main address only (v1: no subaddresses)

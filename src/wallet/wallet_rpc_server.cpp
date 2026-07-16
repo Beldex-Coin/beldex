@@ -905,6 +905,22 @@ namespace tools
     std::string extra_nonce;
     for (auto it = destinations.begin(); it != destinations.end(); it++)
     {
+      // Gateway deposit (HF22): a gwB…/gwiB… destination is paid out as a
+      // transparent tx_out_gateway (mirrors the simplewallet CLI). The optional
+      // integrated payment id is encrypted into the output; no tx-wide id.
+      cryptonote::gateway_address_parse_info gw_info{};
+      if (cryptonote::get_gateway_address_from_str(gw_info, m_wallet->nettype(), it->address))
+      {
+        cryptonote::tx_destination_entry de;
+        de.original           = it->address;
+        de.amount             = it->amount;
+        de.is_gateway         = true;
+        de.gateway_id         = gw_info.gateway_id;
+        de.gateway_payment_id = gw_info.has_payment_id ? gw_info.payment_id : 0;
+        dsts.push_back(de);
+        continue;
+      }
+
       cryptonote::address_parse_info info = extract_account_addr(m_wallet->nettype(), it->address);
 
       cryptonote::tx_destination_entry de;
@@ -3217,9 +3233,11 @@ namespace {
     require_open();
     GATEWAY_REGISTER_ADDRESS::response res{};
 
-    crypto::public_key gateway_id;
-    if (!tools::hex_to_type(req.gateway_id, gateway_id))
-      throw wallet_rpc_error{error_code::WRONG_KEY, "Invalid gateway_id (expected 64-char hex)"};
+    // The gateway id is derived from its secret key, and the registration is
+    // self-signed with that secret to prove control of the id (F2).
+    crypto::secret_key gateway_skey;
+    if (!tools::hex_to_type(req.gateway_secret, gateway_skey))
+      throw wallet_rpc_error{error_code::WRONG_KEY, "Invalid gateway_secret (expected 64-char hex)"};
 
     cryptonote::gateway_owner_key_v owner_key;
     if (req.owner_key_type == "schnorr" || req.owner_key_type == "ed25519")
@@ -3248,7 +3266,7 @@ namespace {
 
     std::string reason;
     std::vector<wallet2::pending_tx> ptx_vector =
-        m_wallet->create_gateway_register_tx(gateway_id, owner_key, req.meta_info, &reason,
+        m_wallet->create_gateway_register_tx(gateway_skey, owner_key, req.meta_info, &reason,
                                              req.priority, req.account_index, req.subaddr_indices);
     if (ptx_vector.empty())
       throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "Failed to create gateway registration transaction: " + reason};

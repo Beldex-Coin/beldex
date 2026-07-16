@@ -38,6 +38,8 @@
 #include <memory>
 #include <stdexcept>
 
+#include <sodium.h>
+
 #include "common/varint.h"
 #include "epee/warnings.h"
 #include "crypto.h"
@@ -186,6 +188,14 @@ namespace crypto {
   bool check_key(const public_key &key) {
     ge_p3 point;
     return ge_frombytes_vartime(&point, &key) == 0;
+  }
+
+  bool check_key_in_main_subgroup(const public_key &key) {
+    // libsodium's validity check requires a canonical encoding, rejects the
+    // small-order points, and enforces membership in the prime-order main
+    // subgroup — exactly the properties we need for keys that act as identities
+    // or authorise spends. (cncrypto already links libsodium for the eddsa code.)
+    return crypto_core_ed25519_is_valid_point(reinterpret_cast<const unsigned char*>(key.data)) == 1;
   }
 
   bool secret_key_to_public_key(const secret_key &sec, public_key &pub) {

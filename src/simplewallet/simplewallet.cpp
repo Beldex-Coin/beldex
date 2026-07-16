@@ -257,7 +257,7 @@ namespace
   const char* USAGE_PRINT_LOCKED_STAKES("print_locked_stakes [key_images]");
 
   const char* USAGE_BNS_BUY_MAPPING("bns_buy_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] <name>");
-  const char* USAGE_REGISTER_GATEWAY_ADDRESS("register_gateway_address [index=<N1>[,<N2>,...]] [<priority>] <gateway_id_hex> <owner_type: schnorr|eth|eddsa> <owner_key_hex> [meta]");
+  const char* USAGE_REGISTER_GATEWAY_ADDRESS("register_gateway_address [index=<N1>[,<N2>,...]] [<priority>] <gateway_secret_hex> <owner_type: schnorr|eth|eddsa> <owner_key_hex> [meta]");
   const char* USAGE_BNS_RENEW_MAPPING("bns_renew_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] <name>");
   const char* USAGE_BNS_UPDATE_MAPPING("bns_update_mapping [index=<N1>[,<N2>,...]] [<priority>] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] [signature=<hex_signature>] <name>");
 
@@ -3142,7 +3142,7 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
   m_cmd_binder.set_handler("register_gateway_address",
                            [this](const auto& x) { return register_gateway_address(x); },
                            tr(USAGE_REGISTER_GATEWAY_ADDRESS),
-                           tr("Register a gateway address (HF22). Burns the registration fee and stores the owner key on-chain. Args: <gateway_id_hex> <owner_pubkey_hex> [meta]."));
+                           tr("Register a gateway address (HF22). Burns the registration fee and stores the owner key on-chain. The gateway id is derived from <gateway_secret_hex> and the tx is self-signed with it to prove control of the id. Args: <gateway_secret_hex> <owner_type> <owner_key_hex> [meta]."));
 
   m_cmd_binder.set_handler("bns_renew_mapping",
                            [this](const auto& x) { return bns_renew_mapping(x); },
@@ -6868,10 +6868,18 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
     return true;
   }
 
-  crypto::public_key gateway_id;
-  if (!tools::hex_to_type(args[0], gateway_id))
+  // The gateway id is derived from its secret key; the registration is
+  // self-signed with that secret to prove control of the id (F2).
+  crypto::secret_key gateway_skey;
+  if (!tools::hex_to_type(args[0], gateway_skey))
   {
-    fail_msg_writer() << tr("Invalid gateway id (expected 64-char hex)");
+    fail_msg_writer() << tr("Invalid gateway secret key (expected 64-char hex)");
+    return true;
+  }
+  crypto::public_key gateway_id;
+  if (!crypto::secret_key_to_public_key(gateway_skey, gateway_id))
+  {
+    fail_msg_writer() << tr("Invalid gateway secret key: does not yield a valid public key");
     return true;
   }
 
@@ -6908,7 +6916,7 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
   std::vector<tools::wallet2::pending_tx> ptx_vector;
   try
   {
-    ptx_vector = m_wallet->create_gateway_register_tx(gateway_id, owner_key, meta, &reason, priority, m_current_subaddress_account, subaddr_indices);
+    ptx_vector = m_wallet->create_gateway_register_tx(gateway_skey, owner_key, meta, &reason, priority, m_current_subaddress_account, subaddr_indices);
     if (ptx_vector.empty())
     {
       fail_msg_writer() << reason;
@@ -6925,7 +6933,7 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
 
     std::cout << std::endl << tr("Registering gateway address") << std::endl << std::endl;
     fmt::print(fmt::format(tr("Gateway addr: {}\n"), gateway_address));
-    fmt::print(fmt::format(tr("Gateway id  : {}\n"), args[0]));
+    fmt::print(fmt::format(tr("Gateway id  : {}\n"), tools::type_to_hex(gateway_id)));
     fmt::print(fmt::format(tr("Owner type  : {}\n"), owner_type));
     fmt::print(fmt::format(tr("Owner key   : {}\n"), args[2]));
     fmt::print(fmt::format(tr("Meta        : {}\n"), meta.empty() ? "(none)" : meta));
