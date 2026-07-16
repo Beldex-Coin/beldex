@@ -3366,6 +3366,20 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
       return false;
     }
   }
+  else if (tx_has_gateway_constructs(tx))
+  {
+    // Pre-HF22: gateway constructs are consensus-illegal. Descriptor-op txs are
+    // already caught by the txtype range check (register/update_gateway_address
+    // exceed get_max_type_for_hf before HF22), but a `standard`-type tx can still
+    // smuggle a txin_gateway/tx_out_gateway past that check. Such a tx skips all
+    // gateway validation here (owner-sig + balance) while its transparent a·H
+    // commitment offset is still folded into the RCT balance equation — i.e. a
+    // gateway input would mint spendable coins with no authorization or backing
+    // balance. Reject any gateway construct outright until HF22 activates.
+    MERROR_VER("Gateway construct in tx " << get_transaction_hash(tx) << " before HF22 activation, rejected");
+    tvc.m_verifivation_failed = true;
+    return false;
+  }
 
   if (tx.is_transfer())
   {

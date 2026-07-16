@@ -975,7 +975,15 @@ namespace cryptonote
     std::map<std::pair<crypto::public_key, crypto::asset_id>, uint64_t> need;
     for (const auto& in : tx.vin)
       if (const auto* g = std::get_if<txin_gateway>(&in))
-        need[{g->gateway_addr, g->asset_id}] += g->amount;
+      {
+        auto& amount = need[{g->gateway_addr, g->asset_id}];
+        if (amount > std::numeric_limits<uint64_t>::max() - g->amount)
+        {
+          reason = "gateway withdrawal amount overflow";
+          return false;
+        }
+        amount += g->amount;
+      }
 
     // Check cumulative pending + this tx <= on-chain balance.
     for (const auto& [gk, amount] : need)
@@ -986,6 +994,11 @@ namespace cryptonote
         onchain = acct.balance_for(gk.second);
       auto it = m_gateway_pending_spends.find(gk);
       const uint64_t pending = it == m_gateway_pending_spends.end() ? 0 : it->second;
+      if (pending > std::numeric_limits<uint64_t>::max() - amount)
+      {
+        reason = "gateway pending withdrawal amount overflow";
+        return false;
+      }
       const uint64_t remaining = onchain <= pending ? 0 : onchain - pending;
       if (amount > remaining)
       {
@@ -998,7 +1011,10 @@ namespace cryptonote
     if (pending_register)
       m_gateway_pending_registers.insert(*pending_register);
     for (const auto& [gk, amount] : need)
-      m_gateway_pending_spends[gk] += amount;
+    {
+      auto& pending = m_gateway_pending_spends[gk];
+      pending += amount;
+    }
     return true;
   }
   //---------------------------------------------------------------------------------

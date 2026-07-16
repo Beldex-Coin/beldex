@@ -123,6 +123,18 @@ inline constexpr uint64_t BRIDGE_EPOCH_BLOCKS                 = 2880;
 // Minimum unbonding period before a released bridge bond unlocks: ≥ 30 days and
 // must span ≥ 1 refresh (plan §6.1 B.2). Expressed in blocks.
 inline constexpr uint64_t BRIDGE_BOND_UNLOCK_BLOCKS           = 30 * 2880; // ~30 days
+// Max length (bytes) of a gateway descriptor's meta_info string. The descriptor
+// is persisted append-only into the consensus DB and an update tx pays only a
+// normal fee (no 100 BDX burn), so an unbounded meta_info would let a gateway
+// owner bloat consensus state cheaply. Cap it to a small label/URL-sized field.
+inline constexpr size_t   GATEWAY_DESCRIPTOR_MAX_META_INFO_SIZE = 255;
+
+// Per-tx caps on gateway constructs. Each gateway input/output mutates persisted
+// consensus balance state, so bound how many a single tx may carry (defence in
+// depth on top of the general MAX_TX_SIZE / block-weight limits). Generous enough
+// for legitimate batch deposits/withdrawals; a rise would need a hard fork.
+inline constexpr size_t   GATEWAY_TX_MAX_INPUTS                 = 1;
+inline constexpr size_t   GATEWAY_TX_MAX_OUTPUTS                = 15;
 
 inline constexpr uint64_t FINAL_SUBSIDY_PER_MINUTE             = 500000000; // 3 * pow(10, 7)
 

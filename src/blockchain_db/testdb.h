@@ -178,6 +178,9 @@ public:
   bool remove_gateway_account(const crypto::public_key& gateway_addr) override { return false; }
   bool gateway_exists(const crypto::public_key& gateway_addr) const override { return false; }
   std::vector<crypto::public_key> get_all_gateway_ids() const override { return {}; }
+  void add_gateway_tx(const crypto::public_key& gateway_addr, uint64_t height, const crypto::hash& tx_hash) override { }
+  void remove_gateway_tx(const crypto::public_key& gateway_addr, uint64_t height, const crypto::hash& tx_hash) override { }
+  std::vector<crypto::hash> get_gateway_txs(const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count) const override { return {}; }
 
   virtual void add_alt_block(const crypto::hash &blkid, const cryptonote::alt_block_data_t &data, const cryptonote::blobdata &blob, const cryptonote::blobdata *checkpoint) override {}
   virtual bool get_alt_block(const crypto::hash &blkid, alt_block_data_t *data, cryptonote::blobdata *blob, cryptonote::blobdata *checkpoint) const override { return false; }

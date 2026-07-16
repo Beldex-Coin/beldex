@@ -2708,6 +2708,32 @@ namespace cryptonote::rpc {
     } request;
   };
 
+  /// RPC: gateway/get_gateway_history
+  ///
+  /// Paginated transaction history for a gateway (HF22), height-ascending, read
+  /// from the gateway transaction-history table. Lists every tx that touched the
+  /// gateway: deposits, withdrawals, and descriptor (register/update) ops. This
+  /// is what an exchange polls to reconcile deposits without scanning the chain.
+  ///
+  /// Inputs:
+  /// - `gateway_id` -- gwB… address or 64-char hex id.
+  /// - `from` -- pagination offset (default 0).
+  /// - `count` -- max tx hashes to return (0 = all).
+  ///
+  /// Output:
+  /// - `tx_hashes` -- list of transaction hashes (hex), oldest first.
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GET_GATEWAY_HISTORY : PUBLIC
+  {
+    static constexpr auto names() { return NAMES("get_gateway_history"); }
+    struct request_parameters
+    {
+      std::string gateway_id;
+      uint64_t from = 0;
+      uint64_t count = 0;
+    } request;
+  };
+
   /// RPC: gateway/gateway_create_transfer
   ///
   /// Admin-only. Builds an UNSIGNED pure-gateway withdrawal (HF22): spends from a
@@ -2904,6 +2930,7 @@ namespace cryptonote::rpc {
   using core_rpc_types = tools::type_list<
     GET_GATEWAY_INFO,
     GET_ALL_GATEWAYS,
+    GET_GATEWAY_HISTORY,
     GATEWAY_CREATE_TRANSFER,
     GATEWAY_SUBMIT_TRANSFER,
     BRIDGE_GET_RESERVES,

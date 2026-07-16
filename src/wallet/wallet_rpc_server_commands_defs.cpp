@@ -1180,7 +1180,7 @@ KV_SERIALIZE_MAP_CODE_END()
 
 
 KV_SERIALIZE_MAP_CODE_BEGIN(GATEWAY_REGISTER_ADDRESS::request)
-  KV_SERIALIZE    (gateway_id);
+  KV_SERIALIZE    (gateway_secret);
   KV_SERIALIZE    (owner_key_type);
   KV_SERIALIZE    (owner_key);
   KV_SERIALIZE    (meta_info);

@@ -221,10 +221,28 @@ class Daemon(RPCDaemon):
 
     def ping(self, *, storage=True, belnet=True):
         """Sends fake storage server and belnet pings to the running beldexd"""
+        # Versions must meet MIN_UPTIME_PROOF_VERSIONS for the active hardfork or the daemon rejects
+        # the uptime proof. hf20+ requires storage-server >= 2.4.0 and belnet >= 0.9.8. Each ping must
+        # carry THIS daemon's own ed25519 pubkey, otherwise handle_ping rejects it as an invalid pubkey
+        # and never records the version. Fetch it live so it's correct for every master node.
+        def require_ok(response, name):
+            result = response.json().get("result", {})
+            if result.get("status") != "OK":
+                raise RuntimeError("{} ping failed: {}".format(name, result))
+
+        ed_pubkey = self.json_rpc("get_master_keys").json()["result"]["master_node_ed25519_pubkey"]
         if storage:
-            self.json_rpc("storage_server_ping", { "version_major": 2, "version_minor": 1, "version_patch": 0 })
+            require_ok(self.json_rpc("storage_server_ping", {
+                "version": [2, 4, 1],
+                "https_port": 0,
+                "omq_port": 0,
+                "pubkey_ed25519": ed_pubkey,
+            }), "storage server")
         if belnet:
-            self.json_rpc("belnet_ping", { "version": [9,9,9] })
+            require_ok(self.json_rpc("belnet_ping", {
+                "version": [0, 9, 9],
+                "pubkey_ed25519": ed_pubkey,
+            }), "belnet")
 
     def send_uptime_proof(self):
         """Triggerst test uptime proof"""
@@ -352,10 +370,20 @@ class Wallet(RPCDaemon):
 
 
     def register_mn(self, mn):
+        # Ensure the wallet has caught up to the daemon's tip before staking; the daemon rejects with
+        # "Wallet is not synced" (is_synced check) if the wallet lags even one block behind.
+        self.refresh()
+        # Full single-operator stake. The daemon ignores the staking_requirement we pass and uses
+        # get_staking_requirement(height), which is 100000*COIN (=1e14) below devnet height 56500.
+        # The contribution amount must equal that requirement so it maps to 100% of the portions;
+        # anything less produces sub-minimum portions, which convert_registration_args silently drops
+        # (returning empty addresses with success=true) and then the wallet segfaults on addresses[0].
+        staking_requirement = 100000 * 1000000000
         r = mn.json_rpc("get_master_node_registration_cmd", {
             "operator_cut": "100",
-            "contributions": [{"address": self.address(), "amount": 100000000000}],
-            "staking_requirement": 100000000000
+            "contributor_addresses": [self.address()],
+            "contributor_amounts": [staking_requirement],
+            "staking_requirement": staking_requirement
         }).json()
         if 'error' in r:
             raise RuntimeError("Registration cmd generation failed: {}".format(r['error']['message']))

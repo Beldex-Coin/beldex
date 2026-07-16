@@ -3667,6 +3667,27 @@ namespace cryptonote::rpc {
   }
 
   //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GET_GATEWAY_HISTORY& cmd, rpc_context context)
+  {
+    const auto nettype = m_core.get_nettype();
+    crypto::public_key gw_id{};
+    cryptonote::gateway_address_parse_info info{};
+    if (cryptonote::get_gateway_address_from_str(info, nettype, cmd.request.gateway_id))
+      gw_id = info.gateway_id;
+    else if (!tools::hex_to_type(cmd.request.gateway_id, gw_id))
+      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_id (expected gwB… address or 64-char hex)"};
+
+    auto& db = m_core.get_blockchain_storage().get_db();
+    auto hashes = cryptonote::get_gateway_history(db, gw_id, cmd.request.from, cmd.request.count);
+
+    auto arr = json::array();
+    for (const auto& h : hashes)
+      arr.push_back(tools::type_to_hex(h));
+    cmd.response["tx_hashes"] = std::move(arr);
+    cmd.response["status"] = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
   void core_rpc_server::invoke(GET_ALL_GATEWAYS& cmd, rpc_context context)
   {
     auto& db = m_core.get_blockchain_storage().get_db();

@@ -67,8 +67,18 @@ static constexpr std::array testnet_hard_forks =
 
 static constexpr std::array devnet_hard_forks =
 {
-  hard_fork{hf::hf7,                    0,      0,  1599848400 },
-  hard_fork{hf::hf17_POS,               0,      2,  1599848400 },
+  hard_fork{hf::hf1,                     0,   1,  1599848400 },
+  hard_fork{hf::hf7,                     0,   2,  1599848400 },
+  hard_fork{hf::hf8,                     0,   3,  1599848400 },
+  hard_fork{hf::hf11_infinite_staking,   0,   4,  1599848400 },
+  hard_fork{hf::hf12_security_signature, 0,   5,  1599848400 },
+  hard_fork{hf::hf15_flash,              0,   6,  1599848400 },
+  hard_fork{hf::hf17_POS,                0,   7,  1599848400 },
+  hard_fork{hf::hf18_bns,                0,   8,  1599848400 },
+  hard_fork{hf::hf19_enhance_bns,        0,   9,  1599848400 },
+  hard_fork{hf::hf20_bulletproof_plus,   0,  10,  1599848400 },
+  hard_fork{hf::hf21_bulletproof_plus,   0,  11,  1599848400 },
+  hard_fork{hf::hf22_gateway_addresses,  0,  12,  1599848400 },
 };
 
 template <size_t N>

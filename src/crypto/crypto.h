@@ -231,6 +231,14 @@ namespace crypto {
    */
   bool check_key(const public_key &key);
 
+  /* Stricter than check_key: returns true only if the key is a canonical
+   * ed25519 encoding lying in the prime-order MAIN subgroup (rejects small-order
+   * and torsion/mixed-order points). Used where a public key doubles as an
+   * identity or authorises spends (e.g. gateway address ids / owner keys), so a
+   * non-canonical or torsion point cannot introduce signature ambiguities.
+   */
+  bool check_key_in_main_subgroup(const public_key &key);
+
   /* Checks a private key and computes the corresponding public key.
    */
   bool secret_key_to_public_key(const secret_key &sec, public_key &pub);

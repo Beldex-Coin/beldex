@@ -31,6 +31,7 @@
 #include <fmt/core.h>
 #include <boost/circular_buffer.hpp>
 #include <oxenc/endian.h>
+#include <array>
 #include <chrono>
 #include <memory>
 #include <cstring>
@@ -254,10 +255,11 @@ const char* const LMDB_HF_VERSIONS = "hf_versions";
 const char* const LMDB_MASTER_NODE_DATA = "master_node_data";
 const char* const LMDB_MASTER_NODE_LATEST = "master_node_proofs"; // contains the latest data sent with a proof: time, aux keys, ip, ports
 const char* const LMDB_GATEWAY_ACCOUNTS = "gateway_accounts"; // HF22: gateway_addr -> serialized gateway_account_data
+const char* const LMDB_GATEWAY_TX_HISTORY = "gateway_tx_history"; // HF22: gateway_addr -> (height||tx_hash) entries (DUPSORT)
 
 const char* const LMDB_PROPERTIES = "properties";
 
-constexpr unsigned int LMDB_DB_COUNT = 24; // Should agree with the number of db's above
+constexpr unsigned int LMDB_DB_COUNT = 25; // Should agree with the number of db's above
 
 const char zerokey[8] = {0};
 const MDB_val zerokval = { sizeof(zerokey), (void *)zerokey };
@@ -400,6 +402,7 @@ void setup_rcursor(const MDB_dbi& db, MDB_cursor*& cursor, MDB_txn* txn, bool* r
 #define m_cur_alt_blocks	m_cursors->alt_blocks
 #define m_cur_hf_versions	m_cursors->hf_versions
 #define m_cur_gateway_accounts	m_cursors->gateway_accounts
+#define m_cur_gateway_tx_history	m_cursors->gateway_tx_history
 #define m_cur_properties	m_cursors->properties
 
 namespace cryptonote
@@ -1533,6 +1536,11 @@ void BlockchainLMDB::open(const fs::path& filename, cryptonote::network_type net
 
   lmdb_db_open(txn, LMDB_GATEWAY_ACCOUNTS, MDB_CREATE, m_gateway_accounts, "Failed to open db handle for m_gateway_accounts");
 
+  // gateway_addr (32B) -> many fixed 40B values (height BE || tx_hash). DUPFIXED
+  // for compact storage; DUPSORT with the default byte compare sorts values by
+  // the big-endian height prefix, i.e. chronologically.
+  lmdb_db_open(txn, LMDB_GATEWAY_TX_HISTORY, MDB_CREATE | MDB_DUPSORT | MDB_DUPFIXED, m_gateway_tx_history, "Failed to open db handle for m_gateway_tx_history");
+
   lmdb_db_open(txn, LMDB_PROPERTIES, MDB_CREATE, m_properties, "Failed to open db handle for m_properties");
 
   mdb_set_dupsort(txn, m_spent_keys, compare_hash32);
@@ -1553,6 +1561,7 @@ void BlockchainLMDB::open(const fs::path& filename, cryptonote::network_type net
   mdb_set_compare(txn, m_alt_blocks, compare_hash32);
   mdb_set_compare(txn, m_master_node_proofs, compare_hash32);
   mdb_set_compare(txn, m_gateway_accounts, compare_hash32);
+  mdb_set_compare(txn, m_gateway_tx_history, compare_hash32); // key: 32B gateway addr
   mdb_set_compare(txn, m_properties, compare_string);
 
   if (!(mdb_flags & MDB_RDONLY))
@@ -1718,6 +1727,8 @@ void BlockchainLMDB::reset()
     throw0(DB_ERROR(lmdb_error("Failed to drop m_master_node_data: ", result).c_str()));
   if (auto result = mdb_drop(txn, m_gateway_accounts, 0))
     throw0(DB_ERROR(lmdb_error("Failed to drop m_gateway_accounts: ", result).c_str()));
+  if (auto result = mdb_drop(txn, m_gateway_tx_history, 0))
+    throw0(DB_ERROR(lmdb_error("Failed to drop m_gateway_tx_history: ", result).c_str()));
   if (auto result = mdb_drop(txn, m_properties, 0))
     throw0(DB_ERROR(lmdb_error("Failed to drop m_properties: ", result).c_str()));
 
@@ -6436,6 +6447,104 @@ std::vector<crypto::public_key> BlockchainLMDB::get_all_gateway_ids() const
     result.push_back(*static_cast<const crypto::public_key*>(key.mv_data));
   }
 
+  return result;
+}
+
+namespace {
+  // 40-byte history value: big-endian height (8) || tx_hash (32). Big-endian so
+  // LMDB's default lexicographic dup ordering is chronological.
+  inline std::array<char, 40> gw_hist_value(uint64_t height, const crypto::hash& tx_hash)
+  {
+    std::array<char, 40> buf{};
+    for (int i = 0; i < 8; ++i)
+      buf[i] = static_cast<char>((height >> (56 - 8 * i)) & 0xff);
+    std::memcpy(buf.data() + 8, &tx_hash, 32);
+    return buf;
+  }
+}
+
+void BlockchainLMDB::add_gateway_tx(const crypto::public_key& gateway_addr, uint64_t height, const crypto::hash& tx_hash)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_BLOCK_PREFIX(0);
+  mdb_txn_cursors *m_cursors = &m_wcursors;
+  setup_cursor(m_gateway_tx_history, m_cur_gateway_tx_history, *txn_ptr);
+
+  auto value = gw_hist_value(height, tx_hash);
+  MDB_val key{sizeof(gateway_addr), (void*)&gateway_addr};
+  MDB_val val{value.size(), value.data()};
+  // NODUPDATA: a tx that touches the same gateway more than once (e.g. gateway
+  // in and out) is recorded once. KEYEXIST is not an error here.
+  int result = mdb_cursor_put(m_cur_gateway_tx_history, &key, &val, MDB_NODUPDATA);
+  if (result && result != MDB_KEYEXIST)
+    throw0(DB_ERROR(lmdb_error("Failed to add gateway tx history entry: ", result)));
+
+  TXN_BLOCK_POSTFIX_SUCCESS();
+}
+
+void BlockchainLMDB::remove_gateway_tx(const crypto::public_key& gateway_addr, uint64_t height, const crypto::hash& tx_hash)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_BLOCK_PREFIX(0);
+  mdb_txn_cursors *m_cursors = &m_wcursors;
+  setup_cursor(m_gateway_tx_history, m_cur_gateway_tx_history, *txn_ptr);
+
+  auto value = gw_hist_value(height, tx_hash);
+  MDB_val key{sizeof(gateway_addr), (void*)&gateway_addr};
+  MDB_val val{value.size(), value.data()};
+  int result = mdb_cursor_get(m_cur_gateway_tx_history, &key, &val, MDB_GET_BOTH);
+  if (result == MDB_NOTFOUND)
+  {
+    TXN_BLOCK_POSTFIX_SUCCESS();
+    return; // already absent (tolerant, matches balance rewind)
+  }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to locate gateway tx history entry to remove: ", result)));
+  if ((result = mdb_cursor_del(m_cur_gateway_tx_history, 0)))
+    throw0(DB_ERROR(lmdb_error("Failed to remove gateway tx history entry: ", result)));
+
+  TXN_BLOCK_POSTFIX_SUCCESS();
+}
+
+std::vector<crypto::hash> BlockchainLMDB::get_gateway_txs(const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(gateway_tx_history);
+
+  std::vector<crypto::hash> result;
+  MDB_val key{sizeof(gateway_addr), (void*)&gateway_addr};
+  MDB_val val{};
+  int get_result = mdb_cursor_get(m_cur_gateway_tx_history, &key, &val, MDB_SET);
+  if (get_result == MDB_NOTFOUND)
+    return result;
+  if (get_result)
+    throw0(DB_ERROR(lmdb_error("Failed to seek gateway tx history: ", get_result)));
+
+  uint64_t index = 0;
+  MDB_cursor_op op = MDB_FIRST_DUP;
+  while (count == 0 || result.size() < count)
+  {
+    get_result = mdb_cursor_get(m_cur_gateway_tx_history, &key, &val, op);
+    op = MDB_NEXT_DUP;
+    if (get_result == MDB_NOTFOUND)
+      break;
+    if (get_result)
+      throw0(DB_ERROR(lmdb_error("Failed to iterate gateway tx history: ", get_result)));
+    if (index++ < offset)
+      continue;
+    if (val.mv_size != 40)
+      throw0(DB_ERROR("Invalid gateway tx history value size"));
+    crypto::hash h;
+    std::memcpy(&h, static_cast<const char*>(val.mv_data) + 8, 32);
+    result.push_back(h);
+  }
   return result;
 }
 

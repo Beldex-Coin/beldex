@@ -194,6 +194,9 @@ rct::key gateway_balance_offset(const transaction& tx);
 // gateway in/out): Σ gw_in == Σ gw_out + fee, with fee = Σgw_in − Σgw_out.
 bool verify_pure_gateway_balance(const transaction& tx, uint64_t& fee, std::string& reason);
 
+// Read the transaction history for a gateway (height-ascending, paginated).
+std::vector<crypto::hash> get_gateway_history(BlockchainDB& db, const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count);
+
 // Apply / exact-inverse rewind of ALL gateway state changes (descriptor ops,
 // deposit/withdrawal balance mutations, and HF23 governance freeze/re-point +
 // per-window release-cap accounting) at block add / pop. `block_height` is the
