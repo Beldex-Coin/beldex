@@ -1,22 +1,22 @@
 // Copyright (c) 2014-2018, The Monero Project
 // Copyright (c)      2018, The Beldex Project
-// 
+//
 // All rights reserved.
-// 
+//
 // Redistribution and use in source and binary forms, with or without modification, are
 // permitted provided that the following conditions are met:
-// 
+//
 // 1. Redistributions of source code must retain the above copyright notice, this list of
 //    conditions and the following disclaimer.
-// 
+//
 // 2. Redistributions in binary form must reproduce the above copyright notice, this list
 //    of conditions and the following disclaimer in the documentation and/or other
 //    materials provided with the distribution.
-// 
+//
 // 3. Neither the name of the copyright holder nor the names of its contributors may be
 //    used to endorse or promote products derived from this software without specific
 //    prior written permission.
-// 
+//
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
 // EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
 // MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
@@ -67,18 +67,14 @@ static constexpr std::array testnet_hard_forks =
 
 static constexpr std::array devnet_hard_forks =
 {
-  hard_fork{hf::hf1,                     0,   1,  1599848400 },
-  hard_fork{hf::hf7,                     0,   2,  1599848400 },
-  hard_fork{hf::hf8,                     0,   3,  1599848400 },
-  hard_fork{hf::hf11_infinite_staking,   0,   4,  1599848400 },
-  hard_fork{hf::hf12_security_signature, 0,   5,  1599848400 },
-  hard_fork{hf::hf15_flash,              0,   6,  1599848400 },
-  hard_fork{hf::hf17_POS,                0,   7,  1599848400 },
-  hard_fork{hf::hf18_bns,                0,   8,  1599848400 },
-  hard_fork{hf::hf19_enhance_bns,        0,   9,  1599848400 },
-  hard_fork{hf::hf20_bulletproof_plus,   0,  10,  1599848400 },
-  hard_fork{hf::hf21_bulletproof_plus,   0,  11,  1599848400 },
-  hard_fork{hf::hf22_gateway_addresses,  0,  12,  1599848400 },
+  hard_fork{hf::hf7,                    0,      0,  1599848400 },
+  hard_fork{hf::hf17_POS,               0,      2,  1599848400 },
+  hard_fork{hf::hf18_bns,               0,      3,  1599848401 },
+  hard_fork{hf::hf19_enhance_bns,       0,      4,  1599848402 },
+  hard_fork{hf::hf20_bulletproof_plus,  0,      5,  1599848403 },
+  hard_fork{hf::hf21_bulletproof_plus,  0,      6,  1599848404 },
+  hard_fork{hf::hf22_gateway_addresses, 0,      7,  1599848405 }, // gateway accounts (Sovereign Bridge prereq)
+  hard_fork{hf::hf23_bridge,            0,      8,  1599848406 }, // Sovereign Bridge Phase A/B: governance + bonded bridge set
 };
 
 template <size_t N>

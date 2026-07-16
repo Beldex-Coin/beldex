@@ -470,7 +470,7 @@ beldex_chain_generator::create_registration_tx(const cryptonote::account_base &s
 
     uint64_t new_height    = get_block_height(top().block) + 1;
     cryptonote::hf new_hf_version = get_hf_version_at(new_height);
-    const auto staking_requirement = master_nodes::get_staking_requirement(new_height);
+    const auto staking_requirement = master_nodes::get_staking_requirement(cryptonote::network_type::FAKECHAIN, new_height);
     uint64_t amount                = master_nodes::portions_to_amount(portions[0], staking_requirement);
 
     uint64_t unlock_time = 0;
@@ -1518,7 +1518,7 @@ cryptonote::transaction make_registration_tx(std::vector<test_event_entry>& even
                                              cryptonote::hf hf_version)
 {
   const auto new_height          = cryptonote::get_block_height(head) + 1;
-  const auto staking_requirement = master_nodes::get_staking_requirement(new_height);
+  const auto staking_requirement = master_nodes::get_staking_requirement(cryptonote::network_type::FAKECHAIN, new_height);
   uint64_t amount                = master_nodes::portions_to_amount(portions[0], staking_requirement);
 
   cryptonote::transaction tx;

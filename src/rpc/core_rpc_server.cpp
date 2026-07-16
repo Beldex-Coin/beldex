@@ -2920,7 +2920,7 @@ namespace cryptonote::rpc {
     std::vector<std::string> args;
 
     uint64_t const curr_height   = m_core.get_current_blockchain_height();
-    uint64_t staking_requirement = master_nodes::get_staking_requirement( curr_height);
+    uint64_t staking_requirement = master_nodes::get_staking_requirement(nettype(), curr_height);
 
     {
       uint64_t portions_cut;
@@ -3316,7 +3316,7 @@ namespace cryptonote::rpc {
     PERF_TIMER(on_get_staking_requirement);
     get_staking_requirement.response["height"] = get_staking_requirement.request.height > 0 ? get_staking_requirement.request.height : m_core.get_current_blockchain_height();
 
-    get_staking_requirement.response["staking_requirement"] = master_nodes::get_staking_requirement(get_staking_requirement.response["height"]);
+    get_staking_requirement.response["staking_requirement"] = master_nodes::get_staking_requirement(nettype(), get_staking_requirement.response["height"]);
     get_staking_requirement.response["status"] = STATUS_OK;
     return;
   }
@@ -4034,8 +4034,8 @@ namespace cryptonote::rpc {
   {
     const uint64_t top    = m_core.get_current_blockchain_height();
     const uint64_t height = cmd.request.height ? cmd.request.height : (top ? top - 1 : 0);
-    const uint64_t epoch  = height / cryptonote::BRIDGE_EPOCH_BLOCKS;
-    const uint64_t epoch_start = epoch * cryptonote::BRIDGE_EPOCH_BLOCKS;
+    const uint64_t epoch  = height / cryptonote::bridge_epoch_blocks(nettype());
+    const uint64_t epoch_start = epoch * cryptonote::bridge_epoch_blocks(nettype());
 
     auto q = m_core.get_quorum(master_nodes::quorum_type::bridge, epoch_start, true /*include_old*/);
     auto members = json::array();
@@ -4046,8 +4046,8 @@ namespace cryptonote::rpc {
     cmd.response["epoch"]     = epoch;
     cmd.response["height"]    = epoch_start;
     cmd.response["members"]   = std::move(members);
-    cmd.response["threshold"] = cryptonote::BRIDGE_COMMITTEE_THRESHOLD;
-    cmd.response["size"]      = cryptonote::BRIDGE_COMMITTEE_SIZE;
+    cmd.response["threshold"] = cryptonote::bridge_committee_threshold(nettype());
+    cmd.response["size"]      = cryptonote::bridge_committee_size(nettype());
     cmd.response["active"]    = (q && !q->validators.empty());
     cmd.response["status"]    = STATUS_OK;
   }
@@ -4078,9 +4078,9 @@ namespace cryptonote::rpc {
     cmd.response["seated_count"]       = seated;
     cmd.response["queued_count"]       = queued;
     cmd.response["distinct_operators"] = ops.size();
-    cmd.response["activation_floor"]   = cryptonote::BRIDGE_ACTIVATION_FLOOR;
+    cmd.response["activation_floor"]   = cryptonote::bridge_activation_floor(nettype());
     cmd.response["seat_cap"]           = cryptonote::BRIDGE_SEAT_CAP;
-    cmd.response["active"]             = (ops.size() >= cryptonote::BRIDGE_ACTIVATION_FLOOR);
+    cmd.response["active"]             = (ops.size() >= cryptonote::bridge_activation_floor(nettype()));
     cmd.response["status"]             = STATUS_OK;
   }
 

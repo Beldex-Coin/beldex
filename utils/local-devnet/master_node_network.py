@@ -1,18 +1,19 @@
 #!/usr/bin/python3
 
-from daemons import Daemon, Wallet
-
-import random
-import time
-import shutil
-import os
-from os import path
 import asyncio
 import glob
-from datetime import datetime
+import os
+import random
+import shutil
+import time
 import uuid
+from datetime import datetime
+from os import path
 
-datadirectory="testdata"
+from daemons import Daemon, Wallet
+
+datadirectory = "testdata"
+
 
 def coins(*args):
     if len(args) != 1:
@@ -33,10 +34,12 @@ def wait_for(callback, timeout=10):
             pass
         if time.time() >= expires:
             raise RuntimeError("task timeout expired")
-        time.sleep(.25)
+        time.sleep(0.25)
 
 
 verbose = True
+
+
 def vprint(*args, timestamp=True, **kwargs):
     global verbose
     if verbose:
@@ -46,29 +49,39 @@ def vprint(*args, timestamp=True, **kwargs):
 
 
 class MNNetwork:
-    def __init__(self, datadir, *, binpath='../../build/bin', mns=12, nodes=3):
+    # 6 MNs = the Sovereign Bridge Phase C devnet committee (4-of-6, plan §7).
+    # Binaries default to the dkg-tss-implementation build tree; override with
+    # the BELDEX_BIN environment variable.
+    def __init__(self, datadir, *, binpath=None, mns=6, nodes=1):
         self.datadir = datadir
         if not os.path.exists(self.datadir):
             os.makedirs(self.datadir)
-        self.binpath = binpath
-
+        self.binpath = binpath or os.environ.get(
+            "BELDEX_BIN", "../../build/Darwin/dkg-tss-implementation/release/bin"
+        )
 
         vprint("Using '{}' for data files and logs".format(datadir))
+        vprint("Using '{}' for binaries".format(self.binpath))
 
-        nodeopts = dict(beldexd=self.binpath+'/beldexd', datadir=datadir)
+        nodeopts = dict(beldexd=self.binpath + "/beldexd", datadir=datadir)
 
-        self.mns = [Daemon(master_node=True, **nodeopts) for _ in range(mns)]
+        # Pin the first MN's RPC port so bridge/signer/.env can point at it.
+        self.mns = [Daemon(master_node=True, rpc_port=19191, **nodeopts)]
+        self.mns += [Daemon(master_node=True, **nodeopts) for _ in range(mns - 1)]
         self.nodes = [Daemon(**nodeopts) for _ in range(nodes)]
 
         self.all_nodes = self.mns + self.nodes
 
         self.wallets = []
-        for name in ('Alice', 'Bob', 'Mike'):
-            self.wallets.append(Wallet(
-                node=self.nodes[len(self.wallets) % len(self.nodes)],
-                name=name,
-                rpc_wallet=self.binpath+'/beldex-wallet-rpc',
-                datadir=datadir))
+        for name in ("Alice", "Bob", "Mike"):
+            self.wallets.append(
+                Wallet(
+                    node=self.nodes[len(self.wallets) % len(self.nodes)],
+                    name=name,
+                    rpc_wallet=self.binpath + "/beldex-wallet-rpc",
+                    datadir=datadir,
+                )
+            )
 
         self.alice, self.bob, self.mike = self.wallets
 
@@ -79,12 +92,22 @@ class MNNetwork:
                 if i != k:
                     self.all_nodes[i].add_peer(self.all_nodes[k])
 
-        vprint("Starting new master master nodes with RPC on {} ports".format(self.mns[0].listen_ip), end="")
+        vprint(
+            "Starting new master master nodes with RPC on {} ports".format(
+                self.mns[0].listen_ip
+            ),
+            end="",
+        )
         for mn in self.mns:
             vprint(" {}".format(mn.rpc_port), end="", flush=True, timestamp=False)
             mn.start()
         vprint(timestamp=False)
-        vprint("Starting new regular master nodes with RPC on {} ports".format(self.nodes[0].listen_ip), end="")
+        vprint(
+            "Starting new regular master nodes with RPC on {} ports".format(
+                self.nodes[0].listen_ip
+            ),
+            end="",
+        )
         for d in self.nodes:
             vprint(" {}".format(d.rpc_port), end="", flush=True, timestamp=False)
             d.start()
@@ -97,7 +120,11 @@ class MNNetwork:
         vprint("Beldexds are ready. Starting wallets")
 
         for w in self.wallets:
-            vprint("Starting new RPC wallet {w.name} at {w.listen_ip}:{w.rpc_port}".format(w=w))
+            vprint(
+                "Starting new RPC wallet {w.name} at {w.listen_ip}:{w.rpc_port}".format(
+                    w=w
+                )
+            )
             w.start()
         for w in self.wallets:
             w.ready()
@@ -121,8 +148,13 @@ class MNNetwork:
         # 6(N-5) blocks, plus the 30 lock time on coinbase TXes = 6N more blocks (after the initial
         # 5 registrations).
         self.mine(100)
-        vprint("Submitting first round of master node registrations: ", end="", flush=True)
-        for mn in self.mns[0:5]:
+        self.print_wallet_balances()
+        vprint(
+            "Submitting master node registrations (10,000 BDX stake each): ",
+            end="",
+            flush=True,
+        )
+        for mn in self.mns:
             self.mike.register_mn(mn)
             # Each registration stakes the full requirement from one large premine output, so its
             # change comes back locked. Mine enough to confirm the stake and unlock the change
@@ -132,27 +164,12 @@ class MNNetwork:
             self.mike.refresh()
             vprint(".", end="", flush=True, timestamp=False)
         vprint(timestamp=False)
-        if len(self.mns) > 5:
-            vprint("Going back to mining", flush=True)
-
-            self.mine(6*len(self.mns))
-
-            self.print_wallet_balances()
-
-            vprint("Submitting more master node registrations: ", end="", flush=True)
-            for mn in self.mns[5:-1]:
-                self.mike.register_mn(mn)
-                # Confirm the stake and unlock its change before the next registration (see above).
-                self.mine(11)
-                ping_and_proof(mn)
-                self.mike.refresh()
-                vprint(".", end="", flush=True, timestamp=False)
-            vprint(timestamp=False)
-            vprint("Done.")
 
         self.print_wallet_balances()
 
-        vprint("Mining 40 blocks (registrations + flash quorum lag) and waiting for nodes to sync")
+        vprint(
+            "Mining 40 blocks (registrations + flash quorum lag) and waiting for nodes to sync"
+        )
         self.sync_nodes(self.mine(40))
 
         self.print_wallet_balances()
@@ -167,38 +184,47 @@ class MNNetwork:
         for mn in self.mns:
             mn.send_uptime_proof()
 
-        all_master_nodes_proofed = lambda mn: all(x['quorumnet_port'] > 0 for x in
-                mn.json_rpc("get_n_master_nodes", {"fields":{"quorumnet_port":True}}).json()['result']['master_node_states'])
+        all_master_nodes_proofed = lambda mn: all(
+            x["quorumnet_port"] > 0
+            for x in mn.json_rpc(
+                "get_n_master_nodes", {"fields": {"quorumnet_port": True}}
+            ).json()["result"]["master_node_states"]
+        )
 
         vprint("Waiting for proofs to propagate: ", end="", flush=True)
         for mn in self.mns:
             wait_for(lambda: all_master_nodes_proofed(mn), timeout=120)
             vprint(".", end="", flush=True, timestamp=False)
         vprint(timestamp=False)
-        for mn in self.mns[-1:]:
-            self.mike.register_mn(mn)
-            vprint(".", end="", flush=True, timestamp=False)
-        self.sync_nodes(self.mine(1))
         time.sleep(10)
         for mn in self.mns:
             ping_and_proof(mn)
         vprint("Done.")
 
         vprint("Local Devnet MN network setup complete!")
-        vprint("Communicate with daemon on ip: {} port: {}".format(self.mns[0].listen_ip,self.mns[0].rpc_port))
-        configfile=self.datadir+'config.py'
-        with open(configfile, 'w') as filetowrite:
-            filetowrite.write('#!/usr/bin/python3\n# -*- coding: utf-8 -*-\nlisten_ip=\"{}\"\nlisten_port=\"{}\"\nwallet_listen_ip=\"{}\"\nwallet_listen_port=\"{}\"\nwallet_address=\"{}\"\nexternal_address=\"{}\"'.format(self.mns[0].listen_ip,self.mns[0].rpc_port,self.mike.listen_ip,self.mike.rpc_port,self.mike.address(),self.bob.address()))
-
-
-
+        vprint(
+            "Communicate with daemon on ip: {} port: {}".format(
+                self.mns[0].listen_ip, self.mns[0].rpc_port
+            )
+        )
+        configfile = self.datadir + "config.py"
+        with open(configfile, "w") as filetowrite:
+            filetowrite.write(
+                '#!/usr/bin/python3\n# -*- coding: utf-8 -*-\nlisten_ip="{}"\nlisten_port="{}"\nwallet_listen_ip="{}"\nwallet_listen_port="{}"\nwallet_address="{}"\nexternal_address="{}"'.format(
+                    self.mns[0].listen_ip,
+                    self.mns[0].rpc_port,
+                    self.mike.listen_ip,
+                    self.mike.rpc_port,
+                    self.mike.address(),
+                    self.bob.address(),
+                )
+            )
 
     def refresh_wallets(self, *, extra=[]):
         vprint("Refreshing wallets")
         for w in self.wallets + extra:
             w.refresh()
         vprint("All wallets refreshed")
-
 
     def mine(self, blocks=None, wallet=None, *, sync=False):
         """Mine some blocks to the given wallet (or self.mike if None) on the wallet's daemon.
@@ -227,7 +253,6 @@ class MNNetwork:
 
         return height
 
-
     def sync_nodes(self, height=None, *, extra=[], timeout=10):
         """Waits for all nodes to reach the given height, typically invoked after mine()"""
         nodes = self.all_nodes + extra
@@ -249,20 +274,22 @@ class MNNetwork:
                 last = None
                 continue
             if heights[-1] != last:
-                vprint("waiting for {} [{} -> {}]".format(nodes[-1].name, heights[-1], height))
+                vprint(
+                    "waiting for {} [{} -> {}]".format(
+                        nodes[-1].name, heights[-1], height
+                    )
+                )
                 last = heights[-1]
             time.sleep(0.1)
         if nodes:
             raise RuntimeError("Timed out waiting for node syncing")
         vprint("All nodes synced to height {}".format(height))
 
-
     def sync(self, extra_nodes=[], extra_wallets=[]):
         """Synchronizes everything: waits for all nodes to sync, then refreshes all wallets.  Can be
         given external wallets/nodes to sync."""
         self.sync_nodes(extra=extra_nodes)
         self.refresh_wallets(extra=extra_wallets)
-
 
     def print_wallet_balances(self):
         """Instructs the wallets to refresh and prints their balances (does nothing in non-verbose mode)"""
@@ -272,9 +299,11 @@ class MNNetwork:
         vprint("Balances:")
         for w in self.wallets:
             b = w.balances(refresh=True)
-            vprint("    {:5s}: {:.9f} (total) with {:.9f} (unlocked)".format(
-                w.name, b[0] * 1e-9, b[1] * 1e-9))
-
+            vprint(
+                "    {:5s}: {:.9f} (total) with {:.9f} (unlocked)".format(
+                    w.name, b[0] * 1e-9, b[1] * 1e-9
+                )
+            )
 
     def __del__(self):
         for n in self.all_nodes:
@@ -282,15 +311,17 @@ class MNNetwork:
         for w in self.wallets:
             w.terminate()
 
+
 mnn = None
+
 
 def run():
     global mnn, verbose
     if not mnn:
-        if path.isdir(datadirectory+'/'):
-            shutil.rmtree(datadirectory+'/', ignore_errors=False, onerror=None)
+        if path.isdir(datadirectory + "/"):
+            shutil.rmtree(datadirectory + "/", ignore_errors=False, onerror=None)
         vprint("new MNN")
-        mnn = MNNetwork(datadir=datadirectory+'/')
+        mnn = MNNetwork(datadir=datadirectory + "/")
     else:
         vprint("reusing MNN")
         mnn.alice.new_wallet()
@@ -298,7 +329,7 @@ def run():
 
         # Flush pools because some tests leave behind impossible txes
         for n in mnn.all_nodes:
-            assert n.json_rpc("flush_txpool").json()['result']['status'] == 'OK'
+            assert n.json_rpc("flush_txpool").json()["result"]["status"] == "OK"
 
         # Mine a few to clear out anything in the mempool that can be cleared
         mnn.mine(5, sync=True)
@@ -311,7 +342,7 @@ def run():
     try:
         loop.run_forever()
     except KeyboardInterrupt:
-        print(f'!!! AsyncApplication.run: got KeyboardInterrupt during start')
+        print(f"!!! AsyncApplication.run: got KeyboardInterrupt during start")
     finally:
         loop.close()
 
@@ -320,11 +351,14 @@ def run():
 def alice(net):
     return net.alice
 
+
 def bob(net):
     return net.bob
+
 
 def mike(net):
     return net.mike
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     run()

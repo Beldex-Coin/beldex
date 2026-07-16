@@ -8396,7 +8396,7 @@ wallet2::register_master_node_result wallet2::create_register_master_node_tx(con
       }
     }
 
-    staking_requirement = master_nodes::get_staking_requirement(bc_height);
+    staking_requirement = master_nodes::get_staking_requirement(nettype(), bc_height);
     std::vector<std::string> const args(local_args.begin(), local_args.begin() + local_args.size() - 3);
     contributor_args = master_nodes::convert_registration_args(nettype(), args, staking_requirement, *hf_version);
 

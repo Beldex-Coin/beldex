@@ -729,7 +729,7 @@ namespace master_nodes
             key_image_blacklist.emplace_back();
             key_image_blacklist_entry &entry = key_image_blacklist.back();
             entry.key_image                  = contribution.key_image;
-            entry.unlock_height              = block_height + cryptonote::BRIDGE_BOND_UNLOCK_BLOCKS;
+            entry.unlock_height              = block_height + cryptonote::bridge_bond_unlock_blocks(nettype);
             entry.amount                     = contribution.amount;
           }
         }
@@ -956,7 +956,7 @@ namespace master_nodes
 
     // check the initial contribution exists
 
-    uint64_t staking_requirement = get_staking_requirement(block_height);
+    uint64_t staking_requirement = get_staking_requirement(nettype, block_height);
     cryptonote::account_public_address address;
 
     staking_components stake = {};
@@ -2023,7 +2023,7 @@ namespace master_nodes
           // unset in between (the signer queries the epoch-start height). This
           // case fills quorum->validators itself and `continue`s (the generic
           // index-fill tail below assumes selection over active_mnode_list).
-          if (state.height % cryptonote::BRIDGE_EPOCH_BLOCKS != 0)
+          if (state.height % cryptonote::bridge_epoch_blocks(nettype) != 0)
             continue; // not an epoch boundary: leave bridge quorum unset (nullptr)
 
           // Candidate seats: active MNs that opted into the bridge set, are
@@ -2049,7 +2049,7 @@ namespace master_nodes
           // activation floor the committee stays empty → the bridge is dormant
           // (fail-safe: no committee can be selected, so no signing occurs).
           state.quorums.bridge = quorum;
-          if (distinct_ops.size() < cryptonote::BRIDGE_ACTIVATION_FLOOR)
+          if (distinct_ops.size() < cryptonote::bridge_activation_floor(nettype))
             continue;
 
           // Deterministic, seed-based shuffle (unpredictable until the boundary
@@ -2059,10 +2059,10 @@ namespace master_nodes
           tools::shuffle_portable(seats.begin(), seats.end(), rng);
 
           std::vector<cryptonote::account_public_address> used_ops;
-          quorum->validators.reserve(cryptonote::BRIDGE_COMMITTEE_SIZE);
+          quorum->validators.reserve(cryptonote::bridge_committee_size(nettype));
           for (const auto &s : seats)
           {
-            if (quorum->validators.size() >= cryptonote::BRIDGE_COMMITTEE_SIZE)
+            if (quorum->validators.size() >= cryptonote::bridge_committee_size(nettype))
               break;
             const auto &op = s.second->operator_address;
             if (std::find(used_ops.begin(), used_ops.end(), op) != used_ops.end())
@@ -2219,7 +2219,7 @@ namespace master_nodes
     return crypto::cn_fast_hash(buf.data(), buf.size());
   }
 
-  bool master_node_list::state_t::process_bridge_unbond_tx(cryptonote::network_type /*nettype*/,
+  bool master_node_list::state_t::process_bridge_unbond_tx(cryptonote::network_type nettype,
                                                            const cryptonote::block &block,
                                                            const cryptonote::transaction &tx)
   {
@@ -2266,7 +2266,7 @@ namespace master_nodes
     // remains accountable for any current-epoch duty it is still performing.
     auto &info = duplicate_info(iter->second);
     info.bridge_seat.requested_unbond_height = block_height;
-    info.bridge_seat.bond_unlock_height      = block_height + cryptonote::BRIDGE_BOND_UNLOCK_BLOCKS;
+    info.bridge_seat.bond_unlock_height      = block_height + cryptonote::bridge_bond_unlock_blocks(nettype);
     info.bridge_seat.seated                  = false;
     return true;
   }

@@ -11,6 +11,39 @@
 
 ---
 
+## Implementation status (updated 2026-07-14)
+
+The **L1 consensus / hard-fork surface (Phases A–B) is complete and unit-tested**; the
+off-chain Rust signer, the EVM contract, slashing intake, and ops remain. Legend:
+✅ done · ◐ partial · ☐ not started.
+
+| Phase | § | Scope | Status |
+|---|---|---|---|
+| **A** — Governance-ready gateway | §5 | freeze/unfreeze, re-point, HF-enforced release cap, `bridge_get_reserves` + `gateway_get_history` RPCs, deposit-routing memo | ✅ committed + unit-tested |
+| **B** — Bonded bridge set & `bridge` quorum | §6 | bond registration op + txtype, seat/FIFO-queue/cap/activation-floor, committee selection, historical quorum persistence, `bridge_get_committee`/`bridge_get_seats` RPCs, voluntary unbond op, bond key-image spend enforcement | ✅ code-complete + unit-tested |
+| **G** — Governance circuit breakers | §11 | native freeze/re-point + L1 release cap (via A) done; EVM admin timelock (→H) and §7-bis bond-before-caps guard outstanding | ◐ partial |
+| **C** — Dual-scheme TSS engine | §7 | Rust signer: cggmp21 (`Pevm`) + frost-ed25519 (`Pgw`), DKG/presign/sign, session engine over OxenMQ | ☐ |
+| **D** — Share custody | §8 | Vault/HSM/enclave `ShareStore`, presignature/nonce hygiene, no cold-hosted seats | ☐ |
+| **E** — Watchers | §9 | per-member Beldex + EVM watchers, chain registry, independent agreement | ☐ |
+| **F** — Accountability & slashing | §10 | identifiable-abort detection (Rust) → `bridge.slash_report` → `state_change` deregister + 100k bond forfeit (L1) | ☐ |
+| **H** — wBDX contract | §12 | signer-gated ERC-20, domain-separated mint, fixed-window caps, UUPS + timelock (Solidity/Foundry) | ☐ |
+| **I** — Keyless relayer | §13 | Rust courier + submit-your-own CLI | ☐ |
+| **J** — Proactive rotation | §13 | dual epochal refresh, restore vs. reshare | ☐ |
+| **K** — Recovery runbooks | §13 | `bridge/RUNBOOKS.md`, per-leg full-compromise drills | ☐ |
+| **L** — Testing, canary, audits | §13 | integration devnet, adversarial drills, independent audits, staged canary | ☐ |
+
+**Phase-B standing follow-ups (tracked, not blocking):** uptime-proof heartbeat (B.8, deliberately
+deferred — modifies a gossiped wire format); wallet-side bridge-registration tx builder; on-chain
+integration tests (need a staking + spend + checkpoint-quorum core-test harness); bridge-fault bond
+*forfeiture* (belongs to Phase F — deregistration currently *locks* the bond, does not burn it).
+
+**Build/toolchain note:** verifying A/B on the macOS 14.5 SDK required several pre-existing,
+bridge-unrelated fixes (`proof_info` out-of-line dtor, `wallet_tools` json `o_indices`, `epee/stats.inl`,
+`block_queue` connection-id, a missing RPC visitor overload) plus an isolated `bridge_unit_tests`
+target. Keep those in a separate `build:` commit, not the bridge history.
+
+---
+
 ## v1.3 changelog — gateway feature delivered & verified (this tree)
 
 The gateway dependency is no longer assumed — it was **verified against branch `GW-implementation`** (commits `bfe69a297` deposit+register, `362d522e4` gateway withdraw, `f5ba1ebcc` gw→gw, all now merged in the local checkout). What is verified present:

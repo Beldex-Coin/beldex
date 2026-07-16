@@ -14,8 +14,14 @@ using cryptonote::hf;
 namespace master_nodes {
 
 // TODO(beldex): Move to beldex_economy, this will also need access to beldex::exp2
-uint64_t get_staking_requirement(uint64_t height)
+uint64_t get_staking_requirement(cryptonote::network_type nettype, uint64_t height)
 {
+  // Local devnet mirrors the current mainnet requirement (10,000 BDX) from
+  // height 0, skipping the historical pre-56500 schedule so a multi-MN
+  // network can be brought up quickly (utils/local-devnet, funded by the
+  // height-1 premine). Mainnet/testnet/fakechain are unchanged.
+  if (nettype == cryptonote::network_type::DEVNET)
+    return 10000 * beldex::COIN;
   uint64_t result = 100000 * beldex::COIN;
   if(height >= beldex::MODIFIED_STAKING_REQUIREMENT_HEIGHT) result = 10000 * beldex::COIN;
   return result;

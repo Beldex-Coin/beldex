@@ -775,7 +775,19 @@ set(Boost_USE_MULTITHREADED TRUE) # Needed for macOS, at least, and won't hurt e
 if(BUILD_STATIC_DEPS)
   # StaticBuild.cmake sets Boost targets up for us
 else()
-  find_package(Boost 1.62 QUIET REQUIRED COMPONENTS system thread serialization program_options)
+  if(POLICY CMP0167)
+    # Use Boost's own CMake config; needed for Boost >= 1.89 where the
+    # header-only libboost_system stub no longer exists as a library file.
+    cmake_policy(SET CMP0167 NEW)
+  endif()
+  find_package(Boost 1.62 QUIET REQUIRED COMPONENTS thread serialization program_options)
+  if(NOT TARGET Boost::system)
+    # Boost.System is header-only since 1.69 and removed as a component in
+    # newer Boost; provide a stub so existing Boost::system links still work.
+    add_library(Boost::system INTERFACE IMPORTED)
+    set_target_properties(Boost::system PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${Boost_INCLUDE_DIRS}")
+  endif()
 endif()
 
 set(CMAKE_FIND_LIBRARY_SUFFIXES ${OLD_LIB_SUFFIXES})

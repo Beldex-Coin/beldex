@@ -342,6 +342,38 @@ enum network_type : uint8_t
   UNDEFINED = 255
 };
 
+// ---- Sovereign Bridge Phase B: per-network parameter accessors -------------
+// Local devnet/fakechain committees are tiny (the plan's Phase C definition of
+// done is a 4-of-6 devnet committee), so the committee shape, epoch length and
+// bond-unlock period scale down there. BRIDGE_BOND and BRIDGE_SEAT_CAP are
+// deliberately NOT scaled: the height-1 premine makes the 100k bond affordable
+// on devnet, so devnet exercises the real bond rule. Mainnet/testnet use the
+// governance-approved constants above.
+constexpr bool is_local_bridge_net(network_type n)
+{
+  return n == network_type::DEVNET || n == network_type::FAKECHAIN;
+}
+constexpr uint64_t bridge_activation_floor(network_type n)
+{
+  return is_local_bridge_net(n) ? 6 : BRIDGE_ACTIVATION_FLOOR;
+}
+constexpr uint64_t bridge_committee_size(network_type n) // n
+{
+  return is_local_bridge_net(n) ? 6 : BRIDGE_COMMITTEE_SIZE;
+}
+constexpr uint64_t bridge_committee_threshold(network_type n) // t+1
+{
+  return is_local_bridge_net(n) ? 4 : BRIDGE_COMMITTEE_THRESHOLD;
+}
+constexpr uint64_t bridge_epoch_blocks(network_type n)
+{
+  return is_local_bridge_net(n) ? 120 : BRIDGE_EPOCH_BLOCKS;
+}
+constexpr uint64_t bridge_bond_unlock_blocks(network_type n)
+{
+  return is_local_bridge_net(n) ? 360 : BRIDGE_BOND_UNLOCK_BLOCKS;
+}
+
 // Constants for older hard-forks that are mostly irrelevant now, but are still needed to sync the
 // older parts of the blockchain:
 namespace old {
