@@ -1249,9 +1249,15 @@ namespace cryptonote
     /**
      * @brief removes the most recent block from the blockchain
      *
+     * @param rewind_gateway_state undo the block's gateway state changes
+     * (HF22). Pass false only when aborting a block add that failed BEFORE
+     * append_gateways_from_transactions succeeded: gateway state was never
+     * applied, and "rewinding" it would credit withdrawals that were never
+     * debited (minting coins) or throw on unappendable descriptor ops.
+     *
      * @return the block removed
      */
-    block pop_block_from_blockchain();
+    block pop_block_from_blockchain(bool rewind_gateway_state = true);
 
     /**
      * @brief validate and add a new block to the end of the blockchain
