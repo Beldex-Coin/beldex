@@ -55,7 +55,7 @@ class MNNetwork:
 
         vprint("Using '{}' for data files and logs".format(datadir))
 
-        nodeopts = dict(master=self.binpath+'/master', datadir=datadir)
+        nodeopts = dict(beldexd=self.binpath+'/beldexd', datadir=datadir)
 
         self.mns = [Daemon(master_node=True, **nodeopts) for _ in range(mns)]
         self.nodes = [Daemon(**nodeopts) for _ in range(nodes)]
@@ -107,6 +107,10 @@ class MNNetwork:
         for w in self.wallets:
             w.wait_for_json_rpc("refresh")
 
+        def ping_and_proof(mn):
+            mn.ping()
+            mn.send_uptime_proof()
+
         # Mine some blocks; we need 100 per MN registration, and we can nearly 600 on fakenet before
         # it hits HF16 and kills mining rewards.  This lets us submit the first 5 MN registrations a
         # MN (at height 40, which is the earliest we can submit them without getting an occasional
@@ -120,6 +124,12 @@ class MNNetwork:
         vprint("Submitting first round of master node registrations: ", end="", flush=True)
         for mn in self.mns[0:5]:
             self.mike.register_mn(mn)
+            # Each registration stakes the full requirement from one large premine output, so its
+            # change comes back locked. Mine enough to confirm the stake and unlock the change
+            # (DEFAULT_TX_SPENDABLE_AGE=10) before funding the next registration.
+            self.mine(11)
+            ping_and_proof(mn)
+            self.mike.refresh()
             vprint(".", end="", flush=True, timestamp=False)
         vprint(timestamp=False)
         if len(self.mns) > 5:
@@ -132,6 +142,10 @@ class MNNetwork:
             vprint("Submitting more master node registrations: ", end="", flush=True)
             for mn in self.mns[5:-1]:
                 self.mike.register_mn(mn)
+                # Confirm the stake and unlock its change before the next registration (see above).
+                self.mine(11)
+                ping_and_proof(mn)
+                self.mike.refresh()
                 vprint(".", end="", flush=True, timestamp=False)
             vprint(timestamp=False)
             vprint("Done.")
@@ -147,6 +161,12 @@ class MNNetwork:
         for mn in self.mns:
             mn.ping()
 
+        # Force a fresh uptime proof from each MN so it carries the versions we just pinged.
+        # Otherwise the daemon keeps gossiping its pre-ping proof (default 0.0.0 versions), which
+        # the network rejects at hf20+ (MIN_UPTIME_PROOF_VERSIONS), and the wait below times out.
+        for mn in self.mns:
+            mn.send_uptime_proof()
+
         all_master_nodes_proofed = lambda mn: all(x['quorumnet_port'] > 0 for x in
                 mn.json_rpc("get_n_master_nodes", {"fields":{"quorumnet_port":True}}).json()['result']['master_node_states'])
 
@@ -161,7 +181,7 @@ class MNNetwork:
         self.sync_nodes(self.mine(1))
         time.sleep(10)
         for mn in self.mns:
-            mn.send_uptime_proof()
+            ping_and_proof(mn)
         vprint("Done.")
 
         vprint("Local Devnet MN network setup complete!")
