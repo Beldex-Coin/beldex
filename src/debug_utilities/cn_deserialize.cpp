@@ -100,6 +100,27 @@ struct extra_printer {
     }
     std::cout << " for block height " << x.block_height << ", MN index " << x.master_node_index;
   }
+  void operator()(const tx_extra_gateway_descriptor_operation& x) {
+    std::cout << "Gateway descriptor op ("
+              << (x.op_type == cryptonote::gateway_descriptor_op_type::register_address ? "register" : "update")
+              << "): " << x.address_id;
+  }
+  void operator()(const tx_extra_gateway_freeze& x) {
+    std::cout << "Gateway " << (x.freeze ? "freeze" : "unfreeze") << " (seq " << x.governance_seq
+              << ", " << x.evidence.size() << " attestations)";
+  }
+  void operator()(const tx_extra_gateway_repoint& x) {
+    std::cout << "Gateway repoint (seq " << x.governance_seq << ", " << x.evidence.size() << " attestations)";
+  }
+  void operator()(const tx_extra_gateway_deposit_memo& x) {
+    std::cout << "Gateway deposit memo (" << x.enc_memo.size() << " bytes) for " << x.gateway_id;
+  }
+  void operator()(const tx_extra_bridge_registration& x) {
+    std::cout << "Bridge registration: MN " << x.master_node_pubkey;
+  }
+  void operator()(const tx_extra_bridge_unbond& x) {
+    std::cout << "Bridge unbond: MN " << x.master_node_pubkey;
+  }
   template <typename T> void operator()(const T&) { std::cout << "unknown"; }
 };
 

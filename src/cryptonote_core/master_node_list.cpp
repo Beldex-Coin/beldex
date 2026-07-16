@@ -289,6 +289,34 @@ namespace master_nodes
           }
         }
       }
+
+      // HF23: the bridge bond is separate, additional collateral (its own locked
+      // contributions / key images). It stays locked as long as the seat is
+      // registered; the voluntary-unbond finalize clears bridge_seat once the
+      // unbonding period elapses, at which point these images leave this set and
+      // become spendable. bond_unlock_height is 0 until an unbond is requested,
+      // then the height at which the bond is released.
+      if (info.bridge_seat.registered)
+      {
+        for (const master_node_info::contribution_t &contribution : info.bridge_seat.bond_contributions)
+        {
+          if (check_image == contribution.key_image)
+          {
+            if (the_locked_contribution) *the_locked_contribution = contribution;
+            // Report a NON-zero unlock height (never KEY_IMAGE_AWAITING_UNLOCK_HEIGHT == 0)
+            // so the base key_image_unlock path cleanly rejects any attempt to
+            // release a bond via that mechanism: the bond is releasable only via
+            // the bridge unbond op (which clears bridge_seat after the period).
+            // While unbonding, report the scheduled release height; otherwise
+            // report "indefinite".
+            if (unlock_height)
+              *unlock_height = (info.bridge_seat.requested_unbond_height != 0)
+                                   ? info.bridge_seat.bond_unlock_height
+                                   : std::numeric_limits<uint64_t>::max();
+            return true;
+          }
+        }
+      }
     }
     return false;
   }
@@ -686,6 +714,23 @@ namespace master_nodes
               entry.unlock_height              = block_height + staking_num_lock_blocks(nettype,hf_version);
               entry.amount                     = contribution.amount;
             }
+          }
+        }
+
+        // HF23: a deregistered operator's bridge bond is also blacklisted so it
+        // cannot be instantly reclaimed by deregistering (which would bypass the
+        // bond lockup). It stays locked for at least the bond unbonding period.
+        // (Bridge-fault *forfeiture* of the bond is Phase F; this only prevents
+        // early reclaim on a base-stake deregistration.)
+        if (hf_version >= hf::hf23_bridge && info.bridge_seat.registered)
+        {
+          for (const auto &contribution : info.bridge_seat.bond_contributions)
+          {
+            key_image_blacklist.emplace_back();
+            key_image_blacklist_entry &entry = key_image_blacklist.back();
+            entry.key_image                  = contribution.key_image;
+            entry.unlock_height              = block_height + cryptonote::BRIDGE_BOND_UNLOCK_BLOCKS;
+            entry.amount                     = contribution.amount;
           }
         }
 
