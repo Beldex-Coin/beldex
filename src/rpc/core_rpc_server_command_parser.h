@@ -44,6 +44,7 @@ namespace cryptonote::rpc {
   void parse_request(BNS_LOOKUP& lookup, rpc_input in);
   void parse_request(BNS_VALUE_DECRYPT& value_decrypt, rpc_input in);
   void parse_request(GET_GATEWAY_INFO& get_gateway_info, rpc_input in);
+  void parse_request(GET_GATEWAY_HISTORY& get_gateway_history, rpc_input in);
   void parse_request(GET_ALL_GATEWAYS& get_all_gateways, rpc_input in);
   void parse_request(GATEWAY_CREATE_TRANSFER& c, rpc_input in);
   void parse_request(GATEWAY_SUBMIT_TRANSFER& c, rpc_input in);

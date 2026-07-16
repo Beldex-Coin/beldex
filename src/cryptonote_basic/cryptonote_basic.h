@@ -559,7 +559,7 @@ namespace cryptonote
           // an update_gateway_address tx (one ownership proof). The vector is
           // length-prefixed, so a mixed [balance_proof, input_sig] payload
           // round-trips without a separate count. Prunable region, like RCT above.
-          if (has_gateway_inputs() || type == txtype::update_gateway_address)
+          if (!pruned && (has_gateway_inputs() || type == txtype::update_gateway_address))
           {
             ar.tag("gateway_proofs");
             serialization::value(ar, gateway_proofs);
