@@ -65,13 +65,18 @@ class MNNetwork:
         self.datadir = datadir
         if not os.path.exists(self.datadir):
             os.makedirs(self.datadir)
-        self.binpath = binpath
+        self.binpath = binpath or os.environ.get(
+            "BELDEX_BIN", "../../build/Darwin/dkg-tss-implementation/release/bin"
+        )
 
         vprint("Using '{}' for data files and logs".format(datadir))
+        vprint("Using '{}' for binaries".format(self.binpath))
 
         nodeopts = dict(beldexd=self.binpath + "/beldexd", datadir=datadir)
 
-        self.mns = [Daemon(master_node=True, **nodeopts) for _ in range(mns)]
+        # Pin the first MN's RPC port so bridge/signer/.env can point at it.
+        self.mns = [Daemon(master_node=True, rpc_port=19191, **nodeopts)]
+        self.mns += [Daemon(master_node=True, **nodeopts) for _ in range(mns - 1)]
         self.nodes = [Daemon(**nodeopts) for _ in range(nodes)]
 
         self.all_nodes = self.mns + self.nodes
@@ -264,7 +269,10 @@ class MNNetwork:
                     committee["active"],
                 )
             )
-            if not committee["active"] or len(committee["members"]) < committee["threshold"]:
+            if (
+                not committee["active"]
+                or len(committee["members"]) < committee["threshold"]
+            ):
                 raise RuntimeError(
                     "Bridge committee did not form: {}".format(committee)
                 )
