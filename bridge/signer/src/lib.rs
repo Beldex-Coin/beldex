@@ -57,6 +57,11 @@ pub mod transport;
 #[cfg(feature = "tss-integration")]
 pub mod ffi;
 
+/// OMQ client that calls `beldexd`'s `bridge.committee` endpoint (Phase B.9).
+/// Only built under the `omq-client` feature (needs the `zmq` crate / libzmq).
+#[cfg(feature = "omq-client")]
+pub mod omq_client;
+
 /// FROST (`Pgw`) end-to-end conformance: a trusted-dealer keygen + 2-round sign
 /// + aggregate, whose result is verified through [`ffi`] (libsodium) — proving
 /// the signer's aggregate is accepted by the *consensus* verifier. Test-only.

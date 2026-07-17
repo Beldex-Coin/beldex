@@ -50,6 +50,11 @@ tss-integration = ["dep:k256", "dep:sha3", "dep:frost-ed25519", "dep:libsodium-s
 # cggmp21/generic-ec API surface does not block the (a)/(b) round-trips.
 cggmp21-interop = ["tss-integration", "dep:cggmp21", "dep:generic-ec"]
 
+# Phase B.9 committee read: the OMQ client that calls beldexd's bridge.committee.
+# Needs libzmq at build/link time (the `zmq` crate). The JSON reply parser lives
+# in `committee` and is std-only / tested by default; only the transport is gated.
+omq-client = ["dep:zmq"]
+
 [dependencies]
 # All optional; pulled in only by the features above (verified 2026-07).
 k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"], optional = true }
@@ -58,6 +63,7 @@ frost-ed25519        = { version = "2", optional = true }
 libsodium-sys-stable = { version = "1", optional = true }
 cggmp21              = { version = "=0.6.3", features = ["curve-secp256k1", "spof"], optional = true }
 generic-ec           = { version = "0.4", features = ["curve-secp256k1"], optional = true }
+zmq                  = { version = "0.10", optional = true }
 
 [dev-dependencies]
 rand         = "0.8"
