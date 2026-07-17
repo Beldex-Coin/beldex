@@ -29,6 +29,7 @@
 #include "node_rpc_proxy.h"
 #include "rpc/core_rpc_server_commands_defs.h"
 #include <chrono>
+#include <limits>
 #include <cpr/cpr.h>
 
 namespace rpc = cryptonote::rpc;
@@ -173,7 +174,13 @@ bool NodeRPCProxy::get_earliest_height(uint8_t version, uint64_t &earliest_heigh
     };
     try {
       auto res = m_http_client.json_rpc("hard_fork_info", req_params);
-      m_earliest_height[version] = res.at("earliest_height").get<uint64_t>();
+      if (res.contains("earliest_height"))
+        m_earliest_height[version] = res.at("earliest_height").get<uint64_t>();
+      else
+        // The fork is not scheduled on this network at all: treat it as
+        // infinitely far away (rules permanently off) rather than failing the
+        // request — a missing schedule is not a connection error.
+        m_earliest_height[version] = std::numeric_limits<uint64_t>::max();
     } catch (const std::exception& e) {
       // log::error(logcat, "Failed to get earliest height: {}", e.what()); //TODO
       return false;

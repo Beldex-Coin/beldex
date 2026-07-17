@@ -1,0 +1,65 @@
+[package]
+name = "beldex-bridge-signer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Beldex Sovereign Bridge threshold signer (Phase C) — dual-scheme (CGGMP21/secp256k1 + FROST/ed25519) over one masternode committee"
+repository = "https://github.com/Beldex-Coin/beldex"
+
+[lib]
+name = "beldex_bridge_signer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "beldex-bridge-signer"
+path = "src/main.rs"
+
+# The scaffold is intentionally std-only so it builds and `cargo test`s with no
+# network access and no external crates. The audited TSS crates are added once
+# the C.1 residual gate in DUE_DILIGENCE.md is closed. Pins verified 2026-07:
+#
+#   [dependencies]
+#   cggmp21       = { version = "=0.6.3", features = ["curve-secp256k1"] }  # Pevm: secp256k1 CGGMP21 (Kudelski-audited line)
+#   frost-ed25519 = "2"                                                      # Pgw:  ed25519 FROST (ZcashFoundation, RFC-9591; NCC-audited core)
+#   # transport: thin binding over the C++ liboxenmq (no mature pure-Rust binding — see §2.3 of the plan)
+#
+#   [dev-dependencies]
+#   k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"] }  # C.1(a) ecrecover round-trip
+#   sha3                 = "0.10"                                                    # keccak256 test digest
+#   libsodium-sys-stable = "1"                                                       # C.1(b) crypto_sign_verify_detached (consensus rule)
+#
+# NOTE (C.1 finding, DUE_DILIGENCE.md): cggmp21 0.6.3 does NOT provide identifiable
+# abort or threshold-key refresh. This affects S2 / Phase F.1 (EVM-leg attribution)
+# and Phase J.1 (Pevm refresh = fresh threshold DKG). Resolve before C.2/C.3a.
+#
+[features]
+# Default build stays std-only (no external crates, no network) so the scaffold
+# tests run everywhere. The C.1 gate round-trips pull in the audited crates and
+# are opt-in:
+#
+#   cargo test -p beldex-bridge-signer                          # std-only scaffold (default)
+#   cargo test -p beldex-bridge-signer --features tss-integration   # (a) k256 ecrecover + (b) libsodium/FROST
+#   cargo test -p beldex-bridge-signer --features cggmp21-interop   # + cggmp21 key ↔ ecrecover interop
+default = []
+
+# (a) ecrecover round-trip + (b) libsodium consensus-verifier alignment / FROST.
+tss-integration = ["dep:k256", "dep:sha3", "dep:frost-ed25519", "dep:libsodium-sys-stable"]
+
+# cggmp21 key-material ↔ ecrecover interop (heavier dep tree). Implies the above
+# (needs k256/sha3). Kept a separate feature so a build/iteration issue in the
+# cggmp21/generic-ec API surface does not block the (a)/(b) round-trips.
+cggmp21-interop = ["tss-integration", "dep:cggmp21", "dep:generic-ec"]
+
+[dependencies]
+# All optional; pulled in only by the features above (verified 2026-07).
+k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"], optional = true }
+sha3                 = { version = "0.10", optional = true }
+frost-ed25519        = { version = "2", optional = true }
+libsodium-sys-stable = { version = "1", optional = true }
+cggmp21              = { version = "=0.6.3", features = ["curve-secp256k1", "spof"], optional = true }
+generic-ec           = { version = "0.4", features = ["curve-secp256k1"], optional = true }
+
+[dev-dependencies]
+rand         = "0.8"
+rand_core    = "0.6"
+hex          = "0.4"

@@ -2083,6 +2083,12 @@ namespace cryptonote::rpc {
       hfinfo.response["version"] = version;
       hfinfo.response["enabled"] = blockchain.get_network_version() >= version;
     auto heights = get_hard_fork_heights(m_core.get_nettype(), version);
+    if (!heights.first)
+      // `version` is skipped over in this network's hard-fork table (e.g. the
+      // devnet table jumps hf7 -> hf17): its rules take effect at the first
+      // scheduled fork >= version. Without this, wallets querying a skipped
+      // version get no earliest_height and misreport "No connection to daemon".
+      heights.first = hard_fork_begins(m_core.get_nettype(), version);
     if (heights.first)
       hfinfo.response["earliest_height"] = *heights.first;
     if (heights.second)
