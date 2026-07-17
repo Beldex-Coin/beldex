@@ -72,6 +72,10 @@ public:
 private:
   void on_get_blocks(oxenmq::Message& m);
 
+  // Sovereign Bridge Phase B.9: epoch-scoped committee + this node's self_index,
+  // consumed by the seated masternode's off-chain threshold signer.
+  void on_bridge_committee(oxenmq::Message& m);
+
   void on_mempool_sub_request(oxenmq::Message& m);
 
   void on_block_sub_request(oxenmq::Message& m);

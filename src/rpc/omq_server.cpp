@@ -2,9 +2,12 @@
 #include "omq_server.h"
 #include "rpc/common/param_parser.hpp"
 #include "cryptonote_config.h"
+#include "common/hex.h"
+#include "cryptonote_core/master_node_list.h"
 #include "oxenmq/oxenmq.h"
 #include "oxenc/bt.h"
 #include <fmt/core.h>
+#include <nlohmann/json.hpp>
 
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "daemon.rpc"
@@ -292,6 +295,17 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
     on_block_sub_request(m);
   });
 
+  // Sovereign Bridge (Phase B.9): the seated masternode's off-chain threshold
+  // signer reads its committee view from its own beldexd rather than recomputing
+  // consensus. `bridge.committee` returns the epoch-scoped committee plus this
+  // node's own index within it (self_index), which the generic
+  // rpc.bridge_get_committee cannot provide (it is node-relative). Basic auth:
+  // the data is on-chain, and the signer connects over the local OMQ socket.
+  omq.add_category("bridge", AuthLevel::basic);
+  omq.add_request_command("bridge", "committee", [this](oxenmq::Message& m) {
+    on_bridge_committee(m);
+  });
+
   core_.get_blockchain_storage().hook_block_post_add([this] (const auto& info) { send_block_notifications(info.block); return true; });
   core_.get_pool().add_notify([this](const crypto::hash& id, const transaction& tx, const std::string& blob, const tx_pool_options& opts) {
       send_mempool_notifications(id, tx, blob, opts);
@@ -492,6 +506,64 @@ void omq_rpc::on_get_blocks(oxenmq::Message& m)
     status = "TOO BIG";
 
   m.send_reply(status, oxenmq::send_option::data_parts(bt_blocks));
+}
+
+void omq_rpc::on_bridge_committee(oxenmq::Message& m)
+{
+  // Optional single data part: a bare ASCII decimal height to resolve the epoch
+  // for (default: current tip). No data => current committee. This is the shape
+  // the Rust signer consumes to key its session engine (Phase B.9 / C.4).
+  const auto nettype = core_.get_nettype();
+  const uint64_t top = core_.get_current_blockchain_height();
+  uint64_t height = top ? top - 1 : 0;
+  if (!m.data.empty() && !m.data[0].empty())
+  {
+    try
+    {
+      height = std::stoull(std::string{m.data[0]});
+    }
+    catch (const std::exception&)
+    {
+      m.send_reply(OMQ_BAD_REQUEST, "bridge.committee: height must be a decimal integer");
+      return;
+    }
+  }
+
+  const uint64_t epoch_blocks = cryptonote::bridge_epoch_blocks(nettype);
+  const uint64_t epoch = height / epoch_blocks;
+  const uint64_t epoch_start = epoch * epoch_blocks;
+
+  auto q = core_.get_quorum(master_nodes::quorum_type::bridge, epoch_start, true /*include_old*/);
+
+  // self_index: this daemon's own position in the committee (or -1 if it is not
+  // seated this epoch / not running as a master node). The signer uses this to
+  // know which share index it owns without trusting the leader.
+  const auto& keys = core_.get_master_keys();
+  nlohmann::json members = nlohmann::json::array();
+  int self_index = -1;
+  if (q)
+  {
+    int idx = 0;
+    for (const auto& pk : q->validators)
+    {
+      members.push_back(tools::type_to_hex(pk));
+      if (keys.pub && pk == keys.pub)
+        self_index = idx;
+      ++idx;
+    }
+  }
+
+  nlohmann::json resp{
+      {"epoch", epoch},
+      {"height", epoch_start},
+      {"members", std::move(members)},
+      {"self_index", self_index},
+      {"threshold", cryptonote::bridge_committee_threshold(nettype)},
+      {"size", cryptonote::bridge_committee_size(nettype)},
+      {"active", (q && !q->validators.empty())},
+  };
+
+  m.send_reply(OMQ_OK, resp.dump());
 }
 
 void omq_rpc::on_mempool_sub_request(oxenmq::Message& m)
