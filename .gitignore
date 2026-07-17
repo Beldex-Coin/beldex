@@ -119,3 +119,9 @@ contrib/brew/Brewfile.lock.json
 
 *.pyc
 *.log
+
+# Sovereign Bridge internal working / planning docs (kept local, not committed)
+/SOVEREIGN_BRIDGE_IMPLEMENTATION.md
+/SOVEREIGN_BRIDGE_PHASE_A_CHANGES.md
+/SOVEREIGN_BRIDGE_PHASE_B_CHANGES.md
+/bridge/signer/DUE_DILIGENCE.md
