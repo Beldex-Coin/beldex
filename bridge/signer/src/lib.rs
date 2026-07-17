@@ -30,6 +30,10 @@
 //!   * [`pool`]         — **S3** bounded, single-use preprocessed-material pool
 //!                        (CGGMP21 presignature tuples / FROST nonce pairs):
 //!                        consume-and-erase, erase-on-refresh, hard cap `L ≤ 128`.
+//!   * [`session`]      — **C.4** the signing-session state machine (Consensus →
+//!                        Sign → Distribute → Finalize) with a deterministic
+//!                        leader, timeout/retry with fault exclusion, transcript
+//!                        accumulation (S4), and per-leg session ids (S14).
 //!   * [`share_store`]  — the **D.1** share-custody interface (non-exportable
 //!                        use, versioned backups, epoch-consistent erasure).
 //!   * [`transport`]    — the session transport abstraction (real backend: a thin
@@ -49,6 +53,7 @@ pub mod conformance;
 pub mod config;
 pub mod health;
 pub mod pool;
+pub mod session;
 pub mod share_store;
 pub mod transport;
 
