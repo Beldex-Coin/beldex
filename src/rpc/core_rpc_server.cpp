@@ -3765,24 +3765,9 @@ namespace cryptonote::rpc {
           s["gateway_destinations"].push_back({{"gateway_id", tools::type_to_hex(gid)}, {"amount", amt}});
     }
 
-    // TEST-ONLY: if a native Schnorr owner secret is supplied, sign server-side
-    // and return a ready-to-submit signed blob. Real owners omit this and use
-    // the external create→sign→submit flow.
-    if (!req.owner_secret.empty())
-    {
-      const auto* opub = std::get_if<crypto::public_key>(&okey);
-      if (!opub)
-        throw rpc_error{ERROR_WRONG_PARAM, "owner_secret server-side signing is only supported for Schnorr owners"};
-      crypto::secret_key osec;
-      if (!tools::hex_to_type(req.owner_secret, osec))
-        throw rpc_error{ERROR_WRONG_PARAM, "invalid owner_secret (expected 64-char hex)"};
-      crypto::signature sig{};
-      crypto::generate_signature(hash_to_sign, *opub, osec, sig);
-      if (!cryptonote::finalize_gateway_withdraw_tx(m_core.get_nettype(), tx, okey, cryptonote::gateway_owner_sig_v{sig}))
-        throw rpc_error{ERROR_WRONG_PARAM, "owner_secret does not match the gateway owner key"};
-      cmd.response["signed_tx_blob"] = oxenc::to_hex(tx_to_blob(tx));
-    }
-
+    // No server-side signing: the node NEVER handles an owner secret. The owner
+    // (or its external signer) signs `hash_to_sign` off-node and submits the
+    // signed tx via gateway_submit_transfer. See scripts/gateway_sign_withdraw.py.
     cmd.response["status"] = STATUS_OK;
 
     LOG_PRINT_L0("Gateway withdrawal transaction constructed: " << obj_to_json_str(tx));

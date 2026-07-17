@@ -401,7 +401,6 @@ namespace cryptonote::rpc {
         "amounts",      required{c.request.amounts},
         "destinations", required{c.request.destinations},
         "fee",          c.request.fee,
-        "owner_secret", c.request.owner_secret,
         "source",       required{c.request.source});
   }
 
