@@ -55,6 +55,11 @@ cggmp21-interop = ["tss-integration", "dep:cggmp21", "dep:generic-ec"]
 # in `committee` and is std-only / tested by default; only the transport is gated.
 omq-client = ["dep:zmq"]
 
+# C.4 peer-to-peer session mesh: curve-authenticated OMQ transport that carries
+# WireMsgs between signers. The codec + dispatch live in `wire` (std-only, tested
+# by default); only the live socket backend is gated.
+omq-mesh = ["dep:zmq"]
+
 [dependencies]
 # All optional; pulled in only by the features above (verified 2026-07).
 k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"], optional = true }

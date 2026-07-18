@@ -117,6 +117,26 @@ pub enum NackReason {
     WrongEpoch,
 }
 
+impl NackReason {
+    /// Compact wire encoding (see `wire`).
+    pub fn to_u8(self) -> u8 {
+        match self {
+            NackReason::PayloadMismatch => 0,
+            NackReason::EventNotObserved => 1,
+            NackReason::WrongEpoch => 2,
+        }
+    }
+    /// Decode from the wire; `None` for an unknown code.
+    pub fn from_u8(b: u8) -> Option<NackReason> {
+        match b {
+            0 => Some(NackReason::PayloadMismatch),
+            1 => Some(NackReason::EventNotObserved),
+            2 => Some(NackReason::WrongEpoch),
+            _ => None,
+        }
+    }
+}
+
 /// Errors from feeding an event into a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionError {

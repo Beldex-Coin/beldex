@@ -34,6 +34,9 @@
 //!                        Sign → Distribute → Finalize) with a deterministic
 //!                        leader, timeout/retry with fault exclusion, transcript
 //!                        accumulation (S4), and per-leg session ids (S14).
+//!   * [`wire`]         — **C.4** session-message codec + dispatch that carries
+//!                        engine events between signers over a [`transport`], with
+//!                        S14 enforcement and async-mesh-tolerant drop semantics.
 //!   * [`share_store`]  — the **D.1** share-custody interface (non-exportable
 //!                        use, versioned backups, epoch-consistent erasure).
 //!   * [`transport`]    — the session transport abstraction (real backend: a thin
@@ -56,6 +59,7 @@ pub mod pool;
 pub mod session;
 pub mod share_store;
 pub mod transport;
+pub mod wire;
 
 /// libsodium consensus-verifier alignment for `Pgw` (C.1 gate (b)). Only built
 /// under the `tss-integration` feature (needs libsodium at link time).
@@ -66,6 +70,11 @@ pub mod ffi;
 /// Only built under the `omq-client` feature (needs the `zmq` crate / libzmq).
 #[cfg(feature = "omq-client")]
 pub mod omq_client;
+
+/// Direct peer-to-peer curve-authenticated session transport (C.4). Carries
+/// [`wire::WireMsg`]s between signers. Only built under the `omq-mesh` feature.
+#[cfg(feature = "omq-mesh")]
+pub mod omq_mesh;
 
 /// FROST (`Pgw`) end-to-end conformance: a trusted-dealer keygen + 2-round sign
 /// + aggregate, whose result is verified through [`ffi`] (libsodium) — proving
