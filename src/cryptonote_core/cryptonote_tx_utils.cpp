@@ -806,7 +806,7 @@ namespace cryptonote
   // mask_point in gateway_balance_offset, closing the RCT sum check
   // (see gateway_utils.h).
   //
-  // v1 limitations (documented in docs/GATEWAY_ADDRESS_PLAN.md §3.5): main
+  // v1 limitations (documented in bridge/docs/GATEWAY_ADDRESS_PLAN.md §3.5): main
   // addresses only (no subaddresses — they need per-output tx keys) and no
   // encrypted payment ids. Exchanges typically withdraw to plain user addresses,
   // so this covers the dominant flow.

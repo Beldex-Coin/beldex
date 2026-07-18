@@ -1,7 +1,7 @@
 # beldex-bridge-signer
 
 The off-chain **threshold signer** each bridge-seated masternode runs alongside
-`beldexd`, for the Beldex Sovereign Bridge (`SOVEREIGN_BRIDGE_IMPLEMENTATION.md`,
+`beldexd`, for the Beldex Sovereign Bridge (`../docs/IMPLEMENTATION.md`,
 **Phase C**).
 
 It holds a *share* of two committee keys and cooperates with the other seated

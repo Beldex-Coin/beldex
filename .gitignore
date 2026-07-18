@@ -121,7 +121,8 @@ contrib/brew/Brewfile.lock.json
 *.log
 
 # Sovereign Bridge internal working / planning docs (kept local, not committed)
-/SOVEREIGN_BRIDGE_IMPLEMENTATION.md
-/SOVEREIGN_BRIDGE_PHASE_A_CHANGES.md
-/SOVEREIGN_BRIDGE_PHASE_B_CHANGES.md
+/bridge/docs/IMPLEMENTATION.md
+/bridge/docs/PHASE_A_CHANGES.md
+/bridge/docs/PHASE_B_CHANGES.md
 /bridge/signer/DUE_DILIGENCE.md
+/SOVEREIGN_BRIDGE_PRODUCTION_CHECKLIST.md

@@ -129,7 +129,7 @@ namespace crypto {
   // Data-only definitions so the gateway owner-key/signature variants and the
   // wire structs compile. The generate/verify implementations (vendored
   // bitcoin-core/secp256k1 for eth, RFC-8032 EdDSA ported from Zano) are the
-  // crypto-groundwork milestone; see docs/GATEWAY_ADDRESS_PLAN.md §2.
+  // crypto-groundwork milestone; see bridge/docs/GATEWAY_ADDRESS_PLAN.md §2.
 
   // secp256k1 compressed public key (ETH-style custody). NOTE: no alignas here —
   // 33 bytes is not a multiple of size_t, and blob serialization writes sizeof

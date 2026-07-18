@@ -197,7 +197,7 @@ namespace cryptonote
 
   // NOTE: gateway takes variant tag 0x4 in both variants; 0x3 is reserved for
   // the confidential-asset branch (txin_zc_input / tx_out_zarcanum). See
-  // docs/GATEWAY_ADDRESS_PLAN.md §6.
+  // bridge/docs/GATEWAY_ADDRESS_PLAN.md §6.
   using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key, txin_gateway>;
 
   using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key, tx_out_gateway>;
