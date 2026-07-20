@@ -16,26 +16,84 @@
 //! drops the frame, and the session engine's stage timeout drives the retry — so
 //! transient peer flaps never wedge a session.
 //!
-//! **Security note (S4 hardening, follow-up):** curve gives confidentiality +
-//! peer-key pinning on dial, but the `from` index inside a `WireMsg` is currently
-//! self-declared. Binding `from` to the sender's authenticated curve identity
-//! (ZAP allow-list) — or signing each `WireMsg` with the MN key so the transcript
-//! is attributable — is required before mainnet. Documented, not yet enforced.
+//! **Security (S4 hardening — now enforced):** curve gives confidentiality +
+//! peer-key pinning on dial, but the `from` index inside a `WireMsg` is
+//! self-declared, so on its own the mesh cannot stop a connected peer from
+//! stamping another member's index on a message. This transport therefore signs
+//! every outbound frame with this node's bridge-signer ed25519 key and verifies
+//! every inbound frame against the sender's on-chain transport key
+//! (see [`crate::wire_auth`]): a frame whose signature does not authenticate its
+//! `from` is dropped **before** it reaches the session engine, so a forged `from`
+//! cannot enter the transcript. Signing also makes the transcript transferable
+//! evidence for Phase F slashing. Curve auth and per-message signing are
+//! complementary: curve authenticates the *channel*, the signature authenticates
+//! the *content and author*.
+//!
+//! Set a [`MeshAuth`] via [`OmqPeerTransport::with_auth`] to enable it; the
+//! plain path (no auth) remains only for the curve-less plumbing test.
 //!
 //! Built under `--features omq-mesh` (needs libzmq).
 
 use crate::wire::{MeshError, SessionTransport, WireMsg};
+use crate::wire_auth::{AuthKeyBook, Ed25519, MsgSigner};
 use std::collections::BTreeMap;
 
-/// A peer's address book entry, as read from `beldexd`'s masternode list.
+/// A peer's address book entry, as read from `beldexd`'s masternode list /
+/// `bridge_get_seats`.
 #[derive(Debug, Clone)]
 pub struct PeerAddr {
     /// The peer's committee index (matches `WireMsg.from` / `self_index`).
     pub index: u16,
     /// ZMQ endpoint, e.g. `tcp://10.0.0.7:5580`.
     pub endpoint: String,
-    /// The peer's 32-byte curve (x25519) public key.
+    /// The peer's 32-byte curve (x25519) public key (channel authentication).
     pub curve_pubkey: [u8; 32],
+    /// The peer's 32-byte bridge-signer ed25519 public key (`signer_ed25519` from
+    /// its on-chain `bridge_registration`) — used to authenticate the `from` on
+    /// every message this peer sends (S4, [`crate::wire_auth`]).
+    pub signer_ed25519: [u8; 32],
+}
+
+/// Message-authentication context for the mesh (S4): this node's signer plus the
+/// key book that authenticates every peer's `from`. Uses boxed trait objects so
+/// production injects the libsodium verifier/signer and tests inject a double,
+/// without making the transport itself generic.
+pub struct MeshAuth {
+    /// Signs this node's outbound frames with its bridge-signer ed25519 key.
+    pub signer: Box<dyn MsgSigner>,
+    /// Verifies inbound frames against each member's transport key.
+    pub book: AuthKeyBook<Box<dyn Ed25519>>,
+}
+
+impl MeshAuth {
+    /// Build a mesh-auth context from this node's signer and a set of
+    /// `(index, signer_ed25519)` transport keys (self + peers). `verifier` is the
+    /// [`Ed25519`] backend (libsodium in production).
+    pub fn new(
+        signer: Box<dyn MsgSigner>,
+        verifier: Box<dyn Ed25519>,
+        members: impl IntoIterator<Item = (u16, [u8; 32])>,
+    ) -> MeshAuth {
+        MeshAuth { signer, book: AuthKeyBook::from_members(verifier, members) }
+    }
+
+    /// Build the mesh-auth context directly from a consensus committee view: the
+    /// key book is keyed by each member's `signer_ed25519` as reported on
+    /// `bridge.committee` (`CommitteeView::auth_members`). This is the intended
+    /// wiring — the transport keys come from consensus, never from a peer.
+    /// Returns `None` if the committee did not carry per-member signer keys (an
+    /// older daemon, or a reply without `signer_keys`): the caller must treat that
+    /// as a hard startup error rather than run an un-authenticated mesh.
+    pub fn from_committee(
+        signer: Box<dyn MsgSigner>,
+        verifier: Box<dyn Ed25519>,
+        committee: &crate::committee::CommitteeView,
+    ) -> Option<MeshAuth> {
+        if !committee.has_signer_keys() {
+            return None;
+        }
+        Some(MeshAuth::new(signer, verifier, committee.auth_members()))
+    }
 }
 
 /// Configuration for this node's mesh transport.
@@ -62,9 +120,26 @@ pub struct OmqPeerTransport {
     listener: zmq::Socket,
     /// Outbound PUSH sockets keyed by peer committee index.
     peers: BTreeMap<u16, zmq::Socket>,
+    /// Message-authentication context (S4). `None` only on the curve-less
+    /// plumbing test path; **production must set it** via [`Self::with_auth`].
+    auth: Option<MeshAuth>,
 }
 
 impl OmqPeerTransport {
+    /// Attach the S4 message-authentication context: outbound frames are signed
+    /// and inbound frames are verified against each member's transport key. A
+    /// frame that fails authentication is dropped in [`Self::poll`], never
+    /// delivered to a session.
+    pub fn with_auth(mut self, auth: MeshAuth) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    /// Whether message authentication is enabled (production requires it).
+    pub fn has_auth(&self) -> bool {
+        self.auth.is_some()
+    }
+
     /// Bind the inbound listener and dial every peer.
     pub fn bind(cfg: &OmqMeshConfig) -> Result<OmqPeerTransport, MeshError> {
         let ctx = zmq::Context::new();
@@ -112,7 +187,30 @@ impl OmqPeerTransport {
             peers.insert(p.index, sock);
         }
 
-        Ok(OmqPeerTransport { _ctx: ctx, listener, peers })
+        Ok(OmqPeerTransport { _ctx: ctx, listener, peers, auth: None })
+    }
+
+    /// Serialize a message for the wire: signed frame (`canonical ‖ sig`) when
+    /// authentication is enabled, plain `encode()` otherwise (test path only).
+    fn frame_out(&self, msg: &WireMsg) -> Result<Vec<u8>, MeshError> {
+        match &self.auth {
+            Some(a) => crate::wire_auth::sign_wire(a.signer.as_ref(), msg)
+                .map_err(|e| MeshError::Io(format!("sign: {e}"))),
+            None => Ok(msg.encode()),
+        }
+    }
+
+    /// Decode-and-authenticate an inbound frame. With auth enabled, a frame that
+    /// fails authentication is a [`MeshError::Auth`] (the caller drops it); with
+    /// auth disabled it is a plain decode.
+    fn frame_in(&self, bytes: &[u8]) -> Result<WireMsg, MeshError> {
+        match &self.auth {
+            Some(a) => a
+                .book
+                .authenticate(bytes)
+                .map_err(|e| MeshError::Auth(format!("{e:?}"))),
+            None => WireMsg::decode(bytes).map_err(MeshError::Decode),
+        }
     }
 
     /// Send one frame non-blocking; a full-HWM / unroutable peer is a benign drop
@@ -128,7 +226,7 @@ impl OmqPeerTransport {
 
 impl SessionTransport for OmqPeerTransport {
     fn broadcast(&mut self, msg: &WireMsg) -> Result<(), MeshError> {
-        let bytes = msg.encode();
+        let bytes = self.frame_out(msg)?;
         for sock in self.peers.values() {
             Self::send_frame(sock, &bytes)?;
         }
@@ -136,13 +234,17 @@ impl SessionTransport for OmqPeerTransport {
     }
 
     fn send_to(&mut self, peer_index: u16, msg: &WireMsg) -> Result<(), MeshError> {
+        let bytes = self.frame_out(msg)?;
         let sock = self.peers.get(&peer_index).ok_or(MeshError::UnknownPeer(peer_index))?;
-        Self::send_frame(sock, &msg.encode())
+        Self::send_frame(sock, &bytes)
     }
 
     fn poll(&mut self) -> Result<Option<WireMsg>, MeshError> {
         match self.listener.recv_bytes(zmq::DONTWAIT) {
-            Ok(bytes) => WireMsg::decode(&bytes).map(Some).map_err(MeshError::Decode),
+            // Authenticate before delivering (S4): a frame with a forged `from`,
+            // a tampered body, or an unknown sender surfaces as MeshError::Auth
+            // and the caller drops it — it never reaches a session.
+            Ok(bytes) => self.frame_in(&bytes).map(Some),
             Err(zmq::Error::EAGAIN) => Ok(None), // nothing ready
             Err(e) => Err(MeshError::Io(format!("recv: {e}"))),
         }
@@ -176,7 +278,12 @@ mod tests {
             use_curve,
             self_curve_secret: a_sk,
             self_curve_public: a_pk,
-            peers: vec![PeerAddr { index: 1, endpoint: ep(port_b), curve_pubkey: b_pk }],
+            peers: vec![PeerAddr {
+                index: 1,
+                endpoint: ep(port_b),
+                curve_pubkey: b_pk,
+                signer_ed25519: [0u8; 32],
+            }],
         };
         let cfg_b = OmqMeshConfig {
             self_index: 1,
@@ -184,7 +291,12 @@ mod tests {
             use_curve,
             self_curve_secret: b_sk,
             self_curve_public: b_pk,
-            peers: vec![PeerAddr { index: 0, endpoint: ep(port_a), curve_pubkey: a_pk }],
+            peers: vec![PeerAddr {
+                index: 0,
+                endpoint: ep(port_a),
+                curve_pubkey: a_pk,
+                signer_ed25519: [0u8; 32],
+            }],
         };
         (
             OmqPeerTransport::bind(&cfg_a).expect("bind a"),

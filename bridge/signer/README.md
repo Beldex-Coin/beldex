@@ -29,6 +29,7 @@ security-critical logic that does *not* need the TSS crates:
 | `pool` | **S3** | bounded, single-use preprocessed-material pool (presig tuples / FROST nonces) |
 | `share_store` | **D.1** | non-exportable, versioned custody with epoch-consistent erasure |
 | `transport` | **S4/S14** | session transport abstraction + per-leg namespacing |
+| `wire_auth` | **S4** | per-message ed25519 auth binding `WireMsg.from` to the sender's on-chain transport key (forgery-proof, attributable transcript) |
 | `health` | **B.8** | bridge-signer liveness/heartbeat status |
 
 The DKG, presigning and signing rounds (C.2–C.5) **integrate the audited crates

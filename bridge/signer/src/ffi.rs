@@ -32,6 +32,85 @@ pub fn ensure_init() -> Result<(), &'static str> {
     }
 }
 
+/// Generate a libsodium ed25519 keypair: `(pk32, sk64)` where `sk64` is the
+/// seed‖pubkey form [`ed25519_sign_detached`] expects. Used to provision a mesh
+/// message-auth identity (e.g. in local socket tests, or a `keys` helper); in
+/// production this key derives from the operator's masternode ed25519 key.
+pub fn ed25519_keypair() -> Result<([u8; 32], [u8; 64]), &'static str> {
+    let mut pk = [0u8; 32];
+    let mut sk = [0u8; 64];
+    // SAFETY: standard libsodium keypair generation into correctly-sized buffers.
+    let rc = unsafe { sodium::crypto_sign_keypair(pk.as_mut_ptr(), sk.as_mut_ptr()) };
+    if rc != 0 {
+        return Err("crypto_sign_keypair failed");
+    }
+    Ok((pk, sk))
+}
+
+/// Derive the x25519 (curve25519) **public** key from an ed25519 public key —
+/// the exact derivation beldexd uses for a masternode's mesh channel key
+/// (`crypto_sign_ed25519_pk_to_curve25519`). Lets the signer reproduce its own and
+/// its peers' x25519 keys from ed25519 identities.
+pub fn ed25519_pk_to_x25519(ed_pk32: &[u8; 32]) -> Result<[u8; 32], &'static str> {
+    let mut x = [0u8; 32];
+    // SAFETY: both buffers are 32 bytes, the sizes libsodium reads/writes.
+    let rc = unsafe { sodium::crypto_sign_ed25519_pk_to_curve25519(x.as_mut_ptr(), ed_pk32.as_ptr()) };
+    if rc != 0 {
+        return Err("crypto_sign_ed25519_pk_to_curve25519 failed");
+    }
+    Ok(x)
+}
+
+/// Derive the x25519 (curve25519) **secret** key from a libsodium ed25519 secret
+/// key (`crypto_sign_ed25519_sk_to_curve25519`) — the curve channel secret for the
+/// mesh, derived from the node's masternode key exactly as beldexd derives it.
+pub fn ed25519_sk_to_x25519(ed_sk64: &[u8; 64]) -> Result<[u8; 32], &'static str> {
+    let mut x = [0u8; 32];
+    // SAFETY: output is 32 bytes, input is the 64-byte ed25519 secret libsodium expects.
+    let rc = unsafe { sodium::crypto_sign_ed25519_sk_to_curve25519(x.as_mut_ptr(), ed_sk64.as_ptr()) };
+    if rc != 0 {
+        return Err("crypto_sign_ed25519_sk_to_curve25519 failed");
+    }
+    Ok(x)
+}
+
+/// Produce a detached ed25519 signature over `msg` with a libsodium secret key.
+///
+/// Used for **session-message authentication** (S4 mesh hardening, see
+/// [`wire_auth`](crate::wire_auth)): each outbound [`WireMsg`](crate::wire::WireMsg)
+/// is signed with this node's bridge-signer ed25519 key so `from` is bound to the
+/// sender's authenticated identity and the transcript is cryptographically
+/// attributable. It is deliberately the *same* libsodium primitive family the
+/// consensus verifier uses, so a signature this node produces here is one any
+/// peer verifies with [`ed25519_verify_consensus`].
+///
+/// * `sk64` — the 64-byte libsodium ed25519 secret key (seed‖pubkey, as
+///   `crypto_sign_keypair`/`crypto_sign_seed_keypair` produce). This is a
+///   transport-authentication key held by the signer process, **not** a threshold
+///   share (S1 is about the committee keys `Pevm`/`Pgw`, which are never here).
+/// * `msg`  — the bytes to sign (a `WireMsg`'s canonical encoding).
+///
+/// Returns the 64-byte detached signature, or `Err` if libsodium fails.
+pub fn ed25519_sign_detached(sk64: &[u8; 64], msg: &[u8]) -> Result<[u8; 64], &'static str> {
+    let mut sig = [0u8; 64];
+    let mut siglen: u64 = 0;
+    // SAFETY: `sig` is 64 bytes (the ed25519 signature length libsodium writes);
+    // `msg`/`sk64` are valid for the lengths passed; `siglen` receives the length.
+    let rc = unsafe {
+        sodium::crypto_sign_detached(
+            sig.as_mut_ptr(),
+            &mut siglen as *mut u64,
+            msg.as_ptr(),
+            msg.len() as u64,
+            sk64.as_ptr(),
+        )
+    };
+    if rc != 0 || siglen != 64 {
+        return Err("crypto_sign_detached failed");
+    }
+    Ok(sig)
+}
+
 /// Verify a detached ed25519 signature exactly as Beldex consensus does.
 ///
 /// * `sig64`  — the 64-byte detached signature (`R‖S`).
@@ -133,6 +212,38 @@ mod tests {
         let mut bad = SIG;
         bad[0] ^= 0x01; // flip a bit in R
         assert!(!ed25519_verify_consensus(&bad, &MSG, &PUBKEY));
+    }
+
+    #[test]
+    fn sign_detached_round_trips_through_consensus_verify() {
+        // The mesh-auth signing primitive (S4) and the consensus verify primitive
+        // are the same libsodium family: a WireMsg signed with a node's ed25519
+        // transport key must verify under that key's public half, and a one-bit
+        // tamper of either the message or the signature must be rejected.
+        ensure_init().unwrap();
+
+        // Generate a libsodium ed25519 keypair (pk32, sk64).
+        let mut pk = [0u8; 32];
+        let mut sk = [0u8; 64];
+        // SAFETY: standard libsodium keypair generation into correctly-sized bufs.
+        let rc = unsafe { sodium::crypto_sign_keypair(pk.as_mut_ptr(), sk.as_mut_ptr()) };
+        assert_eq!(rc, 0, "crypto_sign_keypair");
+
+        let msg = b"pgw:2:0:<wiremsg canonical bytes>";
+        let sig = ed25519_sign_detached(&sk, msg).expect("sign");
+        assert!(ed25519_verify_consensus(&sig, msg, &pk), "own signature must verify");
+
+        // Tampered message -> reject.
+        assert!(!ed25519_verify_consensus(&sig, b"a different message", &pk));
+        // Tampered signature -> reject.
+        let mut bad = sig;
+        bad[5] ^= 0x01;
+        assert!(!ed25519_verify_consensus(&bad, msg, &pk));
+        // Wrong key -> reject.
+        let mut pk2 = [0u8; 32];
+        let mut sk2 = [0u8; 64];
+        let _ = unsafe { sodium::crypto_sign_keypair(pk2.as_mut_ptr(), sk2.as_mut_ptr()) };
+        assert!(!ed25519_verify_consensus(&sig, msg, &pk2));
     }
 
     #[test]

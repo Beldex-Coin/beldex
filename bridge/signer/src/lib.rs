@@ -37,6 +37,10 @@
 //!   * [`wire`]         — **C.4** session-message codec + dispatch that carries
 //!                        engine events between signers over a [`transport`], with
 //!                        S14 enforcement and async-mesh-tolerant drop semantics.
+//!   * [`wire_auth`]    — **S4** per-message ed25519 authentication that binds a
+//!                        `WireMsg`'s self-declared `from` to the sender's on-chain
+//!                        transport key, so the transcript is unforgeable and
+//!                        attributable (feeds Phase F slashing evidence).
 //!   * [`share_store`]  — the **D.1** share-custody interface (non-exportable
 //!                        use, versioned backups, epoch-consistent erasure).
 //!   * [`transport`]    — the session transport abstraction (real backend: a thin
@@ -60,6 +64,7 @@ pub mod session;
 pub mod share_store;
 pub mod transport;
 pub mod wire;
+pub mod wire_auth;
 
 /// libsodium consensus-verifier alignment for `Pgw` (C.1 gate (b)). Only built
 /// under the `tss-integration` feature (needs libsodium at link time).

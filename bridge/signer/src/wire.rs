@@ -223,6 +223,10 @@ pub enum MeshError {
     UnknownPeer(u16),
     /// A message could not be decoded off the wire.
     Decode(WireError),
+    /// An inbound frame failed message authentication (S4): a forged `from`, a
+    /// tampered body, an unknown sender, or a truncated frame. Dropped, never
+    /// delivered to a session. Stringified to keep this enum std-only.
+    Auth(String),
     /// Backend I/O failure (socket error, etc.), stringified so this stays free
     /// of any transport-crate types in the std-only interface.
     Io(String),

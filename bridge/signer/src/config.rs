@@ -100,6 +100,20 @@ pub fn parse_hex32(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// Parse a 64-byte value from hex (optionally `0x`-prefixed, exactly 128 nibbles)
+/// — e.g. a libsodium ed25519 secret key (seed‖pubkey) for mesh message auth.
+pub fn parse_hex64(s: &str) -> Option<[u8; 64]> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    if s.len() != 128 || !s.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 64];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 impl Config {
     /// The absolute upper bound on the preprocessed pool (S3, Shoup–Groth).
     pub const MAX_POOL_LIMIT: usize = 128;
@@ -222,6 +236,14 @@ mod tests {
     fn hex32_prefix_and_case_insensitive() {
         assert_eq!(parse_hex32(&format!("0x{}", "AB".repeat(32))), Some([0xabu8; 32]));
         assert_eq!(parse_hex32("00"), None);
+    }
+
+    #[test]
+    fn hex64_parsing() {
+        assert_eq!(parse_hex64(&"cd".repeat(64)), Some([0xcdu8; 64]));
+        assert_eq!(parse_hex64(&format!("0x{}", "01".repeat(64))), Some([0x01u8; 64]));
+        assert_eq!(parse_hex64(&"ab".repeat(32)), None); // wrong length (32 bytes)
+        assert_eq!(parse_hex64("zz"), None);
     }
 
     #[test]
