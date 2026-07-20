@@ -43,12 +43,16 @@ path = "src/main.rs"
 default = []
 
 # (a) ecrecover round-trip + (b) libsodium consensus-verifier alignment / FROST.
-tss-integration = ["dep:k256", "dep:sha3", "dep:frost-ed25519", "dep:libsodium-sys-stable"]
+# rand_core is needed by the C.2 DKG driver's RngCore/CryptoRng bounds (non-test).
+tss-integration = ["dep:k256", "dep:sha3", "dep:frost-ed25519", "dep:libsodium-sys-stable", "dep:rand_core"]
 
 # cggmp21 key-material ↔ ecrecover interop (heavier dep tree). Implies the above
 # (needs k256/sha3). Kept a separate feature so a build/iteration issue in the
 # cggmp21/generic-ec API surface does not block the (a)/(b) round-trips.
-cggmp21-interop = ["tss-integration", "dep:cggmp21", "dep:generic-ec"]
+# round_based (with the simulation feature — cargo unifies it with cggmp21's own
+# round_based dep so the party types match) + futures + sha2 drive the real
+# no-dealer keygen simulation in `cggmp21_real_dkg`.
+cggmp21-interop = ["tss-integration", "dep:cggmp21", "dep:generic-ec", "dep:round-based", "dep:futures", "dep:sha2"]
 
 # Phase B.9 committee read: the OMQ client that calls beldexd's bridge.committee.
 # Needs libzmq at build/link time (the `zmq` crate). The JSON reply parser lives
@@ -60,6 +64,12 @@ omq-client = ["dep:zmq"]
 # by default); only the live socket backend is gated.
 omq-mesh = ["dep:zmq"]
 
+# C.2 live-mesh DKG: run the real FROST DKG across the committee over the
+# authenticated OMQ mesh, keyed off the live `bridge.committee` read. Pulls in the
+# audited crate (tss-integration), the socket mesh (omq-mesh), and the committee
+# client (omq-client). The `main.rs` `dkg` subcommand is gated on this.
+live-dkg = ["tss-integration", "omq-mesh", "omq-client", "dep:rand"]
+
 [dependencies]
 # All optional; pulled in only by the features above (verified 2026-07).
 k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"], optional = true }
@@ -68,7 +78,23 @@ frost-ed25519        = { version = "2", optional = true }
 libsodium-sys-stable = { version = "1", optional = true }
 cggmp21              = { version = "=0.6.3", features = ["curve-secp256k1", "spof"], optional = true }
 generic-ec           = { version = "0.4", features = ["curve-secp256k1"], optional = true }
+# Real no-dealer cggmp21 keygen simulation (cggmp21_real_dkg). round_based MUST be
+# the same version cggmp21 =0.6.3 uses so the party/message types unify; the "sim"
+# feature enables the in-memory simulation (if the pin names it "dev", swap it).
+# crates.io package name is hyphenated ("round-based"); Rust code still
+# imports it as `round_based` (cargo maps hyphen -> underscore for the lib).
+# MUST match the round-based major cggmp21 =0.6.3 uses (0.4.x via
+# cggmp21-keygen 0.5) so MpcParty/Mpc types unify. The in-memory simulation
+# is behind the "sim" feature (round_based::sim::run).
+round-based          = { version = "0.4", features = ["derive", "sim"], optional = true }
+futures              = { version = "0.3", optional = true }
+sha2                 = { version = "0.10", optional = true }
 zmq                  = { version = "0.10", optional = true }
+# Only the live-dkg binary path needs an RNG in non-test code (the OsRng fed to
+# the DKG driver). Tests use the dev-dependency `rand` below.
+rand                 = { version = "0.8", optional = true }
+# The DKG driver's RngCore/CryptoRng trait bounds (enabled by tss-integration).
+rand_core            = { version = "0.6", optional = true }
 
 [dev-dependencies]
 rand         = "0.8"

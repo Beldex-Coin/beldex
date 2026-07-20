@@ -34,6 +34,10 @@
 //!                        Sign → Distribute → Finalize) with a deterministic
 //!                        leader, timeout/retry with fault exclusion, transcript
 //!                        accumulation (S4), and per-leg session ids (S14).
+//!   * [`dkg`]          — **C.2** dual distributed-key-generation orchestration:
+//!                        the round-progress state machine, DKG payload codec, and
+//!                        share-store hand-off for both legs (disjoint flows, S14).
+//!                        The audited crates run the rounds (S12).
 //!   * [`wire`]         — **C.4** session-message codec + dispatch that carries
 //!                        engine events between signers over a [`transport`], with
 //!                        S14 enforcement and async-mesh-tolerant drop semantics.
@@ -58,6 +62,7 @@
 pub mod committee;
 pub mod conformance;
 pub mod config;
+pub mod dkg;
 pub mod health;
 pub mod pool;
 pub mod session;
@@ -87,11 +92,40 @@ pub mod omq_mesh;
 #[cfg(all(test, feature = "tss-integration"))]
 mod frost_conformance;
 
+/// C.2 `Pgw` DKG: a real `n`-party FROST distributed key generation driven
+/// through the [`dkg`] orchestration, with the group key + a threshold signature
+/// verified under libsodium — proving DKG → share-store → sign end to end.
+/// Test-only, behind `tss-integration`.
+#[cfg(all(test, feature = "tss-integration"))]
+mod frost_dkg;
+
+/// C.2 live-mesh **FROST DKG driver**: runs the real `part1/2/3` rounds across the
+/// committee over a [`wire::SessionTransport`] (the authenticated [`omq_mesh`] in
+/// production, an in-process bus in tests), storing this node's share. The
+/// transport-agnostic driver builds under `tss-integration`; the live binary path
+/// needs `omq-mesh` + `omq-client` (the `live-dkg` feature).
+#[cfg(feature = "tss-integration")]
+pub mod dkg_driver;
+
 /// cggmp21 (`Pevm`) key-material ↔ ecrecover interop: a cggmp21 key maps to the
 /// same Ethereum address as the canonical secp256k1 implementation. Test-only,
 /// behind the heavier `cggmp21-interop` feature.
 #[cfg(all(test, feature = "cggmp21-interop"))]
 mod cggmp21_interop;
+
+/// C.2 `Pevm` DKG: a CGGMP21 secp256k1 key generation driven through the [`dkg`]
+/// orchestration, binding the group key to the wBDX signer address and exercising
+/// the share-store hand-off (**trusted-dealer** keygen — the orchestration/wiring
+/// proof). Test-only, behind `cggmp21-interop`.
+#[cfg(all(test, feature = "cggmp21-interop"))]
+mod cggmp21_dkg;
+
+/// C.2 `Pevm` DKG: the **real, no-dealer** CGGMP21 keygen run across N parties via
+/// the `round_based` simulation — proves the actual DKG (no party holds the whole
+/// key, S1) and binds the group key to the wBDX signer address. Test-only, behind
+/// `cggmp21-interop`.
+#[cfg(all(test, feature = "cggmp21-interop"))]
+mod cggmp21_real_dkg;
 
 /// Crate version, surfaced in the heartbeat (see [`health`]).
 pub const SIGNER_VERSION: [u16; 3] = [0, 1, 0];
