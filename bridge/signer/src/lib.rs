@@ -99,6 +99,13 @@ mod frost_conformance;
 #[cfg(all(test, feature = "tss-integration"))]
 mod frost_dkg;
 
+/// C.3b `Pgw` signing: a FROST threshold ed25519 signature over a gateway-release
+/// digest (`H(GW_INPUT_SIG ‖ genesis ‖ tx_prefix)`), verified by libsodium — the
+/// exact consensus check. The `Pgw` counterpart to `cggmp21_sign`. Test-only,
+/// behind `tss-integration`.
+#[cfg(all(test, feature = "tss-integration"))]
+mod frost_sign;
+
 /// C.2 live-mesh **FROST DKG driver**: runs the real `part1/2/3` rounds across the
 /// committee over a [`wire::SessionTransport`] (the authenticated [`omq_mesh`] in
 /// production, an in-process bus in tests), storing this node's share. The
@@ -133,6 +140,20 @@ mod cggmp21_dkg;
 /// `cggmp21-interop`.
 #[cfg(all(test, feature = "cggmp21-interop"))]
 mod cggmp21_real_dkg;
+
+/// C.3a `Pevm` signing: a CGGMP21 threshold ECDSA signature over a mint digest,
+/// verified by the library and by **`ecrecover`** (recovers the wBDX signer
+/// address). Test-only, behind `cggmp21-interop`.
+#[cfg(all(test, feature = "cggmp21-interop"))]
+mod cggmp21_sign;
+
+/// C.3 #1 `Pevm`: the **no-trusted-dealer** signing chain — real DKG →
+/// distributed `aux_info_gen` → `KeyShare::from_parts` → threshold ECDSA →
+/// `ecrecover` to the wBDX signer address. Removes the trusted-dealer shortcut
+/// from the `Pevm` signing path (S1 end to end). Heavy, `#[ignore]`d. Test-only,
+/// behind `cggmp21-interop`.
+#[cfg(all(test, feature = "cggmp21-interop"))]
+mod cggmp21_dkg_sign;
 
 /// Crate version, surfaced in the heartbeat (see [`health`]).
 pub const SIGNER_VERSION: [u16; 3] = [0, 1, 0];

@@ -93,9 +93,31 @@ cargo test
 #   live-mesh FROST driver over an in-process bus (all libsodium-verified)
 cargo test --features tss-integration
 
-# + the real no-dealer CGGMP21 (Pevm) DKG (round-based simulation). Slow: the
-#   cggmp21 tests run real aux-info safe-prime generation (~minutes)
+# + the real no-dealer CGGMP21 (Pevm) DKG (round-based simulation) AND the C.3
+#   Pevm signing proof (threshold ECDSA → ecrecover → wBDX signer address). Slow:
+#   the cggmp21 tests run real aux-info safe-prime generation.
 cargo test --features cggmp21-interop
+```
+
+Signing (C.3) has an explicit test per leg:
+
+```bash
+# Pgw: FROST threshold sign of a gateway-release digest H(GW_INPUT_SIG‖genesis‖
+#      tx_prefix), verified by libsodium (the exact consensus check)
+cargo test --features tss-integration -- --nocapture frost_gateway_release_signature_verifies_under_consensus
+
+# Pevm: CGGMP21 threshold ECDSA over a mint digest, verified via ecrecover →
+#       recovers the wBDX signer address
+cargo test --features cggmp21-interop -- --nocapture cggmp21_threshold_signature_recovers_wbdx_address
+```
+
+The `Pevm` signing test above uses the trusted dealer for its key material (fast).
+The **no-trusted-dealer full chain** — real DKG → distributed `aux_info_gen` →
+`KeyShare::from_parts` → threshold ECDSA → `ecrecover` — is a separate, heavier
+test (real safe-prime generation per party), so it's `#[ignore]`d and run by name:
+
+```bash
+cargo test --features cggmp21-interop -- --ignored --nocapture real_dkg_aux_info_sign_recovers_wbdx_address
 ```
 
 Real-socket DKGs on one machine (no devnet, no beldexd) — bind real ZMQ sockets,
@@ -185,8 +207,14 @@ Useful env knobs:
    conformance, (b) libsodium verifier alignment.~~ **done**
 2. ~~Pin `cggmp21` + `frost-ed25519`; **dual DKG (C.2)**~~ **done** — both keys
    generate live on the devnet (see above and [`../docs/C2_DEVNET_VERIFICATION.md`]).
-3. **C.3 — signing** (next): the CGGMP21 aux-info phase (Paillier params) + presign
-   / sign for `Pevm`, FROST binding-factor sign + ROAST for `Pgw`, on top of `pool`.
+3. **C.3 — signing**: both legs have an explicit signing test — `Pgw` FROST →
+   **libsodium/consensus** verify over a gateway-release digest (`frost_sign`),
+   `Pevm` CGGMP21 threshold ECDSA → **`ecrecover` → wBDX signer address**
+   (`cggmp21_sign`). The `Pevm` **no-trusted-dealer full chain** (real DKG →
+   distributed `aux_info_gen` → `KeyShare::from_parts` → sign → ecrecover) is
+   proven in `cggmp21_dkg_sign` (heavy, `#[ignore]`d). Remaining: mesh signing
+   drivers (over the authenticated transport, like the DKG drivers) and ROAST
+   robustness for `Pgw`.
 4. Real share custody (Vault/enclave) replacing the in-memory scaffold store.
 5. Watchers (Phase E), accountability/slashing (Phase F), rotation/refresh
    (Phase J), the wBDX contract + H.6 rotation (Phase H), relayer (Phase I).
