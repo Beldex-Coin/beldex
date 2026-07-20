@@ -93,6 +93,7 @@ pub struct FrostDkgDriver {
 
     // result
     key_package_blob: Option<Vec<u8>>,
+    pubkey_package_blob: Option<Vec<u8>>,
     group_vk: Option<[u8; 32]>,
 }
 
@@ -154,6 +155,7 @@ impl FrostDkgDriver {
             r1_pkgs: BTreeMap::new(),
             r2_to_me: BTreeMap::new(),
             key_package_blob: None,
+            pubkey_package_blob: None,
             group_vk: None,
         };
 
@@ -176,6 +178,19 @@ impl FrostDkgDriver {
     /// The group ed25519 verifying key `Y` (gateway `owner_key`), once complete.
     pub fn group_pubkey(&self) -> Option<[u8; 32]> {
         self.group_vk
+    }
+
+    /// This node's serialized `KeyPackage` (its DKG'd share), once complete — the
+    /// input the signing driver loads. Persist under secure custody in production.
+    pub fn key_package_blob(&self) -> Option<Vec<u8>> {
+        self.key_package_blob.clone()
+    }
+
+    /// The serialized group `PublicKeyPackage` (all members' verifying shares + the
+    /// group key), once complete. Public, but needed to aggregate a signature — so
+    /// it is persisted alongside the share for the signing driver.
+    pub fn pubkey_package_blob(&self) -> Option<Vec<u8>> {
+        self.pubkey_package_blob.clone()
     }
 
     /// The signing threshold `t + 1` for this DKG.
@@ -321,6 +336,9 @@ impl FrostDkgDriver {
         let blob = key_package
             .serialize()
             .map_err(|e| DriverError::Frost(format!("serialize key package: {e}")))?;
+        let pk_blob = pubkey_package
+            .serialize()
+            .map_err(|e| DriverError::Frost(format!("serialize pubkey package: {e}")))?;
         let vk_vec = pubkey_package
             .verifying_key()
             .serialize()
@@ -329,6 +347,7 @@ impl FrostDkgDriver {
         vk.copy_from_slice(&vk_vec);
 
         self.key_package_blob = Some(blob);
+        self.pubkey_package_blob = Some(pk_blob);
         self.group_vk = Some(vk);
         let _ = self.session.finalize(vk.to_vec());
         Ok(vec![]) // completion has no outbound frames
@@ -369,6 +388,50 @@ where
     S: ShareStore,
     R: RngCore + CryptoRng,
 {
+    let driver = drive_to_completion(committee, self_index, key_generation, transport, rng, timeout)?;
+    driver.store_share(store);
+    driver.group_pubkey().ok_or(DriverError::BadCommittee)
+}
+
+/// Like [`run_over_transport`], but instead of storing into a [`ShareStore`] it
+/// returns the completed key material — the group verifying key, this node's
+/// serialized `KeyPackage`, and the group `PublicKeyPackage` — so a caller can
+/// persist all three for a later standalone signing session (the `sign`
+/// subcommand). No key is assembled (S1); the returned `KeyPackage` is this node's
+/// share only, and the `PublicKeyPackage` is public.
+pub fn run_over_transport_capture<T, R>(
+    committee: &CommitteeView,
+    self_index: u16,
+    key_generation: u32,
+    transport: &mut T,
+    rng: &mut R,
+    timeout: Duration,
+) -> Result<([u8; 32], Vec<u8>, Vec<u8>), DriverError>
+where
+    T: SessionTransport,
+    R: RngCore + CryptoRng,
+{
+    let driver = drive_to_completion(committee, self_index, key_generation, transport, rng, timeout)?;
+    let vk = driver.group_pubkey().ok_or(DriverError::BadCommittee)?;
+    let kp = driver.key_package_blob().ok_or(DriverError::BadCommittee)?;
+    let pk = driver.pubkey_package_blob().ok_or(DriverError::BadCommittee)?;
+    Ok((vk, kp, pk))
+}
+
+/// Shared driver loop: begin the ceremony, pump [`FrostDkgDriver`] steps over the
+/// transport until complete or `timeout` elapses, and return the finished driver.
+fn drive_to_completion<T, R>(
+    committee: &CommitteeView,
+    self_index: u16,
+    key_generation: u32,
+    transport: &mut T,
+    rng: &mut R,
+    timeout: Duration,
+) -> Result<FrostDkgDriver, DriverError>
+where
+    T: SessionTransport,
+    R: RngCore + CryptoRng,
+{
     let (mut driver, first) = FrostDkgDriver::begin(committee, self_index, key_generation, rng)?;
     send_all(transport, first);
 
@@ -387,9 +450,7 @@ where
             Err(_) => std::thread::sleep(Duration::from_millis(20)),
         }
     }
-
-    driver.store_share(store);
-    driver.group_pubkey().ok_or(DriverError::BadCommittee)
+    Ok(driver)
 }
 
 fn send_all<T: SessionTransport>(transport: &mut T, outs: Vec<Outbound>) {
@@ -504,6 +565,34 @@ pub mod live {
             key_generation,
             &mut transport,
             store,
+            rng,
+            timeout,
+        )
+    }
+
+    /// Like [`run_live`], but returns the completed key material `(group_vk,
+    /// key_package_blob, pubkey_package_blob)` for the caller to persist (so a later
+    /// `sign` invocation can load it), instead of storing into a [`ShareStore`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_live_capture<R>(
+        committee: &CommitteeView,
+        self_index: u16,
+        key_generation: u32,
+        identity: &MeshIdentity,
+        peers: &[PeerTransportAddr],
+        use_curve: bool,
+        rng: &mut R,
+        timeout: Duration,
+    ) -> Result<([u8; 32], Vec<u8>, Vec<u8>), DriverError>
+    where
+        R: RngCore + CryptoRng,
+    {
+        let mut transport = assemble_mesh(committee, self_index, identity, peers, use_curve)?;
+        super::run_over_transport_capture(
+            committee,
+            self_index,
+            key_generation,
+            &mut transport,
             rng,
             timeout,
         )

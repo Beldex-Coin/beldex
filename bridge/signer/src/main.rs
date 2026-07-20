@@ -56,9 +56,11 @@ fn print_status(cfg: &Config) {
     println!("  share store : {:?}", cfg.share_store);
     println!("  pool cap L  : {}", cfg.max_pool);
     if cfg!(feature = "live-dkg") {
-        println!("subcommands: `dkg` — run the Pgw FROST DKG over the mesh");
+        println!("subcommands:");
+        println!("  dkg  — run the dual DKG over the mesh (persists Pgw share if SHARE_DIR set)");
+        println!("  sign — run the Pgw FROST signing over the mesh (loads the persisted share)");
     } else {
-        println!("(build with --features live-dkg for the `dkg` subcommand)");
+        println!("(build with --features live-dkg for the `dkg` / `sign` subcommands)");
     }
 }
 
@@ -70,10 +72,9 @@ fn hex(bytes: &[u8]) -> String {
 /// the authenticated mesh (C.2). Only built with `--features live-dkg`.
 #[cfg(feature = "live-dkg")]
 fn run_dkg(cfg: &Config) -> Result<(), String> {
-    use beldex_bridge_signer::dkg_driver::live::{run_live, MeshIdentity, PeerTransportAddr};
+    use beldex_bridge_signer::dkg_driver::live::{run_live_capture, MeshIdentity, PeerTransportAddr};
     use beldex_bridge_signer::ffi;
     use beldex_bridge_signer::omq_client::OmqCommitteeClient;
-    use beldex_bridge_signer::share_store::MemoryShareStore;
     use std::time::Duration;
 
     let env = |k: &str| std::env::var(k).map_err(|_| format!("missing env {k}"));
@@ -258,14 +259,19 @@ fn run_dkg(cfg: &Config) -> Result<(), String> {
         };
         check_size(&peers)?;
 
-        let mut store = MemoryShareStore::new();
         let mut rng = rand::rngs::OsRng;
         println!("running Pgw FROST DKG over the mesh (key generation {key_generation})…");
-        let group_vk = run_live(
-            &committee, self_index, key_generation, &identity, &peers, use_curve, &mut store, &mut rng, timeout,
+        let (group_vk, kp_blob, pk_blob) = run_live_capture(
+            &committee, self_index, key_generation, &identity, &peers, use_curve, &mut rng, timeout,
         )
         .map_err(|e| format!("Pgw dkg failed: {e:?}"))?;
         println!("Pgw DKG complete — group ed25519 key (gateway owner_key): {}", hex(&group_vk));
+        // Persist the share material so a later `sign` invocation can load it. This
+        // is a dev file store; production custody (Vault/enclave) is D.1.
+        if let Ok(dir) = std::env::var("BRIDGE_SIGNER_SHARE_DIR") {
+            persist_pgw_material(&dir, self_index, &kp_blob, &pk_blob, &group_vk)?;
+            println!("Pgw share material written to {dir}/pgw-{self_index}.{{keypackage,pubkeypackage,groupvk}}");
+        }
     }
 
     // --- Pevm (secp256k1 / CGGMP21) -------------------------------------------
@@ -323,6 +329,167 @@ fn run_dkg(_cfg: &Config) -> Result<(), String> {
     Err("the `dkg` subcommand requires a build with `--features live-dkg`".into())
 }
 
+/// Write this node's `Pgw` DKG material to `<dir>/pgw-<index>.{keypackage,
+/// pubkeypackage,groupvk}` for a later `sign` invocation. Dev file store only.
+#[cfg(feature = "live-dkg")]
+fn persist_pgw_material(
+    dir: &str,
+    self_index: u16,
+    kp: &[u8],
+    pk: &[u8],
+    vk: &[u8; 32],
+) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create share dir {dir}: {e}"))?;
+    let write = |suffix: &str, bytes: &[u8]| {
+        std::fs::write(format!("{dir}/pgw-{self_index}.{suffix}"), bytes)
+            .map_err(|e| format!("write {suffix}: {e}"))
+    };
+    write("keypackage", kp)?;
+    write("pubkeypackage", pk)?;
+    write("groupvk", vk)?;
+    Ok(())
+}
+
+/// `sign` subcommand: load this node's persisted `Pgw` share material and run the
+/// FROST signing driver across the authenticated mesh to produce (and libsodium-
+/// verify) an ed25519 gateway-release signature. Only built with `--features
+/// live-dkg`. Run `dkg` first with `BRIDGE_SIGNER_SHARE_DIR` set.
+///
+/// (The `Pevm` leg signs from a **complete** cggmp21 share — keygen + aux-info; the
+/// aux-info-over-mesh phase is a follow-on, so live signing here is the `Pgw` leg.
+/// The `Pevm` signing driver itself is proven over an in-process mesh in
+/// `cggmp21_sign_driver`.)
+#[cfg(feature = "live-dkg")]
+fn run_sign(cfg: &Config) -> Result<(), String> {
+    use beldex_bridge_signer::dkg_driver::live::{MeshIdentity, PeerTransportAddr};
+    use beldex_bridge_signer::ffi;
+    use beldex_bridge_signer::frost_sign_driver::live::run_live_sign;
+    use beldex_bridge_signer::omq_client::OmqCommitteeClient;
+    use frost_ed25519 as frost;
+    use std::time::Duration;
+
+    // 1) Committee + self_index (as in `dkg`).
+    let client = OmqCommitteeClient::new(cfg.oxenmq_endpoint.clone());
+    let committee = client.fetch_committee(None).map_err(|e| e.to_string())?;
+    let self_index = committee
+        .daemon_self_index
+        .or_else(|| committee.self_index(&cfg.self_mn_pubkey))
+        .ok_or("this node is not on the current bridge committee")? as u16;
+    if !committee.has_signer_keys() {
+        return Err("bridge.committee returned no signer_keys — update beldexd".into());
+    }
+
+    // 2) The signer set (default: the first `threshold` committee members) and the
+    //    32-byte digest to sign (the gateway-release digest in production).
+    let signers: Vec<u16> = match std::env::var("BRIDGE_SIGNER_SIGN_SIGNERS") {
+        Ok(s) => s.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
+        Err(_) => (0..committee.threshold as u16).collect(),
+    };
+    let message: [u8; 32] = match std::env::var("BRIDGE_SIGNER_SIGN_DIGEST") {
+        Ok(h) => config::parse_hex32(&h).ok_or("BRIDGE_SIGNER_SIGN_DIGEST must be 32-byte hex")?,
+        Err(_) => {
+            println!("WARNING: no BRIDGE_SIGNER_SIGN_DIGEST set — signing a fixed demo digest");
+            [0x5au8; 32]
+        }
+    };
+    println!(
+        "committee epoch {} size {} threshold {}; self_index {}; signer set {:?}",
+        committee.epoch, committee.size(), committee.threshold, self_index, signers
+    );
+    if !signers.contains(&self_index) {
+        println!("this node ({self_index}) is not in the signer set — nothing to do");
+        return Ok(());
+    }
+
+    // 3) Load this node's persisted Pgw material.
+    let dir = std::env::var("BRIDGE_SIGNER_SHARE_DIR")
+        .map_err(|_| "set BRIDGE_SIGNER_SHARE_DIR (where `dkg` wrote the shares)".to_string())?;
+    let read = |suffix: &str| {
+        std::fs::read(format!("{dir}/pgw-{self_index}.{suffix}"))
+            .map_err(|e| format!("read {suffix}: {e} (run `dkg` first with BRIDGE_SIGNER_SHARE_DIR set)"))
+    };
+    let key_package = frost::keys::KeyPackage::deserialize(&read("keypackage")?)
+        .map_err(|e| format!("bad keypackage: {e}"))?;
+    let pubkey_package = frost::keys::PublicKeyPackage::deserialize(&read("pubkeypackage")?)
+        .map_err(|e| format!("bad pubkeypackage: {e}"))?;
+    let group_vk: [u8; 32] = pubkey_package
+        .verifying_key()
+        .serialize()
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or("cannot serialize group verifying key")?;
+
+    // 4) This node's mesh identity (from its MN key) + the single-host peer book.
+    let port_base: u16 = std::env::var("BRIDGE_SIGNER_MESH_PORT_BASE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .ok_or("set BRIDGE_SIGNER_MESH_PORT_BASE (single-host devnet)")?;
+    let key_path = std::env::var("BRIDGE_SIGNER_MN_KEY_FILE")
+        .map_err(|_| "set BRIDGE_SIGNER_MN_KEY_FILE".to_string())?;
+    let sk_bytes = std::fs::read(&key_path).map_err(|e| format!("read MN key {key_path}: {e}"))?;
+    if sk_bytes.len() != 64 {
+        return Err(format!("MN key {key_path} is {} bytes, expected 64", sk_bytes.len()));
+    }
+    let mut ed25519_secret = [0u8; 64];
+    ed25519_secret.copy_from_slice(&sk_bytes);
+    let mut ed_pub = [0u8; 32];
+    ed_pub.copy_from_slice(&ed25519_secret[32..64]);
+    let curve_secret = ffi::ed25519_sk_to_x25519(&ed25519_secret)?;
+    let curve_public = ffi::ed25519_pk_to_x25519(&ed_pub)?;
+    if let Some(expected) = committee.member_x25519.get(self_index as usize) {
+        if !expected.iter().all(|&b| b == 0) && curve_public != *expected {
+            return Err("derived x25519 does not match this node's bridge.committee entry".into());
+        }
+    }
+    let identity = MeshIdentity {
+        listen_endpoint: format!("tcp://0.0.0.0:{}", port_base + self_index),
+        curve_secret,
+        curve_public,
+        ed25519_secret,
+    };
+    let peers: Vec<PeerTransportAddr> = committee
+        .peer_transport_indexed(self_index as usize, port_base)
+        .into_iter()
+        .map(|(index, endpoint, curve_pubkey)| PeerTransportAddr { index, endpoint, curve_pubkey })
+        .collect();
+    let use_curve = std::env::var("BRIDGE_SIGNER_MESH_USE_CURVE")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true);
+    if !use_curve {
+        println!("WARNING: mesh CURVE disabled (plain channel); message auth (S4) still enforced");
+    }
+    let timeout = Duration::from_secs(
+        std::env::var("BRIDGE_SIGNER_SIGN_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120),
+    );
+
+    // 5) Sign over the mesh, then verify under libsodium (the consensus check).
+    let mut rng = rand::rngs::OsRng;
+    println!("running Pgw FROST signing over the mesh…");
+    let sig = run_live_sign(
+        &committee, self_index, &signers, key_package, pubkey_package, message, 0, &identity, &peers,
+        use_curve, &mut rng, timeout,
+    )
+    .map_err(|e| format!("Pgw sign failed: {e:?}"))?;
+
+    let ok = ffi::ed25519_verify_consensus(&sig, &message, &group_vk);
+    println!("Pgw signature : {}", hex(&sig));
+    println!("  over digest : {}", hex(&message));
+    println!("  owner_key   : {}", hex(&group_vk));
+    println!("  libsodium   : {}", if ok { "VERIFIED (consensus would accept)" } else { "REJECTED" });
+    if !ok {
+        return Err("the aggregated signature failed libsodium verification".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "live-dkg"))]
+fn run_sign(_cfg: &Config) -> Result<(), String> {
+    Err("the `sign` subcommand requires a build with `--features live-dkg`".into())
+}
+
 fn main() -> ExitCode {
     let subcommand = std::env::args().nth(1);
     let cfg = match Config::from_map(&config_map()) {
@@ -339,6 +506,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("dkg: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("sign") => match run_sign(&cfg) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("sign: {e}");
                 ExitCode::FAILURE
             }
         },

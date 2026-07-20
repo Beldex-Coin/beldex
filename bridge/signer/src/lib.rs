@@ -114,12 +114,29 @@ mod frost_sign;
 #[cfg(feature = "tss-integration")]
 pub mod dkg_driver;
 
+/// C.3 live-mesh **FROST (`Pgw`) signing driver**: runs the real 2-round signing
+/// (`commit`→`sign`→`aggregate`) across the signer set over a
+/// [`wire::SessionTransport`], producing the libsodium-verifiable release
+/// signature. The signing counterpart of [`dkg_driver`]; proven with an in-process
+/// DKG-then-sign test (libsodium-verified). Transport-agnostic under
+/// `tss-integration`; the live path adds `omq-mesh`.
+#[cfg(feature = "tss-integration")]
+pub mod frost_sign_driver;
+
 /// C.2 live-mesh **`Pevm` (cggmp21) DKG driver**: runs the real cggmp21 keygen MPC
 /// over a [`wire::SessionTransport`] via `round_based`'s sync state machine bridged
 /// to the mesh by channels. The `Pevm` counterpart to [`dkg_driver`]. Needs the
 /// cggmp21 stack + the socket mesh (the `live-pevm-dkg` feature).
 #[cfg(all(feature = "cggmp21-interop", feature = "omq-mesh"))]
 pub mod cggmp21_driver;
+
+/// C.3 live-mesh **`Pevm` (cggmp21) signing driver**: runs the real threshold-ECDSA
+/// signing MPC over a [`wire::SessionTransport`] via `round_based`'s sync state
+/// machine + connection barrier (with committee-index ↔ signing-position mapping),
+/// producing the `(r, s)` the wBDX contract `ecrecover`s. The signing counterpart
+/// of [`cggmp21_driver`]. Needs the cggmp21 stack + socket mesh (`live-pevm-dkg`).
+#[cfg(all(feature = "cggmp21-interop", feature = "omq-mesh"))]
+pub mod cggmp21_sign_driver;
 
 /// cggmp21 (`Pevm`) key-material ↔ ecrecover interop: a cggmp21 key maps to the
 /// same Ethereum address as the canonical secp256k1 implementation. Test-only,

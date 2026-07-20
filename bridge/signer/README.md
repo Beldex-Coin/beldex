@@ -41,6 +41,8 @@ integrates the audited crates, never reimplements them (**S12**):
 | `dkg` | **C.2** | dual-DKG orchestration: round-progress state machine, per-leg (S14) namespacing, published transcript, share-store hand-off |
 | `dkg_driver` | **C.2** | live-mesh **`Pgw` (FROST)** driver — runs `part1/2/3` over a `SessionTransport`; `live::run_live` assembles the authenticated mesh |
 | `cggmp21_driver` | **C.2** | live-mesh **`Pevm` (CGGMP21)** driver — runs the cggmp21 keygen over the mesh via `round-based`'s sync state machine + a connection barrier; `live::run_live_pevm` |
+| `frost_sign_driver` | **C.3** | live-mesh **`Pgw` (FROST)** signing driver — `commit`→`sign`→`aggregate` over a `SessionTransport`; every signer aggregates independently; `live::run_live_sign` |
+| `cggmp21_sign_driver` | **C.3** | live-mesh **`Pevm` (CGGMP21)** signing driver — threshold-ECDSA signing over the mesh (same pump + barrier as keygen, with committee-index ↔ signing-position mapping); `live::run_live_pevm_sign` |
 
 ## Build & test
 
@@ -118,6 +120,21 @@ test (real safe-prime generation per party), so it's `#[ignore]`d and run by nam
 
 ```bash
 cargo test --features cggmp21-interop -- --ignored --nocapture real_dkg_aux_info_sign_recovers_wbdx_address
+```
+
+**Signing over the mesh** (the drivers that carry signing across the committee, like
+the DKG drivers). The `Pgw` FROST signing driver runs DKG-then-sign over an
+in-process bus and verifies the aggregate under libsodium:
+
+```bash
+cargo test --features tss-integration -- --nocapture frost_sign_driver
+```
+
+The `Pevm` cggmp21 signing driver runs the signing MPC across threads over a
+shared-memory mesh and `ecrecover`s the wBDX address (heavy, `#[ignore]`d):
+
+```bash
+cargo test --features live-pevm-dkg -- --ignored --nocapture cggmp21_signing_over_the_mesh_recovers_wbdx_address
 ```
 
 Real-socket DKGs on one machine (no devnet, no beldexd) — bind real ZMQ sockets,
@@ -201,6 +218,70 @@ Useful env knobs:
 > committee` and exits (harmless). If a node reports `Address already in use`,
 > a prior run is still holding the port — `pkill -f beldex-bridge-signer` and retry.
 
+## Live signing on a devnet
+
+The `sign` subcommand runs the **`Pgw` FROST signing** across the committee over the
+same authenticated mesh, producing (and libsodium-verifying) an ed25519 gateway-
+release signature. It loads the DKG'd share, so run `dkg` first **with a share
+directory set** so the material is persisted.
+
+Run both steps from the devnet's `testdata` directory, in the **same shell** (so the
+`SIGNER`/`ANY32`/`SHARE_DIR` vars are set for both):
+
+```bash
+SIGNER="$(git rev-parse --show-toplevel)/bridge/signer/target/debug/beldex-bridge-signer"
+ANY32=$(printf '11%.0s' {1..32})
+SHARE_DIR="$PWD/shares"
+[ -x "$SIGNER" ] || { echo "build first: cargo build --features live-dkg,live-pevm-dkg"; }
+
+# 1) DKG the Pgw key, persisting each node's share material to $SHARE_DIR
+pkill -f beldex-bridge-signer 2>/dev/null; sleep 1
+for d in beldex-127.0.0.1-*/; do
+  sock="$PWD/${d}devnet/beldexd.sock"; key="$PWD/${d}devnet/key_ed25519"
+  [ -S "$sock" ] && [ -f "$key" ] || continue
+  BRIDGE_SIGNER_BELDEXD_RPC_URL="http://127.0.0.1:19191" \
+  BRIDGE_SIGNER_OXENMQ_ENDPOINT="ipc://$sock" \
+  BRIDGE_SIGNER_GATEWAY_ID="$ANY32" BRIDGE_SIGNER_SELF_MN_PUBKEY="$ANY32" \
+  BRIDGE_SIGNER_BRIDGE_EPOCH_BLOCKS=120 BRIDGE_SIGNER_COMMITTEE_THRESHOLD=4 \
+  BRIDGE_SIGNER_MN_KEY_FILE="$key" BRIDGE_SIGNER_MESH_PORT_BASE=6000 \
+  BRIDGE_SIGNER_MESH_USE_CURVE=false BRIDGE_SIGNER_DKG_TIMEOUT_SECS=180 \
+  BRIDGE_SIGNER_DKG_LEG=pgw BRIDGE_SIGNER_SHARE_DIR="$SHARE_DIR" \
+    "$SIGNER" dkg > "dkg-${d%/}.log" 2>&1 &
+done
+wait
+ls "$SHARE_DIR"   # expect pgw-0.keypackage, pgw-0.pubkeypackage, … for each node
+
+# 2) Sign a digest with a t-of-n subset of the committee
+pkill -f beldex-bridge-signer 2>/dev/null; sleep 1
+DIGEST=$(printf 'ab%.0s' {1..32})   # the 32-byte gateway-release digest to sign
+for d in beldex-127.0.0.1-*/; do
+  sock="$PWD/${d}devnet/beldexd.sock"; key="$PWD/${d}devnet/key_ed25519"
+  [ -S "$sock" ] && [ -f "$key" ] || continue
+  BRIDGE_SIGNER_BELDEXD_RPC_URL="http://127.0.0.1:19191" \
+  BRIDGE_SIGNER_OXENMQ_ENDPOINT="ipc://$sock" \
+  BRIDGE_SIGNER_GATEWAY_ID="$ANY32" BRIDGE_SIGNER_SELF_MN_PUBKEY="$ANY32" \
+  BRIDGE_SIGNER_BRIDGE_EPOCH_BLOCKS=120 BRIDGE_SIGNER_COMMITTEE_THRESHOLD=4 \
+  BRIDGE_SIGNER_MN_KEY_FILE="$key" BRIDGE_SIGNER_MESH_PORT_BASE=6000 \
+  BRIDGE_SIGNER_MESH_USE_CURVE=false BRIDGE_SIGNER_SHARE_DIR="$SHARE_DIR" \
+  BRIDGE_SIGNER_SIGN_DIGEST="$DIGEST" BRIDGE_SIGNER_SIGN_TIMEOUT_SECS=180 \
+    "$SIGNER" sign > "sign-${d%/}.log" 2>&1 &
+done
+wait
+
+grep -h "libsodium" sign-*.log | sort | uniq -c   # expect: threshold × VERIFIED
+grep -h "Pgw signature" sign-*.log | sort -u      # all signers print the same signature
+```
+
+The default signer set is the first `threshold` committee members; override with
+`BRIDGE_SIGNER_SIGN_SIGNERS="0,1,2,3"`. Nodes outside the set exit cleanly. Every
+signer aggregates the **same** signature independently and confirms libsodium (the
+consensus verifier) accepts it against the gateway `owner_key`.
+
+> The `Pevm` leg signs from a **complete** cggmp21 share (keygen + aux-info); the
+> aux-info-over-mesh phase is a follow-on, so `sign` runs the `Pgw` leg live. The
+> `Pevm` signing driver itself is proven over an in-process mesh
+> (`cggmp21_sign_driver`).
+
 ## Roadmap (Phase C and beyond)
 
 1. ~~Close the [`DUE_DILIGENCE.md`](./DUE_DILIGENCE.md) gate: (a) ecrecover
@@ -212,9 +293,10 @@ Useful env knobs:
    `Pevm` CGGMP21 threshold ECDSA → **`ecrecover` → wBDX signer address**
    (`cggmp21_sign`). The `Pevm` **no-trusted-dealer full chain** (real DKG →
    distributed `aux_info_gen` → `KeyShare::from_parts` → sign → ecrecover) is
-   proven in `cggmp21_dkg_sign` (heavy, `#[ignore]`d). Remaining: mesh signing
-   drivers (over the authenticated transport, like the DKG drivers) and ROAST
-   robustness for `Pgw`.
+   proven in `cggmp21_dkg_sign` (heavy, `#[ignore]`d). **Live-mesh signing drivers
+   for both legs** (`frost_sign_driver`, `cggmp21_sign_driver`) run signing over
+   the authenticated `SessionTransport` like the DKG drivers. Remaining: ROAST
+   robustness for `Pgw` (retry/abort when a signer is faulty or slow).
 4. Real share custody (Vault/enclave) replacing the in-memory scaffold store.
 5. Watchers (Phase E), accountability/slashing (Phase F), rotation/refresh
    (Phase J), the wBDX contract + H.6 rotation (Phase H), relayer (Phase I).
