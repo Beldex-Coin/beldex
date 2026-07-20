@@ -2952,6 +2952,29 @@ namespace cryptonote::rpc {
     } request;
   };
 
+  /// RPC: bridge/get_bridge_unbond_cmd
+  ///
+  /// Produce a signed bridge-seat *unbond* blob for THIS masternode (HF23, plan
+  /// §6.1 B.2) — the mirror of `get_bridge_registration_cmd`. Only callable on a
+  /// daemon running in --master-node mode: the daemon fills in its MN pubkey and
+  /// signs the unbond message with the MN key (the same key that registered the
+  /// seat), so consensus can verify the operator authorises the voluntary exit.
+  /// The returned hex blob (a serialized tx_extra_bridge_unbond) is passed to the
+  /// *operator wallet*'s `bridge_unbond` command, which submits the exit
+  /// transaction. On acceptance the seat stops being committee-eligible and the
+  /// BRIDGE_BOND unlocks only after BRIDGE_BOND_UNLOCK_BLOCKS (≥30 days), during
+  /// which the operator remains bonded and slashable.
+  ///
+  /// Output:
+  /// - `unbond_hex` -- serialized, signed tx_extra_bridge_unbond.
+  /// - `master_node_pubkey` -- this daemon's MN pubkey (hex).
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GET_BRIDGE_UNBOND_CMD : RPC_COMMAND
+  {
+    static constexpr auto names() { return NAMES("get_bridge_unbond_cmd"); }
+    struct request_parameters {} request;
+  };
+
   // List of all supported rpc command structs to allow compile-time enumeration of all supported
   // RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   // a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2968,6 +2991,7 @@ namespace cryptonote::rpc {
     BRIDGE_GET_COMMITTEE,
     BRIDGE_GET_SEATS,
     GET_BRIDGE_REGISTRATION_CMD,
+    GET_BRIDGE_UNBOND_CMD,
     BANNED,
     FLUSH_CACHE,
     FLUSH_TRANSACTION_POOL,

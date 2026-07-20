@@ -180,6 +180,7 @@ namespace cryptonote
     bool stake(const std::vector<std::string> &args_);
     bool register_master_node(const std::vector<std::string> &args_);
     bool bridge_register(const std::vector<std::string> &args_);
+    bool bridge_unbond(const std::vector<std::string> &args_);
     bool request_stake_unlock(const std::vector<std::string> &args_);
     bool print_locked_stakes(const std::vector<std::string>& /*args*/);
     bool query_locked_stakes(bool print_result, bool print_key_images = false);

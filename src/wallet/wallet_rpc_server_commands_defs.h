@@ -2141,6 +2141,31 @@ BELDEX_RPC_DOC_INTROSPECT
   };
 
   BELDEX_RPC_DOC_INTROSPECT
+  // Voluntarily exit the bonded bridge set for this wallet's masternode (HF23
+  // Sovereign Bridge). Takes the signed unbond blob produced by the daemon's
+  // get_bridge_unbond_cmd RPC and builds/submits the exit transaction. No bond
+  // moves here; the seat stops being committee-eligible immediately and the
+  // BRIDGE_BOND unlocks in consensus after the ~30-day unbonding window.
+  struct BRIDGE_UNBOND : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("bridge_unbond"); }
+
+    struct request
+    {
+      std::string unbond_hex;       // Hex blob from the daemon's get_bridge_unbond_cmd.
+      uint32_t    priority;         // (Optional) Transaction priority (flash not allowed).
+      bool        get_tx_key;       // (Optional) Return the transaction key after sending.
+      bool        do_not_relay;     // (Optional) If true, the newly created transaction will not be relayed. (Defaults to false)
+      bool        get_tx_hex;       // Return the transaction as hex string after sending (Defaults to false)
+      bool        get_tx_metadata;  // Return the metadata needed to relay the transaction. (Defaults to false)
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    using response = REGISTER_MASTER_NODE::response;
+  };
+
+  BELDEX_RPC_DOC_INTROSPECT
   // Request to unlock stake by deregistering Master Node.
   struct REQUEST_STAKE_UNLOCK : RESTRICTED
   {
@@ -2733,6 +2758,7 @@ This command is only required if the open wallet is one of the owners of a BNS r
     STAKE,
     REGISTER_MASTER_NODE,
     BRIDGE_REGISTER,
+    BRIDGE_UNBOND,
     REQUEST_STAKE_UNLOCK,
     CAN_REQUEST_STAKE_UNLOCK,
     VALIDATE_ADDRESS,

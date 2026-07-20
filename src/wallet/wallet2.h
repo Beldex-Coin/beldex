@@ -1407,6 +1407,22 @@ private:
     };
     bridge_register_result create_bridge_registration_tx(const std::string& registration_hex, uint32_t priority = 0, std::set<uint32_t> subaddr_indices = {});
 
+    // HF23 Sovereign Bridge: build the voluntary bridge-seat *unbond* tx from a
+    // daemon-produced signed unbond blob (get_bridge_unbond_cmd) — the mirror of
+    // create_bridge_registration_tx. Unlike registration this locks no bond: the
+    // tx only carries the signed tx_extra_bridge_unbond (txtype bridge_registration,
+    // dispatched by consensus on the presence of the unbond field). It is a plain
+    // self-transfer of a minimal amount whose only purpose is to carry the field
+    // and pay a fee; the BRIDGE_BOND unlocks in consensus after the ≥30-day
+    // unbonding window, during which the operator stays bonded and slashable.
+    struct bridge_unbond_result
+    {
+      bool        success = false;
+      std::string msg;
+      pending_tx  ptx;
+    };
+    bridge_unbond_result create_bridge_unbond_tx(const std::string& unbond_hex, uint32_t priority = 0, std::set<uint32_t> subaddr_indices = {});
+
     struct request_stake_unlock_result
     {
       bool        success;

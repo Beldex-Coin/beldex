@@ -436,6 +436,9 @@ namespace cryptonote::rpc {
     get_values(in, "expiration_window", c.request.expiration_window);
   }
 
+  void parse_request(GET_BRIDGE_UNBOND_CMD&, rpc_input) {
+  }
+
   void parse_request(BNS_RESOLVE& resolve, rpc_input in) {
     get_values(in,
         "name_hash", required{resolve.request.name_hash},

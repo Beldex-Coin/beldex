@@ -4130,6 +4130,39 @@ namespace cryptonote::rpc {
   }
 
   //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GET_BRIDGE_UNBOND_CMD& cmd, rpc_context context)
+  {
+    PERF_TIMER(on_get_bridge_unbond_cmd);
+
+    if (!m_core.master_node())
+      throw rpc_error{ERROR_WRONG_PARAM, "Daemon has not been started in master node mode, please relaunch with --master-node flag."};
+
+    const auto &keys = m_core.get_master_keys();
+    if (!keys.pub)
+      throw rpc_error{ERROR_INTERNAL, "Daemon has no master node keys"};
+
+    // Mirror of get_bridge_registration_cmd: the daemon signs the unbond message
+    // with the MN key (the same key that authorised the registration), so
+    // consensus (process_bridge_unbond_tx) can verify the operator authorises the
+    // voluntary exit. No bond is moved here — the unbond tx only carries this
+    // signed field; the bond unlocks in consensus after BRIDGE_BOND_UNLOCK_BLOCKS.
+    cryptonote::tx_extra_bridge_unbond op{};
+    op.version            = 0;
+    op.master_node_pubkey = keys.pub;
+
+    const crypto::hash msg = master_nodes::bridge_unbond_message(op);
+    crypto::generate_signature(msg, keys.pub, keys.key, op.signature);
+
+    std::vector<uint8_t> extra;
+    if (!cryptonote::add_bridge_unbond_to_tx_extra(extra, op))
+      throw rpc_error{ERROR_INTERNAL, "Failed to serialize bridge unbond"};
+
+    cmd.response["unbond_hex"]         = oxenc::to_hex(extra.begin(), extra.end());
+    cmd.response["master_node_pubkey"] = tools::type_to_hex(keys.pub);
+    cmd.response["status"]             = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
   void core_rpc_server::invoke(BNS_RESOLVE& resolve, rpc_context context)
   {
     auto& req = resolve.request;

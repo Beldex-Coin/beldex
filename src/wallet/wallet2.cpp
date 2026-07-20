@@ -8409,6 +8409,85 @@ wallet2::bridge_register_result wallet2::create_bridge_registration_tx(const std
   return result;
 }
 
+wallet2::bridge_unbond_result wallet2::create_bridge_unbond_tx(const std::string& unbond_hex, uint32_t priority, std::set<uint32_t> subaddr_indices)
+{
+  bridge_unbond_result result{};
+
+  // Parse + validate the daemon-produced signed unbond blob (a serialized
+  // tx_extra fragment holding exactly one tx_extra_bridge_unbond). Mirror of
+  // create_bridge_registration_tx, minus the bond: an unbond moves no stake, it
+  // only carries the MN-signed exit request. The bond unlocks in consensus after
+  // the ≥30-day window (finalize_bridge_unbonds), not in this transaction.
+  if (unbond_hex.empty() || !oxenc::is_hex(unbond_hex))
+  {
+    result.msg = tr("Invalid unbond blob: expected the hex string produced by the daemon's get_bridge_unbond_cmd");
+    return result;
+  }
+  const std::string blob = oxenc::from_hex(unbond_hex);
+  const std::vector<uint8_t> unbond_extra(blob.begin(), blob.end());
+  cryptonote::tx_extra_bridge_unbond op{};
+  if (!cryptonote::get_field_from_tx_extra(unbond_extra, op))
+  {
+    result.msg = tr("Invalid unbond blob: could not decode a bridge unbond from it");
+    return result;
+  }
+
+  if (priority == tx_priority_flash)
+  {
+    result.msg = tr("Bridge unbonds cannot use flash priority");
+    return result;
+  }
+
+  auto hf_version = get_hard_fork_version();
+  if (!hf_version)
+  {
+    result.msg = ERR_MSG_NETWORK_VERSION_QUERY_FAILED;
+    return result;
+  }
+  if (*hf_version < cryptonote::hf::hf23_bridge)
+  {
+    result.msg = tr("Bridge unbonds require the bridge hard fork (HF23)");
+    return result;
+  }
+
+  // Carry only the signed unbond field. Consensus (process_bridge_unbond_tx)
+  // looks the seat up by op.master_node_pubkey and verifies the MN signature; it
+  // inspects no outputs, so — unlike registration — no contributor/stake extra is
+  // needed. The tx rides txtype::bridge_registration (dispatched to the unbond
+  // path by the presence of this field) and is otherwise an ordinary fee-only tx.
+  std::vector<uint8_t> extra;
+  if (!cryptonote::add_bridge_unbond_to_tx_extra(extra, op))
+  {
+    result.msg = tr("Failed to serialize the bridge unbond into the transaction");
+    return result;
+  }
+
+  try
+  {
+    // Empty destinations (extra-only command tx; same pattern as a BNS update):
+    // no value is transferred, the wallet just pays the fee from its own funds.
+    beldex_construct_tx_params tx_params = tools::wallet2::construct_params(*hf_version, txtype::bridge_registration, priority);
+    auto ptx_vector = create_transactions_2({} /*dsts*/, cryptonote::TX_OUTPUT_DECOYS, 0 /*unlock_at_block*/, priority, extra, 0, subaddr_indices, tx_params);
+    if (ptx_vector.size() == 1)
+    {
+      result.success = true;
+      result.ptx     = ptx_vector[0];
+    }
+    else
+    {
+      result.msg = ERR_MSG_TOO_MANY_TXS_CONSTRUCTED;
+    }
+  }
+  catch (const std::exception& e)
+  {
+    result.msg = ERR_MSG_EXCEPTION_THROWN;
+    result.msg += e.what();
+    return result;
+  }
+
+  return result;
+}
+
 wallet2::register_master_node_result wallet2::create_register_master_node_tx(const std::vector<std::string> &args_, uint32_t subaddr_account)
 {
   std::vector<std::string> local_args = args_;
