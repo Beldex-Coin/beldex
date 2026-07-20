@@ -8988,15 +8988,31 @@ std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypt
   }
 
   // The owner key must be valid for whichever of the three types was supplied.
+  // This MUST match consensus (master_nodes::is_valid_gateway_owner_key): the
+  // native schnorr key requires prime-order main-subgroup membership, not just a
+  // decodable point, or the daemon rejects the built tx ("invalid owner key").
   const bool owner_ok = std::visit([](const auto& k) -> bool {
     using T = std::decay_t<decltype(k)>;
-    if constexpr (std::is_same_v<T, crypto::public_key>)          return crypto::check_key(k);
+    if constexpr (std::is_same_v<T, crypto::public_key>)          return crypto::check_key_in_main_subgroup(k);
     else if constexpr (std::is_same_v<T, crypto::eth_public_key>) return crypto::check_eth_public_key(k);
     else                                                          return crypto::check_eddsa_public_key(k);
   }, owner_key);
   if (!owner_ok)
   {
-    if (reason) *reason = "invalid gateway owner key for its type";
+    if (reason)
+    {
+      const char* type_hint = std::visit([](const auto& k) -> const char* {
+        using T = std::decay_t<decltype(k)>;
+        if constexpr (std::is_same_v<T, crypto::public_key>)
+          return "schnorr owner key must be a canonical ed25519 point in the prime-order "
+                 "main subgroup (a normal Beldex public key); a random 32-byte value is not valid";
+        else if constexpr (std::is_same_v<T, crypto::eth_public_key>)
+          return "eth owner key must be a valid 33-byte compressed secp256k1 point";
+        else
+          return "eddsa owner key must be a valid canonical RFC-8032 ed25519 point";
+      }, owner_key);
+      *reason = std::string("invalid gateway owner key: ") + type_hint;
+    }
     return {};
   }
 
