@@ -68,6 +68,8 @@ pub enum DriverError {
     Timeout,
     /// Mesh transport assembly / bind failure (live path).
     Transport(String),
+    /// An MPC protocol / serialization failure (the cggmp21 live driver).
+    Protocol(String),
 }
 
 /// One node's FROST DKG, driven a frame at a time.
@@ -431,31 +433,21 @@ pub mod live {
         pub curve_pubkey: [u8; 32],
     }
 
-    /// Assemble the authenticated mesh and run the FROST DKG to completion.
+    /// Assemble the curve+message-authenticated OMQ mesh for one node: bind the
+    /// listener, dial the peers, and attach the S4 message-auth context (each
+    /// peer's `signer_ed25519` taken from **consensus**, not the peers file).
+    /// Shared by both DKG legs (FROST here, cggmp21 in [`crate::cggmp21_driver`]).
     ///
-    /// `use_curve` toggles the ZMQ CURVE channel: `true` (production) encrypts and
-    /// pins the channel by x25519 key; `false` runs plain sockets for a libzmq
-    /// built without CURVE. Either way, **per-message ed25519 authentication (S4)
-    /// is always on** — `use_curve = false` gives up channel confidentiality, not
-    /// message authorship.
-    #[allow(clippy::too_many_arguments)]
-    pub fn run_live<S, R>(
+    /// `use_curve` toggles the ZMQ CURVE channel: `true` encrypts + pins by x25519
+    /// key; `false` runs plain sockets (libzmq without CURVE). Per-message ed25519
+    /// authentication (S4) is always on either way.
+    pub fn assemble_mesh(
         committee: &CommitteeView,
         self_index: u16,
-        key_generation: u32,
         identity: &MeshIdentity,
         peers: &[PeerTransportAddr],
         use_curve: bool,
-        store: &mut S,
-        rng: &mut R,
-        timeout: Duration,
-    ) -> Result<[u8; 32], DriverError>
-    where
-        S: ShareStore,
-        R: RngCore + CryptoRng,
-    {
-        // Each peer's transport-auth key (signer_ed25519) is taken from consensus,
-        // not from the peers file.
+    ) -> Result<OmqPeerTransport, DriverError> {
         let mut mesh_peers = Vec::with_capacity(peers.len());
         for p in peers {
             let signer_ed25519 = committee
@@ -485,8 +477,27 @@ pub mod live {
             committee,
         )
         .ok_or_else(|| DriverError::Transport("committee has no signer_keys".into()))?;
-        let mut transport = transport.with_auth(auth);
+        Ok(transport.with_auth(auth))
+    }
 
+    /// Assemble the authenticated mesh and run the FROST (`Pgw`) DKG to completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_live<S, R>(
+        committee: &CommitteeView,
+        self_index: u16,
+        key_generation: u32,
+        identity: &MeshIdentity,
+        peers: &[PeerTransportAddr],
+        use_curve: bool,
+        store: &mut S,
+        rng: &mut R,
+        timeout: Duration,
+    ) -> Result<[u8; 32], DriverError>
+    where
+        S: ShareStore,
+        R: RngCore + CryptoRng,
+    {
+        let mut transport = assemble_mesh(committee, self_index, identity, peers, use_curve)?;
         super::run_over_transport(
             committee,
             self_index,

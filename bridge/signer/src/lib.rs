@@ -107,6 +107,13 @@ mod frost_dkg;
 #[cfg(feature = "tss-integration")]
 pub mod dkg_driver;
 
+/// C.2 live-mesh **`Pevm` (cggmp21) DKG driver**: runs the real cggmp21 keygen MPC
+/// over a [`wire::SessionTransport`] via `round_based`'s sync state machine bridged
+/// to the mesh by channels. The `Pevm` counterpart to [`dkg_driver`]. Needs the
+/// cggmp21 stack + the socket mesh (the `live-pevm-dkg` feature).
+#[cfg(all(feature = "cggmp21-interop", feature = "omq-mesh"))]
+pub mod cggmp21_driver;
+
 /// cggmp21 (`Pevm`) key-material ↔ ecrecover interop: a cggmp21 key maps to the
 /// same Ethereum address as the canonical secp256k1 implementation. Test-only,
 /// behind the heavier `cggmp21-interop` feature.

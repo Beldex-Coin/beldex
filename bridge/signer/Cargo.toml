@@ -52,7 +52,12 @@ tss-integration = ["dep:k256", "dep:sha3", "dep:frost-ed25519", "dep:libsodium-s
 # round_based (with the simulation feature — cargo unifies it with cggmp21's own
 # round_based dep so the party types match) + futures + sha2 drive the real
 # no-dealer keygen simulation in `cggmp21_real_dkg`.
-cggmp21-interop = ["tss-integration", "dep:cggmp21", "dep:generic-ec", "dep:round-based", "dep:futures", "dep:sha2"]
+cggmp21-interop = ["tss-integration", "dep:cggmp21", "dep:generic-ec", "dep:round-based", "dep:futures", "dep:sha2", "dep:serde_json"]
+
+# Live-mesh Pevm DKG: run the real cggmp21 keygen over the authenticated OMQ mesh
+# (round-based's sync state-machine driver bridged to SessionTransport). Needs the
+# cggmp21 stack + the socket mesh.
+live-pevm-dkg = ["cggmp21-interop", "omq-mesh", "dep:rand"]
 
 # Phase B.9 committee read: the OMQ client that calls beldexd's bridge.committee.
 # Needs libzmq at build/link time (the `zmq` crate). The JSON reply parser lives
@@ -86,9 +91,11 @@ generic-ec           = { version = "0.4", features = ["curve-secp256k1"], option
 # MUST match the round-based major cggmp21 =0.6.3 uses (0.4.x via
 # cggmp21-keygen 0.5) so MpcParty/Mpc types unify. The in-memory simulation
 # is behind the "sim" feature (round_based::sim::run).
-round-based          = { version = "0.4", features = ["derive", "sim"], optional = true }
+round-based          = { version = "0.4", features = ["derive", "sim", "state-machine"], optional = true }
 futures              = { version = "0.3", optional = true }
 sha2                 = { version = "0.10", optional = true }
+# Serialize cggmp21 keygen messages onto the mesh (live-mesh Pevm DKG).
+serde_json           = { version = "1", optional = true }
 zmq                  = { version = "0.10", optional = true }
 # Only the live-dkg binary path needs an RNG in non-test code (the OsRng fed to
 # the DKG driver). Tests use the dev-dependency `rand` below.

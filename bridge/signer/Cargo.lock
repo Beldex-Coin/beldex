@@ -79,6 +79,7 @@ dependencies = [
  "rand",
  "rand_core",
  "round-based",
+ "serde_json",
  "sha2",
  "sha3",
  "zmq",
