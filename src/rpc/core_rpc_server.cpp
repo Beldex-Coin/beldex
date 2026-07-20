@@ -3584,8 +3584,10 @@ namespace cryptonote::rpc {
   void core_rpc_server::invoke(GET_GATEWAY_INFO& cmd, rpc_context context)
   {
     crypto::public_key gw_id;
-    if (!tools::hex_to_type(cmd.request.gateway_id, gw_id))
-      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_id (expected 64-char hex)"};
+    cryptonote::gateway_address_parse_info info{};
+    if (!cryptonote::get_gateway_address_from_str(info, m_core.get_nettype(), cmd.request.gateway_address))
+      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_address (expected a gwB… address)"};
+    gw_id = info.gateway_id;
 
     auto& db = m_core.get_blockchain_storage().get_db();
     cryptonote::gateway_account_data acct;
@@ -3614,10 +3616,9 @@ namespace cryptonote::rpc {
     const auto nettype = m_core.get_nettype();
     crypto::public_key gw_id{};
     cryptonote::gateway_address_parse_info info{};
-    if (cryptonote::get_gateway_address_from_str(info, nettype, cmd.request.gateway_id))
-      gw_id = info.gateway_id;
-    else if (!tools::hex_to_type(cmd.request.gateway_id, gw_id))
-      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_id (expected gwB… address or 64-char hex)"};
+    if (!cryptonote::get_gateway_address_from_str(info, nettype, cmd.request.gateway_address))
+      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_address (expected a gwB… address)"};
+    gw_id = info.gateway_id;
 
     auto& db = m_core.get_blockchain_storage().get_db();
     auto hashes = cryptonote::get_gateway_history(db, gw_id, cmd.request.from, cmd.request.count);

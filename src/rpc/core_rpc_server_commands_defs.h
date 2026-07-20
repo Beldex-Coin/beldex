@@ -2667,7 +2667,7 @@ namespace cryptonote::rpc {
   /// "instant sync" API — balances are read straight from the node, no scanning.
   ///
   /// Inputs:
-  /// - `gateway_id` -- 64-char hex of the gateway address id (registrant view pubkey).
+  /// - `gateway_address` -- the base58 gateway address (gwB…).
   ///
   /// Output:
   /// - `registered` -- whether the gateway exists on-chain.
@@ -2682,7 +2682,7 @@ namespace cryptonote::rpc {
     static constexpr auto names() { return NAMES("get_gateway_info"); }
     struct request_parameters
     {
-      std::string gateway_id;
+      std::string gateway_address;
     } request;
   };
 
@@ -2716,7 +2716,7 @@ namespace cryptonote::rpc {
   /// is what an exchange polls to reconcile deposits without scanning the chain.
   ///
   /// Inputs:
-  /// - `gateway_id` -- gwB… address or 64-char hex id.
+  /// - `gateway_address` -- the base58 gateway address (gwB…).
   /// - `from` -- pagination offset (default 0).
   /// - `count` -- max tx hashes to return (0 = all).
   ///
@@ -2728,7 +2728,7 @@ namespace cryptonote::rpc {
     static constexpr auto names() { return NAMES("get_gateway_history"); }
     struct request_parameters
     {
-      std::string gateway_id;
+      std::string gateway_address;
       uint64_t from = 0;
       uint64_t count = 0;
     } request;
