@@ -16,21 +16,16 @@
 //! follow-on, not part of fixing the key. So this proves the `Pevm` DKG produces a
 //! consensus-relevant key, matching what the FROST leg proves for `Pgw`.
 //!
-//! Test-only; `--features cggmp21-interop`.
-//!
-//! ADJUST-TO-PIN NOTES (isolated here, exactly like `cggmp21_interop`): the
-//! `round_based` simulation + `cggmp21::keygen` call surface is version-sensitive.
-//! If the compiler flags them against the pinned `cggmp21 =0.6.3` / `round_based`:
-//!   * the keygen **message type** for the `Simulation<M>` is the one line most
-//!     likely to need a tweak — see `KeygenMsg` below (candidates noted inline);
-//!   * the simulation feature may be named `"dev"` instead of `"sim"` (Cargo.toml);
-//!   * `.enforce_reliable_broadcast(false)` is used so the simulation needs no
-//!     reliable-broadcast layer — drop it if the builder lacks the method.
+//! Test-only; `--features cggmp21-interop`. Verified against `cggmp21 =0.6.3` with
+//! `round-based 0.4` (the `sim` feature): the sync `round_based::sim::run` driver
+//! executes the multi-round protocol in memory with no async executor, and
+//! `.expect_ok().into_vec()` collects each party's `Ok(share)`. The keygen message
+//! type for the simulation is `cggmp21::keygen::ThresholdMsg<E, L, D>` with the
+//! defaults `keygen::<Secp256k1>()` uses (`SecurityLevel128`, `Sha256`).
 
 use crate::committee::CommitteeView;
 use crate::dkg::{DkgLeg, DkgSession, DkgStage};
 use crate::share_store::{MemoryShareStore, ShareStore};
-use cggmp21::key_share::AnyKeyShare; // brings `shared_public_key()` into scope
 use cggmp21::security_level::SecurityLevel128;
 use cggmp21::supported_curves::Secp256k1;
 use cggmp21::ExecutionId;
@@ -40,10 +35,6 @@ use sha3::{Digest, Keccak256};
 /// The CGGMP21 threshold-keygen protocol message, needed to type the simulation.
 /// `keygen::<Secp256k1>(..)` defaults to security level 128 and the SHA-256 digest,
 /// so the message is parameterised by `(Secp256k1, SecurityLevel128, Sha256)`.
-///
-/// ADJUST-TO-PIN: if this path is wrong for the pinned crate, the likely
-/// alternatives are `cggmp21::keygen::msg::threshold::Msg<..>` or
-/// `cggmp21::keygen::ThresholdMsg<..>`. Only this alias changes.
 type KeygenMsg = cggmp21::keygen::ThresholdMsg<Secp256k1, SecurityLevel128, sha2::Sha256>;
 
 /// keccak256(uncompressed_pubkey_without_prefix)[12..] — the Ethereum address.
