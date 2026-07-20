@@ -34,7 +34,6 @@
 //!   * `KeyShare::from_parts((IncompleteKeyShare, AuxInfo))` → complete `KeyShare`.
 
 use cggmp21::key_refresh::{AuxOnlyMsg, PregeneratedPrimes};
-use cggmp21::key_share::AnyKeyShare;
 use cggmp21::security_level::SecurityLevel128;
 use cggmp21::supported_curves::Secp256k1;
 use cggmp21::{DataToSign, ExecutionId, KeyShare};
