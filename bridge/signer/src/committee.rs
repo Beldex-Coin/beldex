@@ -106,6 +106,24 @@ pub struct CommitteeView {
     pub height: u64,
     /// Ordered committee members (`n`), as the on-chain quorum lists them.
     pub members: Vec<MemberId>,
+    /// Each member's bridge-signer ed25519 (`signer_ed25519`) transport identity,
+    /// **parallel to `members`** — `signer_keys[i]` authenticates `members[i]`'s
+    /// session messages (S4, [`crate::wire_auth`]). Empty when the daemon did not
+    /// supply them (older `bridge.committee` reply); a fully wired mesh requires
+    /// it to be present and the same length as `members`.
+    pub signer_keys: Vec<MemberId>,
+    /// Each member's public IP (parallel to `members`), from its uptime proof —
+    /// lets the signer build its mesh peer address book without a peers file.
+    /// Empty when the daemon did not supply it.
+    pub member_ips: Vec<String>,
+    /// Each member's x25519 curve pubkey (parallel to `members`) — the mesh channel
+    /// key. Empty when absent.
+    pub member_x25519: Vec<MemberId>,
+    /// The querying daemon's own committee index, as it reported it (the OMQ
+    /// `bridge.committee` reply's `self_index`). `None` if absent (the RPC form
+    /// omits it) or `-1` (this daemon is not seated this epoch). Lets the signer
+    /// learn its index straight from its node, with no per-node pubkey config.
+    pub daemon_self_index: Option<usize>,
     /// Threshold `t + 1` required to produce a signature.
     pub threshold: usize,
 }
@@ -133,11 +151,153 @@ impl CommitteeView {
             members.push(crate::config::parse_hex32(&h).ok_or(CommitteeError::BadMemberHex)?);
         }
 
+        // `signer_keys` is parallel to `members` (S4 transport identities). It is
+        // optional for backward compatibility with an older daemon; when present
+        // it must be all-32-byte-hex and the same length as `members`, else the
+        // reply is malformed. Absent => empty (an un-hardened mesh).
+        let signer_keys = match json_str_array(s, "signer_keys") {
+            Ok(keys_hex) => {
+                let mut keys = Vec::with_capacity(keys_hex.len());
+                for h in keys_hex {
+                    keys.push(crate::config::parse_hex32(&h).ok_or(CommitteeError::BadMemberHex)?);
+                }
+                if !keys.is_empty() && keys.len() != members.len() {
+                    return Err(CommitteeError::BadValue("signer_keys"));
+                }
+                keys
+            }
+            Err(CommitteeError::MissingField(_)) => Vec::new(), // older daemon
+            Err(e) => return Err(e),
+        };
+
+        // Per-member network reachability (IP + x25519), also optional and
+        // parallel to `members`. Lets the signer dial the mesh with no peers file.
+        let member_ips = match json_str_array(s, "ips") {
+            Ok(v) => {
+                if !v.is_empty() && v.len() != members.len() {
+                    return Err(CommitteeError::BadValue("ips"));
+                }
+                v
+            }
+            Err(CommitteeError::MissingField(_)) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        let member_x25519 = match json_str_array(s, "x25519_keys") {
+            Ok(keys_hex) => {
+                let mut keys = Vec::with_capacity(keys_hex.len());
+                for h in keys_hex {
+                    keys.push(crate::config::parse_hex32(&h).ok_or(CommitteeError::BadMemberHex)?);
+                }
+                if !keys.is_empty() && keys.len() != members.len() {
+                    return Err(CommitteeError::BadValue("x25519_keys"));
+                }
+                keys
+            }
+            Err(CommitteeError::MissingField(_)) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+
+        // The daemon's own index (OMQ reply only). A leading '-' (i.e. -1, not
+        // seated) or absence => None.
+        let daemon_self_index = value_after_key(s, "self_index").and_then(|v| {
+            if v.starts_with('-') {
+                None
+            } else {
+                let end = v.find(|c: char| !c.is_ascii_digit()).unwrap_or(v.len());
+                v[..end].parse::<usize>().ok()
+            }
+        });
+
         if !active || members.is_empty() {
             return Err(CommitteeError::Inactive { epoch, height });
         }
 
-        Ok(CommitteeView { epoch, height, members, threshold })
+        Ok(CommitteeView {
+            epoch,
+            height,
+            members,
+            signer_keys,
+            member_ips,
+            member_x25519,
+            daemon_self_index,
+            threshold,
+        })
+    }
+
+    /// This member's bridge-signer transport key, if `signer_keys` was supplied.
+    pub fn signer_key(&self, index: usize) -> Option<MemberId> {
+        self.signer_keys.get(index).copied()
+    }
+
+    /// `(index, signer_ed25519)` pairs for wiring the mesh authentication key
+    /// book ([`crate::wire_auth::AuthKeyBook`]). Empty when the daemon did not
+    /// supply `signer_keys` (the mesh then cannot authenticate `from` — a
+    /// configuration error caught at startup, not silently ignored).
+    pub fn auth_members(&self) -> Vec<(u16, MemberId)> {
+        self.signer_keys
+            .iter()
+            .enumerate()
+            .map(|(i, k)| (i as u16, *k))
+            .collect()
+    }
+
+    /// Whether every member has a transport key (the mesh can authenticate).
+    pub fn has_signer_keys(&self) -> bool {
+        !self.signer_keys.is_empty() && self.signer_keys.len() == self.members.len()
+    }
+
+    /// Whether every member has network reachability (IP + x25519) — the signer
+    /// can build its mesh peer address book from the committee alone (no peers
+    /// file).
+    pub fn has_network_info(&self) -> bool {
+        !self.member_ips.is_empty()
+            && self.member_ips.len() == self.members.len()
+            && self.member_x25519.len() == self.members.len()
+    }
+
+    /// The mesh peer address book (excluding `self_index`): `(index, endpoint,
+    /// x25519)` with `endpoint = tcp://<ip>:<mesh_port>`. Empty if the committee
+    /// carries no network info (the caller then falls back to a peers file). The
+    /// mesh port is a signer-side constant because the bridge mesh is a separate
+    /// process from beldexd's quorumnet.
+    pub fn peer_transport(&self, self_index: usize, mesh_port: u16) -> Vec<(u16, String, MemberId)> {
+        if !self.has_network_info() {
+            return Vec::new();
+        }
+        (0..self.members.len())
+            .filter(|i| *i != self_index)
+            .map(|i| {
+                (
+                    i as u16,
+                    format!("tcp://{}:{}", self.member_ips[i], mesh_port),
+                    self.member_x25519[i],
+                )
+            })
+            .collect()
+    }
+
+    /// Like [`Self::peer_transport`] but with a **per-member port** `port_base + i`,
+    /// for a single-host deployment (e.g. a local devnet) where every member shares
+    /// an IP and must listen on a distinct port. `self`'s own listen port is
+    /// `port_base + self_index`.
+    pub fn peer_transport_indexed(
+        &self,
+        self_index: usize,
+        port_base: u16,
+    ) -> Vec<(u16, String, MemberId)> {
+        if !self.has_network_info() {
+            return Vec::new();
+        }
+        (0..self.members.len())
+            .filter(|i| *i != self_index)
+            .map(|i| {
+                (
+                    i as u16,
+                    format!("tcp://{}:{}", self.member_ips[i], port_base + i as u16),
+                    self.member_x25519[i],
+                )
+            })
+            .collect()
     }
 
     /// This member's index within the committee, if seated.
@@ -183,6 +343,10 @@ mod tests {
             epoch,
             height: epoch * 2880,
             members: members.iter().map(|b| id(*b)).collect(),
+            signer_keys: Vec::new(),
+            member_ips: Vec::new(),
+            member_x25519: Vec::new(),
+            daemon_self_index: None,
             threshold,
         }
     }
@@ -244,6 +408,9 @@ mod tests {
         assert_eq!(c.self_index(&me), Some(2));
         let stranger = [0u8; 32];
         assert_eq!(c.self_index(&stranger), None);
+        // The daemon also reports its own index directly (OMQ `self_index`), which
+        // the signer prefers so no per-node pubkey config is needed.
+        assert_eq!(c.daemon_self_index, Some(2));
     }
 
     #[test]
@@ -282,6 +449,90 @@ mod tests {
         assert_eq!(
             CommitteeView::from_bridge_committee_json(bad2),
             Err(CommitteeError::BadMemberHex)
+        );
+    }
+
+    #[test]
+    fn parses_parallel_signer_keys_and_builds_auth_members() {
+        // A reply that includes signer_keys parallel to members (the hardened
+        // path): each member's ed25519 transport identity is available for S4.
+        let reply = "{\"active\":true,\"epoch\":2,\"height\":240,\
+                      \"threshold\":2,\"size\":3,\
+                      \"members\":[\"AA\",\"BB\",\"CC\"],\
+                      \"signer_keys\":[\"11\",\"22\",\"33\"]}"
+            .replace("\"AA\"", &format!("\"{}\"", "aa".repeat(32)))
+            .replace("\"BB\"", &format!("\"{}\"", "bb".repeat(32)))
+            .replace("\"CC\"", &format!("\"{}\"", "cc".repeat(32)))
+            .replace("\"11\"", &format!("\"{}\"", "11".repeat(32)))
+            .replace("\"22\"", &format!("\"{}\"", "22".repeat(32)))
+            .replace("\"33\"", &format!("\"{}\"", "33".repeat(32)));
+        let c = CommitteeView::from_bridge_committee_json(&reply).expect("parse");
+        assert!(c.has_signer_keys());
+        assert_eq!(c.signer_key(1), Some([0x22u8; 32]));
+        assert_eq!(
+            c.auth_members(),
+            vec![(0u16, [0x11u8; 32]), (1u16, [0x22u8; 32]), (2u16, [0x33u8; 32])]
+        );
+    }
+
+    #[test]
+    fn builds_peer_address_book_from_network_info() {
+        // A reply with ips + x25519_keys parallel to members: the signer can dial
+        // the mesh with no peers file.
+        let reply = "{\"active\":true,\"epoch\":2,\"height\":240,\"threshold\":2,\"size\":3,\
+                      \"members\":[\"AA\",\"BB\",\"CC\"],\
+                      \"signer_keys\":[\"11\",\"22\",\"33\"],\
+                      \"ips\":[\"10.0.0.1\",\"10.0.0.2\",\"10.0.0.3\"],\
+                      \"x25519_keys\":[\"44\",\"55\",\"66\"]}"
+            .replace("\"AA\"", &format!("\"{}\"", "aa".repeat(32)))
+            .replace("\"BB\"", &format!("\"{}\"", "bb".repeat(32)))
+            .replace("\"CC\"", &format!("\"{}\"", "cc".repeat(32)))
+            .replace("\"11\"", &format!("\"{}\"", "11".repeat(32)))
+            .replace("\"22\"", &format!("\"{}\"", "22".repeat(32)))
+            .replace("\"33\"", &format!("\"{}\"", "33".repeat(32)))
+            .replace("\"44\"", &format!("\"{}\"", "44".repeat(32)))
+            .replace("\"55\"", &format!("\"{}\"", "55".repeat(32)))
+            .replace("\"66\"", &format!("\"{}\"", "66".repeat(32)));
+        let c = CommitteeView::from_bridge_committee_json(&reply).expect("parse");
+        assert!(c.has_network_info());
+        // Peer book for self_index 0, mesh port 5580: peers 1 and 2 only.
+        let peers = c.peer_transport(0, 5580);
+        assert_eq!(peers.len(), 2);
+        assert_eq!(peers[0], (1u16, "tcp://10.0.0.2:5580".to_string(), [0x55u8; 32]));
+        assert_eq!(peers[1], (2u16, "tcp://10.0.0.3:5580".to_string(), [0x66u8; 32]));
+    }
+
+    #[test]
+    fn no_network_info_yields_empty_peer_book() {
+        // Older daemon (no ips/x25519) => empty book; caller falls back to a file.
+        let c = CommitteeView::from_bridge_committee_json(DEVNET_REPLY).expect("parse");
+        assert!(!c.has_network_info());
+        assert!(c.peer_transport(0, 5580).is_empty());
+    }
+
+    #[test]
+    fn tolerates_older_daemon_without_signer_keys() {
+        // Backward compatibility: a reply with no signer_keys parses, but the mesh
+        // knows it cannot authenticate `from` yet (has_signer_keys == false).
+        let c = CommitteeView::from_bridge_committee_json(DEVNET_REPLY).expect("parse");
+        assert!(c.signer_keys.is_empty());
+        assert!(!c.has_signer_keys());
+        assert!(c.auth_members().is_empty());
+    }
+
+    #[test]
+    fn signer_keys_length_mismatch_is_rejected() {
+        // 3 members but only 2 signer_keys => malformed reply.
+        let bad = "{\"active\":true,\"epoch\":1,\"height\":120,\"threshold\":2,\
+                    \"members\":[\"aa\",\"bb\",\"cc\"],\"signer_keys\":[\"11\",\"22\"]}"
+            .replace("\"aa\"", &format!("\"{}\"", "aa".repeat(32)))
+            .replace("\"bb\"", &format!("\"{}\"", "bb".repeat(32)))
+            .replace("\"cc\"", &format!("\"{}\"", "cc".repeat(32)))
+            .replace("\"11\"", &format!("\"{}\"", "11".repeat(32)))
+            .replace("\"22\"", &format!("\"{}\"", "22".repeat(32)));
+        assert_eq!(
+            CommitteeView::from_bridge_committee_json(&bad),
+            Err(CommitteeError::BadValue("signer_keys"))
         );
     }
 

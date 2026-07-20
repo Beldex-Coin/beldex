@@ -2887,6 +2887,14 @@ namespace cryptonote::rpc {
   /// - `epoch` -- epoch index (floor(height / BRIDGE_EPOCH_BLOCKS)).
   /// - `height` -- the epoch-boundary height the committee was selected at.
   /// - `members` -- ordered list of committee master-node pubkeys (hex).
+  /// - `signer_keys` -- parallel to `members`: each member's bridge-signer
+  ///     ed25519 (`signer_ed25519`) transport identity (hex). The signer keys its
+  ///     session-message authentication (S4) off these.
+  /// - `ips` -- parallel to `members`: each member's public IP (from its uptime
+  ///     proof), so the signer can build its mesh peer address book without a
+  ///     peers file. "0.0.0.0" if unknown.
+  /// - `x25519_keys` -- parallel to `members`: each member's x25519 curve pubkey
+  ///     (the mesh channel key). The mesh listen *port* is a signer-side constant.
   /// - `threshold` -- t+1 signers required.
   /// - `size` -- committee size n.
   /// - `active` -- whether a committee exists (bridge above the activation floor).

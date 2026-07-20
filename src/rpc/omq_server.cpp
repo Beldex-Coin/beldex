@@ -3,7 +3,9 @@
 #include "rpc/common/param_parser.hpp"
 #include "cryptonote_config.h"
 #include "common/hex.h"
+#include "epee/string_tools.h"
 #include "cryptonote_core/master_node_list.h"
+#include "cryptonote_core/uptime_proof.h"
 #include "oxenmq/oxenmq.h"
 #include "oxenc/bt.h"
 #include <fmt/core.h>
@@ -539,7 +541,38 @@ void omq_rpc::on_bridge_committee(oxenmq::Message& m)
   // seated this epoch / not running as a master node). The signer uses this to
   // know which share index it owns without trusting the leader.
   const auto& keys = core_.get_master_keys();
-  nlohmann::json members = nlohmann::json::array();
+
+  // Per-member bridge-signer ed25519 identity (signer_ed25519), parallel to
+  // members[]. The signer keys its session-message authentication (S4) off these
+  // — a peer's self-declared `from` index is verified against members' registered
+  // transport key — so this must come from consensus, never from the peer.
+  auto infos = core_.get_master_node_list_state({});
+  auto signer_hex_for = [&infos](const crypto::public_key& pk) -> std::string {
+    for (const auto& e : infos)
+      if (e.pubkey == pk && e.info->bridge_seat.registered)
+        return tools::type_to_hex(e.info->bridge_seat.signer_ed25519);
+    return tools::type_to_hex(crypto::ed25519_public_key{}); // zero if not found
+  };
+
+  // Per-member network reachability (public IP + x25519 curve key), read from the
+  // gossiped uptime proof, so the signer can dial the mesh without a peers file.
+  // The mesh listen *port* is a signer-side constant (the bridge mesh is a
+  // separate process from beldexd's quorumnet); only ip + curve key come from here.
+  auto net_for = [this](const crypto::public_key& pk) {
+    std::string ip = "0.0.0.0";
+    std::string x25519 = tools::type_to_hex(crypto::x25519_public_key::null());
+    core_.get_master_node_list().access_proof(pk, [&](const auto& proof) {
+      if (proof.proof && proof.proof->public_ip != 0)
+        ip = epee::string_tools::get_ip_string_from_int32(proof.proof->public_ip);
+      x25519 = tools::type_to_hex(proof.pubkey_x25519);
+    });
+    return std::make_pair(ip, x25519);
+  };
+
+  nlohmann::json members     = nlohmann::json::array();
+  nlohmann::json signer_keys = nlohmann::json::array();
+  nlohmann::json ips         = nlohmann::json::array();
+  nlohmann::json x25519_keys = nlohmann::json::array();
   int self_index = -1;
   if (q)
   {
@@ -547,6 +580,10 @@ void omq_rpc::on_bridge_committee(oxenmq::Message& m)
     for (const auto& pk : q->validators)
     {
       members.push_back(tools::type_to_hex(pk));
+      signer_keys.push_back(signer_hex_for(pk));
+      auto [ip, x25519] = net_for(pk);
+      ips.push_back(std::move(ip));
+      x25519_keys.push_back(std::move(x25519));
       if (keys.pub && pk == keys.pub)
         self_index = idx;
       ++idx;
@@ -557,6 +594,9 @@ void omq_rpc::on_bridge_committee(oxenmq::Message& m)
       {"epoch", epoch},
       {"height", epoch_start},
       {"members", std::move(members)},
+      {"signer_keys", std::move(signer_keys)},
+      {"ips", std::move(ips)},
+      {"x25519_keys", std::move(x25519_keys)},
       {"self_index", self_index},
       {"threshold", cryptonote::bridge_committee_threshold(nettype)},
       {"size", cryptonote::bridge_committee_size(nettype)},

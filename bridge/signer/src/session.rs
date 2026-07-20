@@ -470,6 +470,10 @@ mod tests {
             epoch,
             height: epoch * 120,
             members: (0..n).map(|i| [i as u8; 32]).collect(),
+            signer_keys: Vec::new(),
+            member_ips: Vec::new(),
+            member_x25519: Vec::new(),
+            daemon_self_index: None,
             threshold,
         }
     }

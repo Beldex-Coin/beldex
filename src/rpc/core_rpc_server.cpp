@@ -4044,14 +4044,51 @@ namespace cryptonote::rpc {
     const uint64_t epoch_start = epoch * cryptonote::bridge_epoch_blocks(nettype());
 
     auto q = m_core.get_quorum(master_nodes::quorum_type::bridge, epoch_start, true /*include_old*/);
-    auto members = json::array();
+
+    // Per-member bridge-signer ed25519 identity (signer_ed25519), parallel to
+    // members[], for the signer's session-message authentication (S4).
+    auto infos = m_core.get_master_node_list_state({});
+    auto signer_hex_for = [&infos](const crypto::public_key &pk) -> std::string {
+      for (const auto &e : infos)
+        if (e.pubkey == pk && e.info->bridge_seat.registered)
+          return tools::type_to_hex(e.info->bridge_seat.signer_ed25519);
+      return tools::type_to_hex(crypto::ed25519_public_key{}); // zero if not found
+    };
+
+    // Per-member network reachability (public IP + x25519 curve key) from the
+    // gossiped proof, so the signer can dial the mesh without a peers file. The
+    // mesh listen port is a signer-side constant (separate from beldexd quorumnet).
+    auto net_for = [this](const crypto::public_key &pk) {
+      std::string ip = "0.0.0.0";
+      std::string x25519 = tools::type_to_hex(crypto::x25519_public_key::null());
+      m_core.get_master_node_list().access_proof(pk, [&](const auto &proof) {
+        if (proof.proof && proof.proof->public_ip != 0)
+          ip = epee::string_tools::get_ip_string_from_int32(proof.proof->public_ip);
+        x25519 = tools::type_to_hex(proof.pubkey_x25519);
+      });
+      return std::make_pair(ip, x25519);
+    };
+
+    auto members     = json::array();
+    auto signer_keys = json::array();
+    auto ips         = json::array();
+    auto x25519_keys = json::array();
     if (q)
       for (const auto &pk : q->validators)
+      {
         members.push_back(tools::type_to_hex(pk));
+        signer_keys.push_back(signer_hex_for(pk));
+        auto [ip, x25519] = net_for(pk);
+        ips.push_back(std::move(ip));
+        x25519_keys.push_back(std::move(x25519));
+      }
 
-    cmd.response["epoch"]     = epoch;
-    cmd.response["height"]    = epoch_start;
-    cmd.response["members"]   = std::move(members);
+    cmd.response["epoch"]       = epoch;
+    cmd.response["height"]      = epoch_start;
+    cmd.response["members"]     = std::move(members);
+    cmd.response["signer_keys"] = std::move(signer_keys);
+    cmd.response["ips"]         = std::move(ips);
+    cmd.response["x25519_keys"] = std::move(x25519_keys);
     cmd.response["threshold"] = cryptonote::bridge_committee_threshold(nettype());
     cmd.response["size"]      = cryptonote::bridge_committee_size(nettype());
     cmd.response["active"]    = (q && !q->validators.empty());
