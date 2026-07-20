@@ -24,7 +24,7 @@ def coins(*args):
     return round(x * 1000000000)
 
 
-def wait_for(callback, timeout=10):
+def wait_for(callback, timeout=60):
     expires = time.time() + timeout
     while True:
         try:
@@ -329,7 +329,11 @@ class MNNetwork:
 
         return height
 
-    def sync_nodes(self, height=None, *, extra=[], timeout=10):
+    # timeout=180: with the RandomX JIT disabled (MONERO_RANDOMX_UMASK=8,
+    # required on Apple Silicon — see bridge/docs/DEBUG_LOG.md Issue 4), each
+    # node verifies PoW in the interpreter, so syncing an 11-block burst can
+    # take well over the old 10s window.
+    def sync_nodes(self, height=None, *, extra=[], timeout=180):
         """Waits for all nodes to reach the given height, typically invoked after mine()"""
         nodes = self.all_nodes + extra
         heights = [x.height() for x in nodes]

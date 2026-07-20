@@ -93,7 +93,7 @@ class RPCDaemon:
         """Returns the startup arguments; default is just self.args, but subclasses can override."""
         return self.args
 
-    def json_rpc(self, method, params=None, *, timeout=10):
+    def json_rpc(self, method, params=None, *, timeout=600):
         """Sends a json_rpc request to the rpc port.  Returns the response object."""
         if not self.proc:
             raise RuntimeError("Cannot make rpc request before calling start()")
@@ -111,7 +111,7 @@ class RPCDaemon:
             timeout=timeout,
         )
 
-    def rpc(self, path, params=None, *, timeout=10):
+    def rpc(self, path, params=None, *, timeout=600):
         """Sends a non-json_rpc rpc request to the rpc port at path `path`, e.g. /get_info.  Returns the response object."""
         if not self.proc:
             raise RuntimeError("Cannot make rpc request before calling start()")
