@@ -616,7 +616,13 @@ sqlite3 *init_beldex_name_system(const fs::path& file_path, bool read_only)
     return nullptr;
   }
 
-  int const flags = read_only ? SQLITE_OPEN_READONLY : SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE;
+  // SQLITE_OPEN_FULLMUTEX: this connection is shared between the block-add
+  // path and RPC worker threads (e.g. GET_INFO -> get_mapping_counts). On
+  // Linux sqlite defaults to serialized threading (SQLITE_THREADSAFE=1) so
+  // this was implicitly safe, but macOS's system sqlite defaults to
+  // multi-thread mode, where unsynchronized use of one connection segfaults
+  // inside the btree layer. Request serialized mode explicitly.
+  int const flags = (read_only ? SQLITE_OPEN_READONLY : SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE) | SQLITE_OPEN_FULLMUTEX;
   int sql_open    = sqlite3_open_v2(file_path.u8string().c_str(), &result, flags, nullptr);
   if (sql_open != SQLITE_OK)
   {
@@ -2521,8 +2527,43 @@ std::vector<mapping_record> name_system_db::get_mappings_by_owner(generic_owner 
 }
 
 int name_system_db::get_mapping_counts(uint64_t blockchain_height) {
-  int result;
-  bind_and_run(bns_sql_type::get_mapping_counts, get_mapping_counts_sql, &result, blockchain_height);
+  // GET_INFO calls this from RPC worker threads while the block-add thread may
+  // hold an open write transaction on the shared `db` connection. Interleaving
+  // statements from different threads on one connection aborts the write
+  // transaction and can livelock inside ROLLBACK/TripAllCursors (observed on
+  // macOS local-devnet). WAL journal mode explicitly supports concurrent
+  // readers on their OWN connections alongside one writer, so run this query
+  // on a short-lived read-only connection instead of the shared one.
+  int result = 0;
+  const char* db_path = db ? sqlite3_db_filename(db, "main") : nullptr;
+  if (!db_path || !*db_path)
+  {
+    // In-memory db (no file to re-open): fall back to the shared connection.
+    bind_and_run(bns_sql_type::get_mapping_counts, get_mapping_counts_sql, &result, blockchain_height);
+    return result;
+  }
+
+  sqlite3* ro = nullptr;
+  if (sqlite3_open_v2(db_path, &ro, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK)
+  {
+    if (ro) sqlite3_close(ro);
+    return result;
+  }
+  sqlite3_busy_timeout(ro, 100);
+  // Same SQL as GET_MAPPING_COUNTS_STR in init() (that one is local to init):
+  const std::string count_sql = R"(
+    SELECT COUNT(*) FROM (
+      SELECT DISTINCT name_hash FROM mappings WHERE )" + std::string{EXPIRATION} + R"(
+    ))";
+  sqlite3_stmt* st = nullptr;
+  if (sqlite3_prepare_v2(ro, count_sql.c_str(), -1, &st, nullptr) == SQLITE_OK)
+  {
+    sqlite3_bind_int64(st, 1, static_cast<int64_t>(blockchain_height));
+    if (sqlite3_step(st) == SQLITE_ROW)
+      result = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+  }
+  sqlite3_close(ro);
   return result;
 }
 
