@@ -448,7 +448,7 @@ namespace cryptonote
           std::unique_lock b_lock{m_blockchain};
           LockedTXN lock(m_blockchain);
           m_blockchain.add_txpool_tx(id, blob, meta);
-          if (!insert_key_images(tx, id, opts.kept_by_block))
+          if (!insert_key_images(tx, id, opts.kept_by_block, &tvc.m_verbose_error))
             return false;
           m_txs_by_fee_and_receive_time.emplace(std::tuple<bool, double, std::time_t>(non_standard_tx, fee / (double)(tx_weight ? tx_weight : 1), receive_time), id);
           lock.commit();
@@ -494,7 +494,7 @@ namespace cryptonote
         LockedTXN lock(m_blockchain);
         m_blockchain.remove_txpool_tx(id);
         m_blockchain.add_txpool_tx(id, blob, meta);
-        if (!insert_key_images(tx, id, opts.kept_by_block))
+        if (!insert_key_images(tx, id, opts.kept_by_block, &tvc.m_verbose_error))
           return false;
         m_txs_by_fee_and_receive_time.emplace(std::tuple<bool, double, std::time_t>(non_standard_tx, fee / (double)(tx_weight ? tx_weight : 1), receive_time), id);
         lock.commit();
@@ -880,7 +880,7 @@ namespace cryptonote
       MINFO("Pool weight after pruning is still larger than limit: " << m_txpool_weight << "/" << m_txpool_max_weight);
   }
   //---------------------------------------------------------------------------------
-  bool tx_memory_pool::insert_key_images(const transaction_prefix &tx, const crypto::hash &id, bool kept_by_block)
+  bool tx_memory_pool::insert_key_images(const transaction_prefix &tx, const crypto::hash &id, bool kept_by_block, std::string *out_gw_reason)
   {
     for(const auto& in: tx.vin)
     {
@@ -904,6 +904,8 @@ namespace cryptonote
       if (!insert_gateway_spends(tx, gw_reason))
       {
         MERROR("gateway pool check failed for tx " << id << ": " << gw_reason);
+        if (out_gw_reason)
+          *out_gw_reason = std::move(gw_reason);
         return false;
       }
     }

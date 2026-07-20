@@ -3355,6 +3355,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     if (!validate_tx_gateway_operations_against_db(*m_db, m_nettype, tx, hf_version, gw_reason))
     {
       MERROR_VER("Gateway operation validation failed for tx " << get_transaction_hash(tx) << ": " << gw_reason);
+      tvc.m_verbose_error = std::move(gw_reason);
       tvc.m_verifivation_failed = true;
       return false;
     }
@@ -3370,6 +3371,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     // gateway input would mint spendable coins with no authorization or backing
     // balance. Reject any gateway construct outright until HF22 activates.
     MERROR_VER("Gateway construct in tx " << get_transaction_hash(tx) << " before HF22 activation, rejected");
+    tvc.m_verbose_error = "gateway constructs are not allowed before HF22 activation";
     tvc.m_verifivation_failed = true;
     return false;
   }
