@@ -127,3 +127,5 @@ contrib/brew/Brewfile.lock.json
 /bridge/signer/DUE_DILIGENCE.md
 /SOVEREIGN_BRIDGE_PRODUCTION_CHECKLIST.md
 /crash-reports/
+/runlog.sh
+/.debug/
