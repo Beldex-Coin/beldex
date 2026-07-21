@@ -259,7 +259,7 @@ namespace
   const char* USAGE_PRINT_LOCKED_STAKES("print_locked_stakes [key_images]");
 
   const char* USAGE_BNS_BUY_MAPPING("bns_buy_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] <name>");
-  const char* USAGE_REGISTER_GATEWAY_ADDRESS("register_gateway_address [index=<N1>[,<N2>,...]] [<priority>] <gateway_secret_hex> <owner_type: schnorr|eth|eddsa> <owner_key_hex> [meta]");
+  const char* USAGE_REGISTER_GATEWAY_ADDRESS("register_gateway_address [index=<N1>[,<N2>,...]] [<priority>] <gateway_secret_hex> <owner_type: schnorr|eth|eddsa> <owner_key_hex> [meta...]");
   const char* USAGE_BNS_RENEW_MAPPING("bns_renew_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] <name>");
   const char* USAGE_BNS_UPDATE_MAPPING("bns_update_mapping [index=<N1>[,<N2>,...]] [<priority>] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] [signature=<hex_signature>] <name>");
 
@@ -6986,7 +6986,7 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
   std::set<uint32_t> subaddr_indices = {};
   if (!parse_subaddr_indices_and_priority(*m_wallet, args, subaddr_indices, priority, m_current_subaddress_account)) return false;
 
-  if (args.size() < 3 || args.size() > 4)
+  if (args.size() < 3)
   {
     PRINT_USAGE(USAGE_REGISTER_GATEWAY_ADDRESS);
     return true;
@@ -7033,7 +7033,9 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
     fail_msg_writer() << tr("owner_type must be one of: schnorr, eth, eddsa");
     return true;
   }
-  const std::string meta = args.size() == 4 ? args[3] : std::string{};
+  std::string meta = args.size() > 3 ? tools::join(" ", args.begin() + 3, args.end()) : std::string{};
+  if (meta.size() >= 2 && meta.front() == '"' && meta.back() == '"')
+    meta = meta.substr(1, meta.size() - 2);
 
   SCOPED_WALLET_UNLOCK();
   std::string reason;

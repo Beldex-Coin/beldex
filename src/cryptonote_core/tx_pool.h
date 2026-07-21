@@ -562,9 +562,12 @@ namespace cryptonote
     /**
      * @brief insert key images into m_spent_key_images
      *
+     * @param gw_reason if non-null, receives the human-readable reason when the
+     *  gateway pool check (overdraft/duplicate tracking) rejects the tx
+     *
      * @return true on success, false on error
      */
-    bool insert_key_images(const transaction_prefix &tx, const crypto::hash &txid, bool kept_by_block);
+    bool insert_key_images(const transaction_prefix &tx, const crypto::hash &txid, bool kept_by_block, std::string *gw_reason = nullptr);
 
     /**
      * @brief remove old transactions from the pool

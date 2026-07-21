@@ -715,7 +715,7 @@ void Blockchain::pop_blocks(uint64_t nblocks)
 // This function tells BlockchainDB to remove the top block from the
 // blockchain and then returns all transactions (except the miner tx, of course)
 // from it to the tx_pool
-block Blockchain::pop_block_from_blockchain()
+block Blockchain::pop_block_from_blockchain(bool rewind_gateway_state)
 {
   LOG_PRINT_L3("Blockchain::" << __func__);
   std::unique_lock lock{*this};
@@ -746,7 +746,9 @@ block Blockchain::pop_block_from_blockchain()
 
   // Gateway address (HF22): exact-inverse rewind of the popped block's
   // register/update descriptor operations, before returning txs to the pool.
-  if (popped_block.major_version >= feature::GATEWAY_ADDRESSES)
+  // Skipped (rewind_gateway_state == false) when aborting a block whose
+  // gateway state was never applied — see pop_block_from_blockchain docs.
+  if (rewind_gateway_state && popped_block.major_version >= feature::GATEWAY_ADDRESSES)
   {
     std::string gw_reason;
     CHECK_AND_ASSERT_THROW_MES(
@@ -3362,6 +3364,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     if (!validate_tx_gateway_operations_against_db(*m_db, m_nettype, tx, hf_version, resolve_quorum, gw_reason))
     {
       MERROR_VER("Gateway operation validation failed for tx " << get_transaction_hash(tx) << ": " << gw_reason);
+      tvc.m_verbose_error = std::move(gw_reason);
       tvc.m_verifivation_failed = true;
       return false;
     }
@@ -3377,6 +3380,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     // gateway input would mint spendable coins with no authorization or backing
     // balance. Reject any gateway construct outright until HF22 activates.
     MERROR_VER("Gateway construct in tx " << get_transaction_hash(tx) << " before HF22 activation, rejected");
+    tvc.m_verbose_error = "gateway constructs are not allowed before HF22 activation";
     tvc.m_verifivation_failed = true;
     return false;
   }
@@ -4567,6 +4571,32 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
   rtxn_guard.stop();
   auto addblock = std::chrono::steady_clock::now();
   uint64_t new_height = 0;
+
+  // Gateway address (HF22): simulate this block's gateway balance mutations
+  // against a block-local running balance seeded from the DB, WITHOUT writing
+  // anything, BEFORE m_db->add_block(). Per-tx validation can't catch cross-tx
+  // overdraw (two withdrawals each within balance, together exceeding it); an
+  // over-withdrawal (or any other block-invalidating gateway op) is rejected
+  // here — cleanly, before the block is written and before the abort_block
+  // rollback path is armed — instead of failing in append after add_block,
+  // where the rollback's rewind would corrupt the ledger.
+  if (!bvc.m_verifivation_failed && bl.major_version >= feature::GATEWAY_ADDRESSES)
+  {
+    std::vector<transaction> gw_txs;
+    gw_txs.reserve(txs.size());
+    for (const auto& tx_pair : txs)
+      gw_txs.push_back(tx_pair.first);
+    std::string gw_reason;
+    if (!simulate_gateways_from_transactions(*m_db, gw_txs, cryptonote::get_block_height(bl),
+                                             bl.major_version >= feature::BRIDGE, &gw_reason))
+    {
+      MGINFO_RED("Block " << id << " rejected: invalid gateway balance change: " << gw_reason);
+      bvc.m_verifivation_failed = true;
+      return_tx_to_pool(txs);
+      return false;
+    }
+  }
+
   if (!bvc.m_verifivation_failed)
   {
     try
@@ -4598,8 +4628,13 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
     MGINFO_RED("Blocks that failed verification should not reach here");
   }
 
+  // Gateway state is applied further down (append_gateways_from_transactions);
+  // if we abort before that succeeded there is nothing to rewind, and popping
+  // with the rewind enabled would undo an apply that never happened (crediting
+  // withdrawals that were never debited — i.e. minting coins).
+  bool gateways_applied = false;
   auto abort_block = beldex::defer([&]() {
-      pop_block_from_blockchain();
+      pop_block_from_blockchain(/*rewind_gateway_state=*/gateways_applied);
       exec_detach_hooks(
           *this,
           m_db->height(),
@@ -4645,14 +4680,23 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
       if (!append_gateways_from_transactions(*m_db, only_txs, cryptonote::get_block_height(bl),
                                              bl.major_version >= feature::BRIDGE, &gw_reason))
       {
+        // Should be unreachable: block-invalidating gateway ops are rejected by
+        // simulate_gateways_from_transactions before add_block. If we ever get
+        // here anyway: append is all-or-nothing, so gateways_applied stays false
+        // (the abort pop must not rewind state that was never written), and the
+        // batch is aborted so the just-added block rolls back too instead of the
+        // batch committing a corrupted ledger.
         MGINFO_RED("Failed to persist gateway operation(s): " << gw_reason);
+        m_batch_success = false;
         bvc.m_verifivation_failed = true;
         return false;
       }
+      gateways_applied = true;
     }
     catch (const std::exception& e)
     {
       MGINFO_RED("Failed to persist gateway operation(s): " << e.what());
+      m_batch_success = false;
       bvc.m_verifivation_failed = true;
       return false;
     }

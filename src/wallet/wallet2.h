@@ -1440,11 +1440,12 @@ private:
 
     // Gateway address (HF22) registration: builds a tx that burns
     // GATEWAY_ADDRESS_REGISTRATION_FEE and carries a register descriptor op in
-    // tx_extra. `gateway_id` is the on-chain id (a view pubkey; the registrant
-    // must know its secret to decrypt deposits). `owner_key` is the owner key
-    // that authorizes spends/updates — any of the three supported types (native
-    // Schnorr `crypto::public_key`, secp256k1 `eth_public_key`, RFC-8032
-    // `eddsa_public_key`); it is validated for its type before building the tx.
+    // tx_extra. `gateway_skey` is the SECRET key of the on-chain gateway id: the
+    // id (pubkey) is derived from it, and the tx is self-signed with it to prove
+    // the registrant controls the id (consensus requires this — F2). `owner_key`
+    // is the owner key that authorizes spends/updates — any of the three
+    // supported types (native Schnorr `crypto::public_key`, secp256k1
+    // `eth_public_key`, RFC-8032 `eddsa_public_key`); validated before building.
     std::vector<pending_tx> create_gateway_register_tx(const crypto::secret_key& gateway_skey, const cryptonote::gateway_owner_key_v& owner_key, const std::string& meta_info, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {});
 
     // signature: (Optional) If set, use the signature given, otherwise by default derive the signature from the wallet spend key as an ed25519 key.

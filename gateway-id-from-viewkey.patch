@@ -1,0 +1,227 @@
+diff --git a/src/simplewallet/simplewallet.cpp b/src/simplewallet/simplewallet.cpp
+index bde9e4710..ba5f0a7a4 100755
+--- a/src/simplewallet/simplewallet.cpp
++++ b/src/simplewallet/simplewallet.cpp
+@@ -257,7 +257,7 @@ namespace
+   const char* USAGE_PRINT_LOCKED_STAKES("print_locked_stakes [key_images]");
+ 
+   const char* USAGE_BNS_BUY_MAPPING("bns_buy_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] <name>");
+-  const char* USAGE_REGISTER_GATEWAY_ADDRESS("register_gateway_address [index=<N1>[,<N2>,...]] [<priority>] <gateway_secret_hex> <owner_type: schnorr|eth|eddsa> <owner_key_hex> [meta...]");
++  const char* USAGE_REGISTER_GATEWAY_ADDRESS("register_gateway_address [index=<N1>[,<N2>,...]] [<priority>] <owner_type: schnorr|eth|eddsa> <owner_key_hex> [meta...]");
+   const char* USAGE_BNS_RENEW_MAPPING("bns_renew_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] <name>");
+   const char* USAGE_BNS_UPDATE_MAPPING("bns_update_mapping [index=<N1>[,<N2>,...]] [<priority>] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] [signature=<hex_signature>] <name>");
+ 
+@@ -3142,7 +3142,7 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
+   m_cmd_binder.set_handler("register_gateway_address",
+                            [this](const auto& x) { return register_gateway_address(x); },
+                            tr(USAGE_REGISTER_GATEWAY_ADDRESS),
+-                           tr("Register a gateway address (HF22). Burns the registration fee and stores the owner key on-chain. The gateway id is derived from <gateway_secret_hex> and the tx is self-signed with it to prove control of the id. Args: <gateway_secret_hex> <owner_type> <owner_key_hex> [meta]."));
++                           tr("Register a gateway address (HF22). Burns the registration fee and stores the owner key on-chain. The gateway id is this wallet's view public key and the tx is self-signed with the wallet's view secret key to prove control of the id. Args: <owner_type> <owner_key_hex> [meta]."));
+ 
+   m_cmd_binder.set_handler("bns_renew_mapping",
+                            [this](const auto& x) { return bns_renew_mapping(x); },
+@@ -6862,46 +6862,35 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
+   std::set<uint32_t> subaddr_indices = {};
+   if (!parse_subaddr_indices_and_priority(*m_wallet, args, subaddr_indices, priority, m_current_subaddress_account)) return false;
+ 
+-  if (args.size() < 3)
++  if (args.size() < 2)
+   {
+     PRINT_USAGE(USAGE_REGISTER_GATEWAY_ADDRESS);
+     return true;
+   }
+ 
+-  // The gateway id is derived from its secret key; the registration is
+-  // self-signed with that secret to prove control of the id (F2).
+-  crypto::secret_key gateway_skey;
+-  if (!tools::hex_to_type(args[0], gateway_skey))
+-  {
+-    fail_msg_writer() << tr("Invalid gateway secret key (expected 64-char hex)");
+-    return true;
+-  }
+-  crypto::public_key gateway_id;
+-  if (!crypto::secret_key_to_public_key(gateway_skey, gateway_id))
+-  {
+-    fail_msg_writer() << tr("Invalid gateway secret key: does not yield a valid public key");
+-    return true;
+-  }
++  // The gateway id is this wallet's view public key (sourced inside
++  // create_gateway_register_tx); it is not taken from the user.
++  const crypto::public_key gateway_id = m_wallet->get_account().get_keys().m_account_address.m_view_public_key;
+ 
+   // Owner key: one of the three supported types.
+-  const std::string& owner_type = args[1];
++  const std::string& owner_type = args[0];
+   cryptonote::gateway_owner_key_v owner_key;
+   if (owner_type == "schnorr" || owner_type == "ed25519")
+   {
+     crypto::public_key pk;
+-    if (!tools::hex_to_type(args[2], pk)) { fail_msg_writer() << tr("Invalid schnorr owner key (expected 64-char hex)"); return true; }
++    if (!tools::hex_to_type(args[1], pk)) { fail_msg_writer() << tr("Invalid schnorr owner key (expected 64-char hex)"); return true; }
+     owner_key = pk;
+   }
+   else if (owner_type == "eth")
+   {
+     crypto::eth_public_key pk;
+-    if (!tools::hex_to_type(args[2], pk)) { fail_msg_writer() << tr("Invalid eth owner key (expected 66-char hex / 33-byte compressed secp256k1)"); return true; }
++    if (!tools::hex_to_type(args[1], pk)) { fail_msg_writer() << tr("Invalid eth owner key (expected 66-char hex / 33-byte compressed secp256k1)"); return true; }
+     owner_key = pk;
+   }
+   else if (owner_type == "eddsa")
+   {
+     crypto::eddsa_public_key pk;
+-    if (!tools::hex_to_type(args[2], pk)) { fail_msg_writer() << tr("Invalid eddsa owner key (expected 64-char hex)"); return true; }
++    if (!tools::hex_to_type(args[1], pk)) { fail_msg_writer() << tr("Invalid eddsa owner key (expected 64-char hex)"); return true; }
+     owner_key = pk;
+   }
+   else
+@@ -6909,7 +6898,7 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
+     fail_msg_writer() << tr("owner_type must be one of: schnorr, eth, eddsa");
+     return true;
+   }
+-  std::string meta = args.size() > 3 ? tools::join(" ", args.begin() + 3, args.end()) : std::string{};
++  std::string meta = args.size() > 2 ? tools::join(" ", args.begin() + 2, args.end()) : std::string{};
+   if (meta.size() >= 2 && meta.front() == '"' && meta.back() == '"')
+     meta = meta.substr(1, meta.size() - 2);
+ 
+@@ -6918,7 +6907,7 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
+   std::vector<tools::wallet2::pending_tx> ptx_vector;
+   try
+   {
+-    ptx_vector = m_wallet->create_gateway_register_tx(gateway_skey, owner_key, meta, &reason, priority, m_current_subaddress_account, subaddr_indices);
++    ptx_vector = m_wallet->create_gateway_register_tx(owner_key, meta, &reason, priority, m_current_subaddress_account, subaddr_indices);
+     if (ptx_vector.empty())
+     {
+       fail_msg_writer() << reason;
+@@ -6937,7 +6926,7 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
+     fmt::print(fmt::format(tr("Gateway addr: {}\n"), gateway_address));
+     fmt::print(fmt::format(tr("Gateway id  : {}\n"), tools::type_to_hex(gateway_id)));
+     fmt::print(fmt::format(tr("Owner type  : {}\n"), owner_type));
+-    fmt::print(fmt::format(tr("Owner key   : {}\n"), args[2]));
++    fmt::print(fmt::format(tr("Owner key   : {}\n"), args[1]));
+     fmt::print(fmt::format(tr("Meta        : {}\n"), meta.empty() ? "(none)" : meta));
+     fmt::print(fmt::format(tr("Fee burned  : {}\n"), print_money(cryptonote::GATEWAY_ADDRESS_REGISTRATION_FEE)));
+     if (!confirm_and_send_tx(dsts, ptx_vector, priority == tools::tx_priority_flash))
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 2ab2de095..2fdf07b3a 100755
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -8958,13 +8958,13 @@ std::vector<wallet2::pending_tx> wallet2::bns_create_buy_mapping_tx(bns::mapping
+   return result;
+ }
+ 
+-std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypto::secret_key& gateway_skey,
+-                                                                    const cryptonote::gateway_owner_key_v& owner_key,
++std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const cryptonote::gateway_owner_key_v& owner_key,
+                                                                     const std::string& meta_info,
+                                                                     std::string *reason,
+                                                                     uint32_t priority,
+                                                                     uint32_t account_index,
+-                                                                    std::set<uint32_t> subaddr_indices)
++                                                                    std::set<uint32_t> subaddr_indices,
++                                                                    crypto::public_key *out_gateway_id)
+ {
+   auto hf_version = get_hard_fork_version();
+   if (!hf_version)
+@@ -8978,14 +8978,17 @@ std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypt
+     return {};
+   }
+ 
+-  // The gateway id (pubkey) is derived from its secret key. We sign the register
+-  // with this secret so consensus can verify the registrant controls the id (F2).
++  // The gateway id is this wallet's view public key. We sign the register with the
++  // wallet's view secret key so consensus can verify the registrant controls the id
++  // (F2). The id is intrinsic to the wallet and never supplied by the caller.
++  const crypto::secret_key& gateway_skey = get_account().get_keys().m_view_secret_key;
+   crypto::public_key gateway_id{};
+   if (!crypto::secret_key_to_public_key(gateway_skey, gateway_id) || !crypto::check_key(gateway_id))
+   {
+-    if (reason) *reason = "invalid gateway secret key: does not yield a valid public key";
++    if (reason) *reason = "wallet view key does not yield a valid gateway id";
+     return {};
+   }
++  if (out_gateway_id) *out_gateway_id = gateway_id;
+ 
+   // The owner key must be valid for whichever of the three types was supplied.
+   const bool owner_ok = std::visit([](const auto& k) -> bool {
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 6eebc97d1..b464d756a 100755
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1412,13 +1412,15 @@ private:
+ 
+     // Gateway address (HF22) registration: builds a tx that burns
+     // GATEWAY_ADDRESS_REGISTRATION_FEE and carries a register descriptor op in
+-    // tx_extra. `gateway_skey` is the SECRET key of the on-chain gateway id: the
+-    // id (pubkey) is derived from it, and the tx is self-signed with it to prove
+-    // the registrant controls the id (consensus requires this — F2). `owner_key`
+-    // is the owner key that authorizes spends/updates — any of the three
+-    // supported types (native Schnorr `crypto::public_key`, secp256k1
+-    // `eth_public_key`, RFC-8032 `eddsa_public_key`); validated before building.
+-    std::vector<pending_tx> create_gateway_register_tx(const crypto::secret_key& gateway_skey, const cryptonote::gateway_owner_key_v& owner_key, const std::string& meta_info, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {});
++    // tx_extra. The gateway id is this wallet's view public key: the tx is
++    // self-signed with the wallet's view secret key to prove the registrant
++    // controls the id (consensus requires this — F2). The id is intrinsic to the
++    // wallet and is never supplied by the caller. `owner_key` is the owner key
++    // that authorizes spends/updates — any of the three supported types (native
++    // Schnorr `crypto::public_key`, secp256k1 `eth_public_key`, RFC-8032
++    // `eddsa_public_key`); validated before building. `out_gateway_id`, if
++    // non-null, receives the resulting id.
++    std::vector<pending_tx> create_gateway_register_tx(const cryptonote::gateway_owner_key_v& owner_key, const std::string& meta_info, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {}, crypto::public_key *out_gateway_id = nullptr);
+ 
+     // signature: (Optional) If set, use the signature given, otherwise by default derive the signature from the wallet spend key as an ed25519 key.
+     //            The signature is derived from the hash of the previous txid blob and previous value blob of the mapping. By default this is signed using the wallet's spend key as an ed25519 keypair.
+diff --git a/src/wallet/wallet_rpc_server.cpp b/src/wallet/wallet_rpc_server.cpp
+index 27481a87c..566124431 100755
+--- a/src/wallet/wallet_rpc_server.cpp
++++ b/src/wallet/wallet_rpc_server.cpp
+@@ -3233,12 +3233,8 @@ namespace {
+     require_open();
+     GATEWAY_REGISTER_ADDRESS::response res{};
+ 
+-    // The gateway id is derived from its secret key, and the registration is
+-    // self-signed with that secret to prove control of the id (F2).
+-    crypto::secret_key gateway_skey;
+-    if (!tools::hex_to_type(req.gateway_secret, gateway_skey))
+-      throw wallet_rpc_error{error_code::WRONG_KEY, "Invalid gateway_secret (expected 64-char hex)"};
+-
++    // The gateway id is this wallet's view public key (sourced inside
++    // create_gateway_register_tx); it is not taken from the request.
+     cryptonote::gateway_owner_key_v owner_key;
+     if (req.owner_key_type == "schnorr" || req.owner_key_type == "ed25519")
+     {
+@@ -3266,7 +3262,7 @@ namespace {
+ 
+     std::string reason;
+     std::vector<wallet2::pending_tx> ptx_vector =
+-        m_wallet->create_gateway_register_tx(gateway_skey, owner_key, req.meta_info, &reason,
++        m_wallet->create_gateway_register_tx(owner_key, req.meta_info, &reason,
+                                              req.priority, req.account_index, req.subaddr_indices);
+     if (ptx_vector.empty())
+       throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "Failed to create gateway registration transaction: " + reason};
+diff --git a/src/wallet/wallet_rpc_server_commands_defs.cpp b/src/wallet/wallet_rpc_server_commands_defs.cpp
+index 1aa0623d3..782ebec95 100755
+--- a/src/wallet/wallet_rpc_server_commands_defs.cpp
++++ b/src/wallet/wallet_rpc_server_commands_defs.cpp
+@@ -1180,7 +1180,6 @@ KV_SERIALIZE_MAP_CODE_END()
+ 
+ 
+ KV_SERIALIZE_MAP_CODE_BEGIN(GATEWAY_REGISTER_ADDRESS::request)
+-  KV_SERIALIZE    (gateway_secret);
+   KV_SERIALIZE    (owner_key_type);
+   KV_SERIALIZE    (owner_key);
+   KV_SERIALIZE    (meta_info);
+diff --git a/src/wallet/wallet_rpc_server_commands_defs.h b/src/wallet/wallet_rpc_server_commands_defs.h
+index 3cee93b61..e94e57eac 100755
+--- a/src/wallet/wallet_rpc_server_commands_defs.h
++++ b/src/wallet/wallet_rpc_server_commands_defs.h
+@@ -2312,7 +2312,8 @@ gateway is thereafter operated via the owner key.)";
+ 
+     struct request
+     {
+-      std::string        gateway_secret;   // 64-char hex SECRET key of the gateway id. The id (pubkey) is derived from it and the register tx is self-signed with it to prove control of the id.
++      // The gateway id is this wallet's view public key (and the register tx is
++      // self-signed with the wallet's view secret key); it is not part of the request.
+       std::string        owner_key_type;   // Owner key type: "schnorr" (native), "eth" (secp256k1), or "eddsa".
+       std::string        owner_key;        // Hex owner key (64 for schnorr/eddsa, 66 for eth-compressed).
+       std::string        meta_info;        // (Optional) descriptor meta string.
