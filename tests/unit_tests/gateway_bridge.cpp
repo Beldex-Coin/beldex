@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <iostream>
 #include <map>
 #include <string>
 #include <vector>
@@ -121,6 +122,54 @@ TEST(GatewayBridgeMemo, roundtrip_and_bounds)
   std::vector<uint8_t> too_big(GATEWAY_DEPOSIT_MEMO_MAX_BYTES + 1, 0xAB);
   std::vector<uint8_t> unused;
   EXPECT_FALSE(encrypt_gateway_deposit_memo(too_big, tx_sec, gw_view, 0, unused));
+}
+
+// Prints a DETERMINISTIC (tx_pubkey, view_secret, output_index, plaintext,
+// ciphertext) vector so the Rust signer's port (gateway_memo::cpp_cross_check_vector)
+// can assert byte-for-byte equality against beldexd's crypto. Run with:
+//   ./tests/unit_tests/unit_tests --gtest_filter='GatewayBridgeMemo.cross_check_vector_for_rust'
+TEST(GatewayBridgeMemo, cross_check_vector_for_rust)
+{
+  auto to_hex = [](const unsigned char* p, size_t n) {
+    static const char* d = "0123456789abcdef";
+    std::string s;
+    s.reserve(n * 2);
+    for (size_t i = 0; i < n; ++i) { s += d[p[i] >> 4]; s += d[p[i] & 0xf]; }
+    return s;
+  };
+
+  // Deterministic keys from fixed recovery seeds: generate_keys(recover=true) sets
+  // sec = sc_reduce32(seed) and pub = sec·G — reproducible without touching sc_* directly.
+  crypto::secret_key seed_tx{}, seed_view{};
+  for (int i = 0; i < 32; ++i) reinterpret_cast<unsigned char*>(seed_tx.data)[i]   = static_cast<unsigned char>(i + 1);
+  for (int i = 0; i < 32; ++i) reinterpret_cast<unsigned char*>(seed_view.data)[i] = static_cast<unsigned char>(0x40 + i);
+  crypto::public_key tx_pub{}, view_pub{};
+  crypto::secret_key tx_sec{}, view_sec{};
+  crypto::generate_keys(tx_pub, tx_sec, seed_tx, true);
+  crypto::generate_keys(view_pub, view_sec, seed_view, true);
+
+  // A 32-byte BridgeMemo plaintext: version=1, chain_id=1 (bytes 2..10 BE), addr, reserved.
+  std::vector<uint8_t> plaintext(32, 0);
+  plaintext[0] = 1;
+  plaintext[9] = 1; // chain_id = 1
+  for (int i = 0; i < 20; ++i) plaintext[10 + i] = static_cast<uint8_t>(0xa0 + i);
+  const size_t oi = 2;
+
+  std::vector<uint8_t> ct;
+  ASSERT_TRUE(encrypt_gateway_deposit_memo(plaintext, tx_sec, view_pub, oi, ct));
+
+  std::cout << "\n=== A.5 memo cross-check vector (paste into gateway_memo::cpp_cross_check_vector) ===\n"
+            << "tx_public    = " << to_hex(reinterpret_cast<const unsigned char*>(&tx_pub), 32)   << "\n"
+            << "view_secret  = " << to_hex(reinterpret_cast<const unsigned char*>(view_sec.data), 32) << "\n"
+            << "output_index = " << oi << "\n"
+            << "plaintext    = " << to_hex(plaintext.data(), plaintext.size()) << "\n"
+            << "ciphertext   = " << to_hex(ct.data(), ct.size()) << "\n"
+            << "================================================================================\n";
+
+  // Self-check the C++ round-trip (independent of the printed vector).
+  std::vector<uint8_t> pt;
+  ASSERT_TRUE(decrypt_gateway_deposit_memo(ct, tx_pub, view_sec, oi, pt));
+  EXPECT_EQ(pt, plaintext);
 }
 
 // --------------------------------------------------------------------------
