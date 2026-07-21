@@ -1,9 +1,12 @@
 //! Accountability & slashing — signer side (**Phase F**).
 //!
 //! Converts a signing session's **identifiable abort** into a cryptographic,
-//! transferable **slashing report** that `beldexd` can act on (a `state_change`
-//! deregister + 100k-bond forfeit). Both legs are attributable in principle, but at
-//! very different fidelity with the pinned libraries:
+//! transferable **slashing report** that `beldexd` can act on. **Penalty scope
+//! (decided):** the accused's **100k bridge bond is forfeited and its seat ejected**
+//! — the base masternode stake is untouched and the node is *not* deregistered as a
+//! masternode, because a bridge seat is an opt-in duty and the penalty is scoped to
+//! the bond that opts into it (plan §10 F.3). Both legs are attributable in
+//! principle, but at very different fidelity with the pinned libraries:
 //!
 //!   * **`Pgw` (FROST) — precise (F.1′).** Every signature share is verifiable
 //!     against its signer's published commitments + verifying share, so a bad share
@@ -20,8 +23,8 @@
 //! only on verifying statements. F.2 evidence transport: the accusing quorum
 //! (≥ `t+1`) signs the canonical report with their bridge-signer ed25519 keys
 //! ([`SignedSlashReport`]); `beldexd` verifies the signatures + the named check
-//! before deregistering (the C++ `bridge.slash_report` intake is the consensus
-//! follow-on).
+//! before forfeiting the bond (the C++ `bridge.slash_report` OMQ intake →
+//! `tx_extra_bridge_slash` → `process_bridge_slash_tx` is the consensus follow-on).
 //!
 //! Built under `tss-integration` (FROST share verification + libsodium ed25519).
 
@@ -225,7 +228,7 @@ impl SignedSlashReport {
     /// Verify the accusation is admissible: an **attributed** report co-signed by
     /// **≥ threshold distinct committee members**, each signature valid over the
     /// canonical report under that member's consensus-published `signer_ed25519`.
-    /// (`beldexd` re-runs this before deregistering.)
+    /// (`beldexd` re-runs this before forfeiting the bond.)
     pub fn verify(&self, committee: &CommitteeView, genesis: &[u8; 32]) -> bool {
         if !self.report.failing_check.is_attributed() {
             return false; // coarse faults are not slashable evidence
@@ -245,6 +248,45 @@ impl SignedSlashReport {
             }
         }
         valid >= committee.threshold
+    }
+}
+
+impl SignedSlashReport {
+    /// Serialize the accusation into the JSON body `beldexd`'s `bridge.slash_report`
+    /// OMQ intake expects (F.2 evidence transport). The daemon re-verifies the
+    /// evidence against the epoch committee and returns the `tx_extra` blob for the
+    /// operator wallet to submit — the daemon cannot pay a fee, so it never builds
+    /// the transaction itself.
+    ///
+    /// Accusers are emitted **sorted and deduplicated by committee index**: the C++
+    /// verifier requires strictly-ascending indices as its canonical, no-double-count
+    /// form, while [`sign_as`](Self::sign_as) appends in arrival order.
+    pub fn to_submission_json(&self) -> String {
+        let mut accusers: Vec<(u16, [u8; 64])> = self.accusers.clone();
+        accusers.sort_by_key(|(i, _)| *i);
+        accusers.dedup_by_key(|(i, _)| *i);
+
+        let hex64 = |b: &[u8; 64]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let hex32 = |b: &[u8; 32]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+
+        let entries: Vec<String> = accusers
+            .iter()
+            .map(|(i, s)| format!(r#"{{"voter_index":{i},"signature":"{}"}}"#, hex64(s)))
+            .collect();
+
+        format!(
+            concat!(
+                r#"{{"version":0,"scheme":{},"failing_check":{},"accused_index":{},"#,
+                r#""epoch":{},"height":{},"transcript_root":"{}","accusers":[{}]}}"#
+            ),
+            self.report.scheme.to_u8(),
+            self.report.failing_check.to_u8(),
+            self.report.accused_index,
+            self.report.epoch,
+            self.report.height,
+            hex32(&self.report.transcript_root),
+            entries.join(","),
+        )
     }
 }
 
@@ -406,5 +448,48 @@ mod tests {
         // Even if "signed", a coarse report is never admissible slashing evidence.
         let signed = SignedSlashReport::new(f);
         assert!(!signed.verify(&committee, &[7u8; 32]));
+    }
+
+    #[test]
+    fn submission_json_is_ascending_and_deduped() {
+        ensure_init().unwrap();
+        let (n, t) = (6u16, 4u16);
+        let (_committee, sks) = committee_with_signer_keys(n, t);
+        let genesis = [7u8; 32];
+
+        let mut signed = SignedSlashReport::new(SlashReport {
+            scheme: Scheme::Pgw,
+            transcript_root: [0xab; 32],
+            failing_check: FailingCheck::InvalidSignatureShare,
+            accused_index: 2,
+            epoch: 42,
+            height: 123456,
+        });
+        // Sign out of order; sign_as also ignores a repeat from the same member.
+        for i in [4u16, 0, 3, 1, 3] {
+            signed.sign_as(i, &sks[i as usize], &genesis).unwrap();
+        }
+
+        let json = signed.to_submission_json();
+
+        // `beldexd` requires strictly-ascending accuser indices.
+        let order: Vec<usize> = [0usize, 1, 3, 4]
+            .iter()
+            .map(|i| json.find(&format!(r#""voter_index":{i},"#)).expect("accuser present"))
+            .collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "accusers must be ascending: {json}");
+        assert_eq!(json.matches(r#""voter_index""#).count(), 4, "no duplicate accusers");
+
+        // Scalar fields land in the shape the C++ intake parses.
+        assert!(json.contains(r#""scheme":1"#));
+        assert!(json.contains(r#""failing_check":0"#));
+        assert!(json.contains(r#""accused_index":2"#));
+        assert!(json.contains(r#""epoch":42"#));
+        assert!(json.contains(r#""height":123456"#));
+        assert!(json.contains(&format!(r#""transcript_root":"{}""#, "ab".repeat(32))));
+        // 64-byte detached signatures → 128 hex chars each.
+        for sig_hex in json.split(r#""signature":""#).skip(1) {
+            assert_eq!(sig_hex.split('"').next().unwrap().len(), 128);
+        }
     }
 }

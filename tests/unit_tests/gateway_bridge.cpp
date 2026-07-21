@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <iostream>
 #include <map>
 #include <string>
@@ -26,6 +27,8 @@
 #include "cryptonote_core/gateway_utils.h"
 #include "cryptonote_config.h"
 #include "crypto/crypto.h"
+
+#include <sodium/crypto_sign.h> // ed25519 keypair/sign for the slash-evidence test
 
 using namespace cryptonote;
 
@@ -173,6 +176,173 @@ TEST(GatewayBridgeMemo, cross_check_vector_for_rust)
 }
 
 // --------------------------------------------------------------------------
+// Phase F — bridge accountability slash evidence verification (ed25519 quorum).
+
+TEST(GatewayBridgeSlash, verify_evidence_threshold_and_binding)
+{
+  const network_type NET = network_type::MAINNET;
+  const uint16_t n = 6, t_plus_1 = 4; // devnet-shape committee + threshold
+
+  // Per-member bridge-signer ed25519 keypairs (the committee's signer_ed25519).
+  std::vector<crypto::ed25519_public_key> pubs(n);
+  std::vector<crypto::ed25519_secret_key> secs(n);
+  for (uint16_t i = 0; i < n; ++i)
+    crypto_sign_ed25519_keypair(pubs[i].data, secs[i].data);
+
+  // An attributed FROST fault against committee index 2.
+  tx_extra_bridge_slash slash{};
+  slash.version = 1;
+  slash.scheme = 1;         // Pgw
+  slash.failing_check = 0;  // InvalidSignatureShare (attributed)
+  slash.accused_index = 2;
+  slash.epoch = 2;
+  slash.height = 240;
+  for (int i = 0; i < 32; ++i) reinterpret_cast<unsigned char*>(&slash.transcript_root)[i] = 0xab;
+
+  const std::string msg = bridge_slash_message(NET, slash);
+  auto accuse = [&](uint16_t idx) {
+    bridge_slash_signature s{};
+    s.voter_index = idx;
+    crypto_sign_detached(s.signature.data, nullptr,
+                         reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), secs[idx].data);
+    slash.accusers.push_back(s);
+  };
+
+  std::string reason;
+
+  // Below threshold → rejected.
+  accuse(0); accuse(1); accuse(3);
+  EXPECT_FALSE(verify_bridge_slash_evidence(slash, pubs, t_plus_1, NET, reason));
+
+  // The 4th distinct ascending accuser → admissible.
+  accuse(4);
+  EXPECT_TRUE(verify_bridge_slash_evidence(slash, pubs, t_plus_1, NET, reason)) << reason;
+
+  // Genesis binding: verifying the same signatures on a different net fails (the
+  // message — hence the required signatures — differs).
+  EXPECT_FALSE(verify_bridge_slash_evidence(slash, pubs, t_plus_1, network_type::TESTNET, reason));
+
+  // A forged accuser (member 5's key presented as member 5's slot but signing the
+  // wrong bytes) is caught: sign a different message, keep the same index.
+  tx_extra_bridge_slash forged = slash;
+  bridge_slash_signature bad{};
+  bad.voter_index = 5;
+  const std::string other = bridge_slash_message(NET, forged) + "x"; // wrong bytes
+  crypto_sign_detached(bad.signature.data, nullptr,
+                       reinterpret_cast<const unsigned char*>(other.data()), other.size(), secs[5].data);
+  forged.accusers.push_back(bad);
+  EXPECT_FALSE(verify_bridge_slash_evidence(forged, pubs, t_plus_1 + 1, NET, reason));
+}
+
+TEST(GatewayBridgeSlash, non_ascending_and_unattributed_rejected)
+{
+  const network_type NET = network_type::MAINNET;
+  const uint16_t n = 6;
+  std::vector<crypto::ed25519_public_key> pubs(n);
+  std::vector<crypto::ed25519_secret_key> secs(n);
+  for (uint16_t i = 0; i < n; ++i)
+    crypto_sign_ed25519_keypair(pubs[i].data, secs[i].data);
+
+  tx_extra_bridge_slash slash{};
+  slash.version = 1; slash.scheme = 1; slash.failing_check = 0;
+  slash.accused_index = 1; slash.epoch = 2; slash.height = 240;
+  const std::string msg = bridge_slash_message(NET, slash);
+  auto sig_of = [&](uint16_t idx) {
+    bridge_slash_signature s{}; s.voter_index = idx;
+    crypto_sign_detached(s.signature.data, nullptr,
+                         reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), secs[idx].data);
+    return s;
+  };
+  std::string reason;
+
+  // Duplicate / non-ascending indices are rejected even with enough signatures.
+  slash.accusers = {sig_of(0), sig_of(2), sig_of(2), sig_of(3)};
+  EXPECT_FALSE(verify_bridge_slash_evidence(slash, pubs, 4, NET, reason));
+
+  // A coarse/unattributed fault is never slashable, however many sign it.
+  tx_extra_bridge_slash coarse{};
+  coarse.version = 1; coarse.scheme = 0; coarse.failing_check = 3; // InvalidAggregateUnattributed
+  coarse.accused_index = 0; coarse.epoch = 2; coarse.height = 240;
+  const std::string cmsg = bridge_slash_message(NET, coarse);
+  for (uint16_t i = 0; i < 5; ++i) {
+    bridge_slash_signature s{}; s.voter_index = i;
+    crypto_sign_detached(s.signature.data, nullptr,
+                         reinterpret_cast<const unsigned char*>(cmsg.data()), cmsg.size(), secs[i].data);
+    coarse.accusers.push_back(s);
+  }
+  EXPECT_FALSE(verify_bridge_slash_evidence(coarse, pubs, 4, NET, reason));
+}
+
+// The slash report has to survive the tx_extra round trip byte-for-byte, because
+// the signatures cover the *field values* — any serialization drift would make an
+// otherwise valid accusation unverifiable at block-processing time. This also
+// pins the dispatch probe used by state_t::update_from_block and the tx pool:
+// a slash-carrying tx must be recognised as a slash and not as an unbond or a
+// registration (all three ride txtype::bridge_registration).
+TEST(GatewayBridgeSlash, tx_extra_round_trip_and_dispatch)
+{
+  const network_type NET = network_type::MAINNET;
+  const uint16_t n = 6, t_plus_1 = 4;
+
+  std::vector<crypto::ed25519_public_key> pubs(n);
+  std::vector<crypto::ed25519_secret_key> secs(n);
+  for (uint16_t i = 0; i < n; ++i)
+    crypto_sign_ed25519_keypair(pubs[i].data, secs[i].data);
+
+  tx_extra_bridge_slash slash{};
+  slash.version = 1;
+  slash.scheme = 1;
+  slash.failing_check = 0;
+  slash.accused_index = 2;
+  slash.epoch = 42;
+  slash.height = 123456;
+  for (int i = 0; i < 32; ++i) reinterpret_cast<unsigned char*>(&slash.transcript_root)[i] = 0xab;
+
+  const std::string msg = bridge_slash_message(NET, slash);
+  for (uint16_t idx : {0, 1, 3, 4})
+  {
+    bridge_slash_signature s{};
+    s.voter_index = idx;
+    crypto_sign_detached(s.signature.data, nullptr,
+                         reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), secs[idx].data);
+    slash.accusers.push_back(s);
+  }
+  std::string reason;
+  ASSERT_TRUE(verify_bridge_slash_evidence(slash, pubs, t_plus_1, NET, reason)) << reason;
+
+  std::vector<uint8_t> extra;
+  ASSERT_TRUE(add_bridge_slash_to_tx_extra(extra, slash));
+
+  tx_extra_bridge_slash back{};
+  ASSERT_TRUE(get_field_from_tx_extra(extra, back));
+
+  EXPECT_EQ(back.version, slash.version);
+  EXPECT_EQ(back.scheme, slash.scheme);
+  EXPECT_EQ(back.failing_check, slash.failing_check);
+  EXPECT_EQ(back.accused_index, slash.accused_index);
+  EXPECT_EQ(back.epoch, slash.epoch);
+  EXPECT_EQ(back.height, slash.height);
+  EXPECT_EQ(back.transcript_root, slash.transcript_root);
+  ASSERT_EQ(back.accusers.size(), slash.accusers.size());
+  for (size_t i = 0; i < back.accusers.size(); ++i)
+  {
+    EXPECT_EQ(back.accusers[i].voter_index, slash.accusers[i].voter_index);
+    EXPECT_EQ(0, std::memcmp(back.accusers[i].signature.data, slash.accusers[i].signature.data,
+                             sizeof(back.accusers[i].signature.data)));
+  }
+
+  // The signatures still verify against the *deserialized* report — the round trip
+  // preserved every byte the message is built from.
+  EXPECT_TRUE(verify_bridge_slash_evidence(back, pubs, t_plus_1, NET, reason)) << reason;
+
+  // Dispatch: this extra is a slash, and neither of the operator-driven ops.
+  tx_extra_bridge_unbond       as_unbond{};
+  tx_extra_bridge_registration as_reg{};
+  EXPECT_FALSE(get_field_from_tx_extra(extra, as_unbond));
+  EXPECT_FALSE(get_field_from_tx_extra(extra, as_reg));
+}
+
+// --------------------------------------------------------------------------
 // Governance message domain separation (S6/S14 on the native leg).
 // --------------------------------------------------------------------------
 TEST(GatewayBridgeMessages, domain_separation)
@@ -296,6 +466,11 @@ namespace
     transaction tx{};
     tx.version = txversion::v4_tx_types;
     tx.type    = txtype::standard;
+    // A tx with empty vin serializes as prefix-only (the v2+ serializer's rct
+    // section, which also caches unprunable_size, is inside `if (!vin.empty())`),
+    // and calculate_transaction_hash then rejects it. Real txs always have
+    // inputs; give the hand-built governance tx a dummy one so hashing works.
+    tx.vin.push_back(txin_gen{0});
     txin_gateway in{};
     in.gateway_addr = src;
     in.asset_id     = crypto::null_aid;
@@ -380,6 +555,11 @@ namespace
     transaction tx{};
     tx.version = txversion::v4_tx_types;
     tx.type    = txtype::standard;
+    // A tx with empty vin serializes as prefix-only (the v2+ serializer's rct
+    // section, which also caches unprunable_size, is inside `if (!vin.empty())`),
+    // and calculate_transaction_hash then rejects it. Real txs always have
+    // inputs; give the hand-built governance tx a dummy one so hashing works.
+    tx.vin.push_back(txin_gen{0});
     tx_extra_gateway_freeze op{};
     op.gateway_id     = gw;
     op.freeze         = freeze ? 1 : 0;
@@ -394,6 +574,11 @@ namespace
     transaction tx{};
     tx.version = txversion::v4_tx_types;
     tx.type    = txtype::standard;
+    // A tx with empty vin serializes as prefix-only (the v2+ serializer's rct
+    // section, which also caches unprunable_size, is inside `if (!vin.empty())`),
+    // and calculate_transaction_hash then rejects it. Real txs always have
+    // inputs; give the hand-built governance tx a dummy one so hashing works.
+    tx.vin.push_back(txin_gen{0});
     tx_extra_gateway_repoint op{};
     op.gateway_id                     = gw;
     op.new_owner_descriptor.owner_key = new_owner;
