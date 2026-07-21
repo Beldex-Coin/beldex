@@ -1246,6 +1246,25 @@ namespace cryptonote
         gw.payment_id   = encrypt_gateway_payment_id(dst_entr.gateway_payment_id, tx_key, dst_entr.gateway_id, output_index);
         out.target      = gw;
         tx.vout.push_back(out);
+
+        // Bridge deposit-routing memo (HF23, plan §A.5): encrypt {chain,addr} to the
+        // gateway view key (== gateway_id, as with the payment id) and attach it, so
+        // the bridge committee can resolve the EVM destination. The signer decrypts.
+        if (!dst_entr.gateway_bridge_memo.empty())
+        {
+          std::vector<uint8_t> enc_memo;
+          if (!encrypt_gateway_deposit_memo(dst_entr.gateway_bridge_memo, tx_key, dst_entr.gateway_id, output_index, enc_memo))
+          {
+            LOG_ERROR("gateway deposit: failed to encrypt bridge memo (too large?)");
+            return false;
+          }
+          cryptonote::tx_extra_gateway_deposit_memo memo_field{};
+          memo_field.version    = 1;
+          memo_field.gateway_id = dst_entr.gateway_id;
+          memo_field.enc_memo   = std::move(enc_memo);
+          add_gateway_deposit_memo_to_tx_extra(tx.extra, memo_field);
+        }
+
         output_index++;
         summary_outs_money += dst_entr.amount;
         continue;

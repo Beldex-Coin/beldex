@@ -3979,11 +3979,33 @@ namespace cryptonote::rpc {
       {
         const std::string txid = tools::type_to_hex(cryptonote::get_transaction_hash(tx));
 
+        // The bridge deposit-routing memo (A.5), if this tx carries one for gw_id.
+        // Surfaced raw (ciphertext + tx pubkey + output index) so the bridge signer
+        // — which holds the shared gateway view secret, not the daemon — decrypts it
+        // (plan §A.5, "signer decrypts").
+        cryptonote::tx_extra_gateway_deposit_memo dmemo{};
+        const bool has_dmemo =
+            cryptonote::get_field_from_tx_extra(tx.extra, dmemo) && dmemo.gateway_id == gw_id;
+        const crypto::public_key dmemo_txpub =
+            has_dmemo ? cryptonote::get_tx_pub_key_from_extra(tx) : crypto::public_key{};
+
         // deposits (tx_out_gateway to this gateway)
-        for (const auto& o : tx.vout)
-          if (const auto* g = std::get_if<cryptonote::tx_out_gateway>(&o.target))
-            if (g->gateway_addr == gw_id)
-              events.push_back(json{{"height", h}, {"txid", txid}, {"type", "deposit"}, {"amount", g->amount}});
+        for (size_t oi = 0; oi < tx.vout.size(); ++oi)
+        {
+          const auto& o = tx.vout[oi];
+          const auto* g = std::get_if<cryptonote::tx_out_gateway>(&o.target);
+          if (!g || g->gateway_addr != gw_id)
+            continue;
+          json ev{{"height", h}, {"txid", txid}, {"type", "deposit"}, {"amount", g->amount}};
+          if (has_dmemo)
+          {
+            ev["enc_memo"] = oxenc::to_hex(std::string_view{
+                reinterpret_cast<const char*>(dmemo.enc_memo.data()), dmemo.enc_memo.size()});
+            ev["tx_pubkey"] = tools::type_to_hex(dmemo_txpub);
+            ev["out_index"] = oi;
+          }
+          events.push_back(std::move(ev));
+        }
 
         // withdrawals (txin_gateway from this gateway)
         for (const auto& in : tx.vin)
