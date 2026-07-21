@@ -194,6 +194,17 @@ rct::key gateway_balance_offset(const transaction& tx);
 // gateway in/out): Σ gw_in == Σ gw_out + fee, with fee = Σgw_in − Σgw_out.
 bool verify_pure_gateway_balance(const transaction& tx, uint64_t& fee, std::string& reason);
 
+// Dry-run of append against a block-local running balance (seeded from DB,
+// deposits applied before withdrawals per tx, txs processed in block order)
+// WITHOUT writing anything. Called from handle_block_to_main_chain BEFORE
+// m_db->add_block() so an over-withdrawal (or any other block-invalidating
+// gateway op — including cross-tx aggregate overdraw that per-tx validation
+// cannot see) is rejected while the chain is still untouched. This makes
+// append a true invariant-assert that cannot fail on a block that has already
+// been written — closing the non-atomic-append defect where a post-add_block
+// failure was "undone" by a rewind that assumed append had applied.
+bool simulate_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason = nullptr);
+
 // Read the transaction history for a gateway (height-ascending, paginated).
 std::vector<crypto::hash> get_gateway_history(BlockchainDB& db, const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count);
 

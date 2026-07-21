@@ -2667,7 +2667,7 @@ namespace cryptonote::rpc {
   /// "instant sync" API — balances are read straight from the node, no scanning.
   ///
   /// Inputs:
-  /// - `gateway_id` -- 64-char hex of the gateway address id (registrant view pubkey).
+  /// - `gateway_address` -- the base58 gateway address (gwB…).
   ///
   /// Output:
   /// - `registered` -- whether the gateway exists on-chain.
@@ -2682,7 +2682,7 @@ namespace cryptonote::rpc {
     static constexpr auto names() { return NAMES("get_gateway_info"); }
     struct request_parameters
     {
-      std::string gateway_id;
+      std::string gateway_address;
     } request;
   };
 
@@ -2716,7 +2716,7 @@ namespace cryptonote::rpc {
   /// is what an exchange polls to reconcile deposits without scanning the chain.
   ///
   /// Inputs:
-  /// - `gateway_id` -- gwB… address or 64-char hex id.
+  /// - `gateway_address` -- the base58 gateway address (gwB…).
   /// - `from` -- pagination offset (default 0).
   /// - `count` -- max tx hashes to return (0 = all).
   ///
@@ -2728,7 +2728,7 @@ namespace cryptonote::rpc {
     static constexpr auto names() { return NAMES("get_gateway_history"); }
     struct request_parameters
     {
-      std::string gateway_id;
+      std::string gateway_address;
       uint64_t from = 0;
       uint64_t count = 0;
     } request;
@@ -2747,14 +2747,15 @@ namespace cryptonote::rpc {
   /// Only the gateway→gateway form is supported (gateway→normal-wallet is future
   /// work). A balance pre-check is done against the node's current state.
   ///
+  /// The node NEVER handles an owner secret: it only ever returns an UNSIGNED tx.
+  /// The owner (or its external signer) signs `hash_to_sign` off-node and submits
+  /// via `gateway_submit_transfer`. See scripts/gateway_sign_withdraw.py.
+  ///
   /// Inputs:
   /// - `source` -- source gateway: gwB… address or 64-char hex id.
   /// - `destinations` -- list of destination gwB…/gwiB… addresses.
   /// - `amounts` -- per-destination amounts (parallel to `destinations`).
   /// - `fee` -- withdrawal fee (burned from the gateway balance; Σamounts+fee spent).
-  /// - `owner_secret` -- OPTIONAL, TEST ONLY: a native Schnorr owner secret key
-  ///   (hex). If given (and the owner is Schnorr), the node signs server-side and
-  ///   also returns `signed_tx_blob`. Real owners omit this and sign externally.
   ///
   /// Output:
   /// - `source_gateway_id` -- hex of the resolved source id.
@@ -2763,7 +2764,6 @@ namespace cryptonote::rpc {
   /// - `hash_to_sign` -- 64-char hex the owner signs (H(GW_INPUT_SIG‖prefix)).
   /// - `amount` -- total amount withdrawn (Σamounts).
   /// - `fee` -- the fee.
-  /// - `signed_tx_blob` -- hex (only when `owner_secret` was supplied).
   /// - `status` -- Generic RPC error code. "OK" is the success value.
   struct GATEWAY_CREATE_TRANSFER : RPC_COMMAND
   {
@@ -2774,7 +2774,6 @@ namespace cryptonote::rpc {
       std::vector<std::string> destinations;
       std::vector<uint64_t> amounts;
       uint64_t fee = 0;
-      std::string owner_secret;
     } request;
   };
 
