@@ -43,6 +43,8 @@ integrates the audited crates, never reimplements them (**S12**):
 | `cggmp21_driver` | **C.2** | live-mesh **`Pevm` (CGGMP21)** driver — runs the cggmp21 keygen over the mesh via `round-based`'s sync state machine + a connection barrier; `live::run_live_pevm` |
 | `frost_sign_driver` | **C.3** | live-mesh **`Pgw` (FROST)** signing driver — `commit`→`sign`→`aggregate` over a `SessionTransport`; every signer aggregates independently; `live::run_live_sign` |
 | `cggmp21_sign_driver` | **C.3** | live-mesh **`Pevm` (CGGMP21)** signing driver — threshold-ECDSA signing over the mesh (same pump + barrier as keygen, with committee-index ↔ signing-position mapping); `live::run_live_pevm_sign` |
+| `cggmp21_aux_driver` | **C.3** | **`Pevm` aux-info** over the mesh (keygen's sibling) + `complete_key_share_blob` (keygen share + aux → complete `KeyShare`); `live::run_live_pevm_aux` |
+| `frost_roast` | **C.3** | **ROAST** robustness for `Pgw` — retry FROST with signer-set re-selection (exclude non-responders, replace from committee, bounded attempts; abort below threshold) |
 
 ## Build & test
 
@@ -294,9 +296,11 @@ consensus verifier) accepts it against the gateway `owner_key`.
    (`cggmp21_sign`). The `Pevm` **no-trusted-dealer full chain** (real DKG →
    distributed `aux_info_gen` → `KeyShare::from_parts` → sign → ecrecover) is
    proven in `cggmp21_dkg_sign` (heavy, `#[ignore]`d). **Live-mesh signing drivers
-   for both legs** (`frost_sign_driver`, `cggmp21_sign_driver`) run signing over
-   the authenticated `SessionTransport` like the DKG drivers. Remaining: ROAST
-   robustness for `Pgw` (retry/abort when a signer is faulty or slow).
+   for both legs** (`frost_sign_driver`, `cggmp21_sign_driver`, plus the `Pevm`
+   `cggmp21_aux_driver`) run signing over the authenticated `SessionTransport`, and
+   **both legs are verified live on the devnet** (`Pgw` libsodium-verified, `Pevm`
+   ecrecover'd to the wBDX address — see [`../docs/C3_DEVNET_VERIFICATION.md`]).
+   **ROAST** re-selection robustness for `Pgw` is in `frost_roast`. **C.3 done.**
 4. Real share custody (Vault/enclave) replacing the in-memory scaffold store.
 5. Watchers (Phase E), accountability/slashing (Phase F), rotation/refresh
    (Phase J), the wBDX contract + H.6 rotation (Phase H), relayer (Phase I).

@@ -68,6 +68,7 @@ pub mod pool;
 pub mod session;
 pub mod share_store;
 pub mod transport;
+pub mod watch;
 pub mod wire;
 pub mod wire_auth;
 
@@ -122,6 +123,13 @@ pub mod dkg_driver;
 /// `tss-integration`; the live path adds `omq-mesh`.
 #[cfg(feature = "tss-integration")]
 pub mod frost_sign_driver;
+
+/// C.3 **ROAST robustness** for `Pgw` signing: retry FROST with signer-set
+/// re-selection so a release still completes when a selected signer is faulty/slow
+/// (exclude non-responders, replace from the committee, bounded attempts; abort
+/// cleanly below threshold). Real FROST per round, libsodium-verified.
+#[cfg(feature = "tss-integration")]
+pub mod frost_roast;
 
 /// C.2 live-mesh **`Pevm` (cggmp21) DKG driver**: runs the real cggmp21 keygen MPC
 /// over a [`wire::SessionTransport`] via `round_based`'s sync state machine bridged

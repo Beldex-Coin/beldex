@@ -279,7 +279,11 @@ fn run_dkg(cfg: &Config) -> Result<(), String> {
         let base = port_base.expect("checked above") + pevm_offset;
         #[cfg(feature = "live-pevm-dkg")]
         {
-            use beldex_bridge_signer::cggmp21_driver::live::run_live_pevm;
+            use beldex_bridge_signer::cggmp21_aux_driver::{
+                complete_key_share_blob, run_cggmp21_aux_over_transport,
+            };
+            use beldex_bridge_signer::cggmp21_driver::run_cggmp21_keygen_over_transport;
+            use beldex_bridge_signer::dkg_driver::live::assemble_mesh;
             println!("Pevm peer book: bridge.committee, single-host ports {base}+index");
             let peers: Vec<PeerTransportAddr> = committee
                 .peer_transport_indexed(self_index as usize, base)
@@ -288,11 +292,18 @@ fn run_dkg(cfg: &Config) -> Result<(), String> {
                 .collect();
             check_size(&peers)?;
             let identity = make_identity(format!("tcp://0.0.0.0:{}", base + self_index));
-            println!("running Pevm cggmp21 DKG over the mesh (key generation {key_generation})…");
-            let (x33, _blob) = run_live_pevm(
-                &committee, self_index, key_generation, &identity, &peers, use_curve, timeout,
+
+            // One mesh for both Pevm phases (keygen then aux) — avoids a port
+            // rebind race between them and reuses the established links.
+            let mut transport = assemble_mesh(&committee, self_index, &identity, &peers, use_curve)
+                .map_err(|e| format!("Pevm mesh assembly failed: {e:?}"))?;
+
+            println!("running Pevm cggmp21 keygen over the mesh (key generation {key_generation})…");
+            let (x33, incomplete_blob) = run_cggmp21_keygen_over_transport(
+                &committee, self_index, key_generation, &mut transport, timeout,
             )
-            .map_err(|e| format!("Pevm dkg failed: {e:?}"))?;
+            .map_err(|e| format!("Pevm keygen failed: {e:?}"))?;
+
             // Derive the EVM signer address the wBDX contract checks (ecrecover):
             // decompress the group key, keccak256 the uncompressed point, take the
             // last 20 bytes.
@@ -308,10 +319,26 @@ fn run_dkg(cfg: &Config) -> Result<(), String> {
                 })
                 .map_err(|e| format!("Pevm group key is not a valid secp256k1 point: {e}"))?;
             println!(
-                "Pevm DKG complete — wBDX signer address 0x{} (group key {})",
+                "Pevm keygen complete — wBDX signer address 0x{} (group key {})",
                 hex(&addr),
                 hex(&x33)
             );
+
+            // Aux-info over the same mesh, then combine into the complete share the
+            // signing driver needs. This is the slow safe-prime phase.
+            println!("running Pevm aux-info generation over the mesh…");
+            let aux_blob = run_cggmp21_aux_over_transport(
+                &committee, self_index, key_generation, &mut transport, timeout,
+            )
+            .map_err(|e| format!("Pevm aux-info failed: {e:?}"))?;
+            let complete_blob = complete_key_share_blob(&incomplete_blob, &aux_blob)
+                .map_err(|e| format!("Pevm share completion failed: {e:?}"))?;
+            println!("Pevm complete share ready (keygen + aux-info)");
+
+            if let Ok(dir) = std::env::var("BRIDGE_SIGNER_SHARE_DIR") {
+                persist_pevm_material(&dir, self_index, &complete_blob, &x33)?;
+                println!("Pevm share material written to {dir}/pevm-{self_index}.{{keyshare,groupkey}}");
+            }
         }
         #[cfg(not(feature = "live-pevm-dkg"))]
         {
@@ -350,25 +377,36 @@ fn persist_pgw_material(
     Ok(())
 }
 
-/// `sign` subcommand: load this node's persisted `Pgw` share material and run the
-/// FROST signing driver across the authenticated mesh to produce (and libsodium-
-/// verify) an ed25519 gateway-release signature. Only built with `--features
-/// live-dkg`. Run `dkg` first with `BRIDGE_SIGNER_SHARE_DIR` set.
-///
-/// (The `Pevm` leg signs from a **complete** cggmp21 share — keygen + aux-info; the
-/// aux-info-over-mesh phase is a follow-on, so live signing here is the `Pgw` leg.
-/// The `Pevm` signing driver itself is proven over an in-process mesh in
-/// `cggmp21_sign_driver`.)
+/// Write this node's complete `Pevm` share to `<dir>/pevm-<index>.{keyshare,
+/// groupkey}` for a later `sign` invocation. Dev file store only.
+#[cfg(feature = "live-pevm-dkg")]
+fn persist_pevm_material(
+    dir: &str,
+    self_index: u16,
+    keyshare: &[u8],
+    x33: &[u8; 33],
+) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create share dir {dir}: {e}"))?;
+    std::fs::write(format!("{dir}/pevm-{self_index}.keyshare"), keyshare)
+        .map_err(|e| format!("write keyshare: {e}"))?;
+    std::fs::write(format!("{dir}/pevm-{self_index}.groupkey"), x33)
+        .map_err(|e| format!("write groupkey: {e}"))?;
+    Ok(())
+}
+
+/// `sign` subcommand: load this node's persisted share material and run the signing
+/// driver for the selected leg across the authenticated mesh. `BRIDGE_SIGNER_SIGN_LEG`
+/// = `pgw` (FROST → libsodium-verified ed25519 release; default) or `pevm` (cggmp21
+/// → ecrecover'd wBDX mint). Only built with `--features live-dkg`; the `pevm` leg
+/// additionally needs `live-pevm-dkg`. Run `dkg` first with `BRIDGE_SIGNER_SHARE_DIR`.
 #[cfg(feature = "live-dkg")]
 fn run_sign(cfg: &Config) -> Result<(), String> {
     use beldex_bridge_signer::dkg_driver::live::{MeshIdentity, PeerTransportAddr};
     use beldex_bridge_signer::ffi;
-    use beldex_bridge_signer::frost_sign_driver::live::run_live_sign;
     use beldex_bridge_signer::omq_client::OmqCommitteeClient;
-    use frost_ed25519 as frost;
     use std::time::Duration;
 
-    // 1) Committee + self_index (as in `dkg`).
+    // 1) Committee + self_index.
     let client = OmqCommitteeClient::new(cfg.oxenmq_endpoint.clone());
     let committee = client.fetch_committee(None).map_err(|e| e.to_string())?;
     let self_index = committee
@@ -379,51 +417,32 @@ fn run_sign(cfg: &Config) -> Result<(), String> {
         return Err("bridge.committee returned no signer_keys — update beldexd".into());
     }
 
-    // 2) The signer set (default: the first `threshold` committee members) and the
-    //    32-byte digest to sign (the gateway-release digest in production).
+    // 2) Leg + signer set (default: the first `threshold` committee members).
+    let leg = std::env::var("BRIDGE_SIGNER_SIGN_LEG").unwrap_or_else(|_| "pgw".into());
     let signers: Vec<u16> = match std::env::var("BRIDGE_SIGNER_SIGN_SIGNERS") {
         Ok(s) => s.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
         Err(_) => (0..committee.threshold as u16).collect(),
     };
-    let message: [u8; 32] = match std::env::var("BRIDGE_SIGNER_SIGN_DIGEST") {
-        Ok(h) => config::parse_hex32(&h).ok_or("BRIDGE_SIGNER_SIGN_DIGEST must be 32-byte hex")?,
-        Err(_) => {
-            println!("WARNING: no BRIDGE_SIGNER_SIGN_DIGEST set — signing a fixed demo digest");
-            [0x5au8; 32]
-        }
-    };
     println!(
-        "committee epoch {} size {} threshold {}; self_index {}; signer set {:?}",
-        committee.epoch, committee.size(), committee.threshold, self_index, signers
+        "committee epoch {} size {} threshold {}; self_index {}; leg {}; signer set {:?}",
+        committee.epoch, committee.size(), committee.threshold, self_index, leg, signers
     );
     if !signers.contains(&self_index) {
         println!("this node ({self_index}) is not in the signer set — nothing to do");
         return Ok(());
     }
 
-    // 3) Load this node's persisted Pgw material.
+    // 3) Shared config + mesh identity material (from the MN key).
     let dir = std::env::var("BRIDGE_SIGNER_SHARE_DIR")
         .map_err(|_| "set BRIDGE_SIGNER_SHARE_DIR (where `dkg` wrote the shares)".to_string())?;
-    let read = |suffix: &str| {
-        std::fs::read(format!("{dir}/pgw-{self_index}.{suffix}"))
-            .map_err(|e| format!("read {suffix}: {e} (run `dkg` first with BRIDGE_SIGNER_SHARE_DIR set)"))
-    };
-    let key_package = frost::keys::KeyPackage::deserialize(&read("keypackage")?)
-        .map_err(|e| format!("bad keypackage: {e}"))?;
-    let pubkey_package = frost::keys::PublicKeyPackage::deserialize(&read("pubkeypackage")?)
-        .map_err(|e| format!("bad pubkeypackage: {e}"))?;
-    let group_vk: [u8; 32] = pubkey_package
-        .verifying_key()
-        .serialize()
-        .ok()
-        .and_then(|v| v.try_into().ok())
-        .ok_or("cannot serialize group verifying key")?;
-
-    // 4) This node's mesh identity (from its MN key) + the single-host peer book.
     let port_base: u16 = std::env::var("BRIDGE_SIGNER_MESH_PORT_BASE")
         .ok()
         .and_then(|s| s.parse().ok())
         .ok_or("set BRIDGE_SIGNER_MESH_PORT_BASE (single-host devnet)")?;
+    let pevm_offset: u16 = std::env::var("BRIDGE_SIGNER_MESH_PEVM_OFFSET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100);
     let key_path = std::env::var("BRIDGE_SIGNER_MN_KEY_FILE")
         .map_err(|_| "set BRIDGE_SIGNER_MN_KEY_FILE".to_string())?;
     let sk_bytes = std::fs::read(&key_path).map_err(|e| format!("read MN key {key_path}: {e}"))?;
@@ -441,17 +460,6 @@ fn run_sign(cfg: &Config) -> Result<(), String> {
             return Err("derived x25519 does not match this node's bridge.committee entry".into());
         }
     }
-    let identity = MeshIdentity {
-        listen_endpoint: format!("tcp://0.0.0.0:{}", port_base + self_index),
-        curve_secret,
-        curve_public,
-        ed25519_secret,
-    };
-    let peers: Vec<PeerTransportAddr> = committee
-        .peer_transport_indexed(self_index as usize, port_base)
-        .into_iter()
-        .map(|(index, endpoint, curve_pubkey)| PeerTransportAddr { index, endpoint, curve_pubkey })
-        .collect();
     let use_curve = std::env::var("BRIDGE_SIGNER_MESH_USE_CURVE")
         .map(|v| v != "false" && v != "0")
         .unwrap_or(true);
@@ -465,11 +473,79 @@ fn run_sign(cfg: &Config) -> Result<(), String> {
             .unwrap_or(120),
     );
 
-    // 5) Sign over the mesh, then verify under libsodium (the consensus check).
+    // Build this node's identity + peer book for a given single-host port base.
+    let build_mesh = |base: u16| -> (MeshIdentity, Vec<PeerTransportAddr>) {
+        let identity = MeshIdentity {
+            listen_endpoint: format!("tcp://0.0.0.0:{}", base + self_index),
+            curve_secret,
+            curve_public,
+            ed25519_secret,
+        };
+        let peers = committee
+            .peer_transport_indexed(self_index as usize, base)
+            .into_iter()
+            .map(|(index, endpoint, curve_pubkey)| PeerTransportAddr { index, endpoint, curve_pubkey })
+            .collect();
+        (identity, peers)
+    };
+
+    match leg.as_str() {
+        "pgw" => {
+            let (identity, peers) = build_mesh(port_base);
+            sign_pgw(&committee, self_index, &signers, &dir, &identity, &peers, use_curve, timeout)
+        }
+        "pevm" => {
+            let (identity, peers) = build_mesh(port_base + pevm_offset);
+            sign_pevm(&committee, self_index, &signers, &dir, &identity, &peers, use_curve, timeout)
+        }
+        other => Err(format!("BRIDGE_SIGNER_SIGN_LEG must be pgw|pevm (got '{other}')")),
+    }
+}
+
+/// `Pgw` leg of `sign`: FROST threshold-sign a 32-byte digest over the mesh and
+/// verify the aggregate under libsodium (the consensus check).
+#[cfg(feature = "live-dkg")]
+#[allow(clippy::too_many_arguments)]
+fn sign_pgw(
+    committee: &beldex_bridge_signer::committee::CommitteeView,
+    self_index: u16,
+    signers: &[u16],
+    dir: &str,
+    identity: &beldex_bridge_signer::dkg_driver::live::MeshIdentity,
+    peers: &[beldex_bridge_signer::dkg_driver::live::PeerTransportAddr],
+    use_curve: bool,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use beldex_bridge_signer::ffi;
+    use beldex_bridge_signer::frost_sign_driver::live::run_live_sign;
+    use frost_ed25519 as frost;
+
+    let message: [u8; 32] = match std::env::var("BRIDGE_SIGNER_SIGN_DIGEST") {
+        Ok(h) => config::parse_hex32(&h).ok_or("BRIDGE_SIGNER_SIGN_DIGEST must be 32-byte hex")?,
+        Err(_) => {
+            println!("WARNING: no BRIDGE_SIGNER_SIGN_DIGEST set — signing a fixed demo digest");
+            [0x5au8; 32]
+        }
+    };
+    let read = |suffix: &str| {
+        std::fs::read(format!("{dir}/pgw-{self_index}.{suffix}"))
+            .map_err(|e| format!("read {suffix}: {e} (run `dkg` first with BRIDGE_SIGNER_SHARE_DIR set)"))
+    };
+    let key_package = frost::keys::KeyPackage::deserialize(&read("keypackage")?)
+        .map_err(|e| format!("bad keypackage: {e}"))?;
+    let pubkey_package = frost::keys::PublicKeyPackage::deserialize(&read("pubkeypackage")?)
+        .map_err(|e| format!("bad pubkeypackage: {e}"))?;
+    let group_vk: [u8; 32] = pubkey_package
+        .verifying_key()
+        .serialize()
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or("cannot serialize group verifying key")?;
+
     let mut rng = rand::rngs::OsRng;
     println!("running Pgw FROST signing over the mesh…");
     let sig = run_live_sign(
-        &committee, self_index, &signers, key_package, pubkey_package, message, 0, &identity, &peers,
+        committee, self_index, signers, key_package, pubkey_package, message, 0, identity, peers,
         use_curve, &mut rng, timeout,
     )
     .map_err(|e| format!("Pgw sign failed: {e:?}"))?;
@@ -483,6 +559,111 @@ fn run_sign(cfg: &Config) -> Result<(), String> {
         return Err("the aggregated signature failed libsodium verification".into());
     }
     Ok(())
+}
+
+/// `Pevm` leg of `sign`: cggmp21 threshold-sign a mint preimage over the mesh and
+/// `ecrecover` the aggregate to the wBDX signer address (the on-chain check).
+#[cfg(feature = "live-pevm-dkg")]
+#[allow(clippy::too_many_arguments)]
+fn sign_pevm(
+    committee: &beldex_bridge_signer::committee::CommitteeView,
+    self_index: u16,
+    signers: &[u16],
+    dir: &str,
+    identity: &beldex_bridge_signer::dkg_driver::live::MeshIdentity,
+    peers: &[beldex_bridge_signer::dkg_driver::live::PeerTransportAddr],
+    use_curve: bool,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use beldex_bridge_signer::cggmp21_sign_driver::live::run_live_pevm_sign;
+    use k256::ecdsa::{RecoveryId, Signature as K256Sig, VerifyingKey};
+    use sha3::{Digest, Keccak256};
+
+    // The mint preimage the contract keccaks + ecrecovers. Demo default; in
+    // production this is the ABI-encoded mint tuple.
+    let preimage: Vec<u8> = match std::env::var("BRIDGE_SIGNER_SIGN_PREIMAGE") {
+        Ok(h) => hex_to_bytes(&h).ok_or("BRIDGE_SIGNER_SIGN_PREIMAGE must be hex")?,
+        Err(_) => {
+            println!("WARNING: no BRIDGE_SIGNER_SIGN_PREIMAGE set — signing a fixed demo mint preimage");
+            b"BELDEX_BRIDGE_MINT_V1 || chainid || wBDX || to || amount || beldexTxid".to_vec()
+        }
+    };
+    let key_share = std::fs::read(format!("{dir}/pevm-{self_index}.keyshare"))
+        .map_err(|e| format!("read pevm keyshare: {e} (run `dkg` first with SHARE_DIR set)"))?;
+
+    println!("running Pevm cggmp21 signing over the mesh…");
+    let (rs, x33) = run_live_pevm_sign(
+        committee, self_index, signers, &key_share, &preimage, identity, peers, use_curve, timeout,
+    )
+    .map_err(|e| format!("Pevm sign failed: {e:?}"))?;
+
+    // Derive the expected wBDX address from the group key, then ecrecover.
+    let expected = VerifyingKey::from_sec1_bytes(&x33)
+        .map(|vk| {
+            let enc = vk.to_encoded_point(false);
+            let h = Keccak256::digest(&enc.as_bytes()[1..]);
+            let mut a = [0u8; 20];
+            a.copy_from_slice(&h[12..]);
+            a
+        })
+        .map_err(|e| format!("Pevm group key invalid: {e}"))?;
+    let digest32: [u8; 32] = Keccak256::digest(&preimage).into();
+    let k_sig = K256Sig::from_slice(&rs).map_err(|e| format!("bad signature bytes: {e}"))?;
+    let k_sig = k_sig.normalize_s().unwrap_or(k_sig);
+    let mut recovered = None;
+    for rec in [0u8, 1u8] {
+        if let Ok(vk) = VerifyingKey::recover_from_prehash(
+            &digest32,
+            &k_sig,
+            RecoveryId::from_byte(rec).unwrap(),
+        ) {
+            let enc = vk.to_encoded_point(false);
+            let h = Keccak256::digest(&enc.as_bytes()[1..]);
+            if h[12..] == expected {
+                recovered = Some(rec);
+                break;
+            }
+        }
+    }
+    println!("Pevm signature: {}{}", hex(&rs[..32]), hex(&rs[32..]));
+    println!("  over digest : {}", hex(&digest32));
+    println!("  wBDX signer : 0x{}", hex(&expected));
+    match recovered {
+        Some(rec) => println!("  ecrecover   : VERIFIED (v={})", 27 + rec),
+        None => {
+            println!("  ecrecover   : FAILED");
+            return Err("the aggregated signature did not ecrecover to the wBDX signer".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "live-dkg", not(feature = "live-pevm-dkg")))]
+#[allow(clippy::too_many_arguments)]
+fn sign_pevm(
+    _committee: &beldex_bridge_signer::committee::CommitteeView,
+    _self_index: u16,
+    _signers: &[u16],
+    _dir: &str,
+    _identity: &beldex_bridge_signer::dkg_driver::live::MeshIdentity,
+    _peers: &[beldex_bridge_signer::dkg_driver::live::PeerTransportAddr],
+    _use_curve: bool,
+    _timeout: std::time::Duration,
+) -> Result<(), String> {
+    Err("the Pevm sign leg needs a build with --features live-pevm-dkg".into())
+}
+
+/// Parse an even-length hex string to bytes (for `BRIDGE_SIGNER_SIGN_PREIMAGE`).
+#[cfg(feature = "live-pevm-dkg")]
+fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
 }
 
 #[cfg(not(feature = "live-dkg"))]
