@@ -51,6 +51,11 @@
 //!                        OxenMQ binding — see the plan §2.3 transport note).
 //!   * [`health`]       — the bridge-signer liveness/heartbeat status surfaced to
 //!                        `beldexd`'s `uptime_proof` (Phase B.8).
+//!   * [`chain_registry`] — **E.3** per-chain config `{contract, confirmations,
+//!                        per-epoch cap, per-tx max}` + fixed-window cap accounting.
+//!   * [`watch`]        — **Phase E** watcher core: normalized [`watch::MintEvent`]/
+//!                        [`watch::ReleaseEvent`] with canonical digests, reorg-safe
+//!                        finality (S9), and per-member proposal agreement (E.4 → S4).
 //!
 //! The DKG, presigning and signing rounds themselves (C.2–C.5) integrate the
 //! audited crates and are **not** reimplemented here (**S12**); they slot onto
@@ -59,6 +64,7 @@
 //! [`LFDT-Lockness/cggmp21`]: https://github.com/LFDT-Lockness/cggmp21
 //! [`ZcashFoundation/frost`]: https://github.com/ZcashFoundation/frost
 
+pub mod chain_registry;
 pub mod committee;
 pub mod conformance;
 pub mod config;
@@ -145,6 +151,15 @@ pub mod cggmp21_driver;
 /// of [`cggmp21_driver`]. Needs the cggmp21 stack + socket mesh (`live-pevm-dkg`).
 #[cfg(all(feature = "cggmp21-interop", feature = "omq-mesh"))]
 pub mod cggmp21_sign_driver;
+
+/// C.3 live-mesh **`Pevm` (cggmp21) aux-info driver**: runs the `aux_info_gen` MPC
+/// over a [`wire::SessionTransport`] (the keygen driver's sibling — all-`n`, same
+/// pump + barrier). [`cggmp21_aux_driver::complete_key_share_blob`] combines the
+/// keygen share + aux into the complete `KeyShare` the signing driver needs, so the
+/// whole `Pevm` keygen→aux→sign pipeline runs over the mesh with no dealer. Needs
+/// the cggmp21 stack + socket mesh (`live-pevm-dkg`).
+#[cfg(all(feature = "cggmp21-interop", feature = "omq-mesh"))]
+pub mod cggmp21_aux_driver;
 
 /// cggmp21 (`Pevm`) key-material ↔ ecrecover interop: a cggmp21 key maps to the
 /// same Ethereum address as the canonical secp256k1 implementation. Test-only,
