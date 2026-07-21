@@ -8488,6 +8488,85 @@ wallet2::bridge_unbond_result wallet2::create_bridge_unbond_tx(const std::string
   return result;
 }
 
+wallet2::bridge_slash_result wallet2::create_bridge_slash_tx(const std::string& slash_hex, uint32_t priority, std::set<uint32_t> subaddr_indices)
+{
+  bridge_slash_result result{};
+
+  // Parse the daemon-verified slash blob (a serialized tx_extra fragment holding
+  // exactly one tx_extra_bridge_slash). Note what is *not* checked here: this
+  // wallet's identity is irrelevant to the slash. The tx's authority is the
+  // committee evidence carried inside the blob, re-verified by consensus in
+  // process_bridge_slash_tx against the accused epoch's committee. The wallet is
+  // purely a fee-paying courier.
+  if (slash_hex.empty() || !oxenc::is_hex(slash_hex))
+  {
+    result.msg = tr("Invalid slash blob: expected the hex string produced by the daemon's bridge.slash_report intake");
+    return result;
+  }
+  const std::string blob = oxenc::from_hex(slash_hex);
+  const std::vector<uint8_t> slash_extra(blob.begin(), blob.end());
+  cryptonote::tx_extra_bridge_slash op{};
+  if (!cryptonote::get_field_from_tx_extra(slash_extra, op))
+  {
+    result.msg = tr("Invalid slash blob: could not decode a bridge slash report from it");
+    return result;
+  }
+  if (op.accusers.empty())
+  {
+    result.msg = tr("Invalid slash blob: the report carries no committee evidence");
+    return result;
+  }
+
+  if (priority == tx_priority_flash)
+  {
+    result.msg = tr("Bridge slash reports cannot use flash priority");
+    return result;
+  }
+
+  auto hf_version = get_hard_fork_version();
+  if (!hf_version)
+  {
+    result.msg = ERR_MSG_NETWORK_VERSION_QUERY_FAILED;
+    return result;
+  }
+  if (*hf_version < cryptonote::hf::hf23_bridge)
+  {
+    result.msg = tr("Bridge slash reports require the bridge hard fork (HF23)");
+    return result;
+  }
+
+  std::vector<uint8_t> extra;
+  if (!cryptonote::add_bridge_slash_to_tx_extra(extra, op))
+  {
+    result.msg = tr("Failed to serialize the bridge slash report into the transaction");
+    return result;
+  }
+
+  try
+  {
+    // Extra-only command tx: no value transferred, the wallet just pays the fee.
+    beldex_construct_tx_params tx_params = tools::wallet2::construct_params(*hf_version, txtype::bridge_registration, priority);
+    auto ptx_vector = create_transactions_2({} /*dsts*/, cryptonote::TX_OUTPUT_DECOYS, 0 /*unlock_at_block*/, priority, extra, 0, subaddr_indices, tx_params);
+    if (ptx_vector.size() == 1)
+    {
+      result.success = true;
+      result.ptx     = ptx_vector[0];
+    }
+    else
+    {
+      result.msg = ERR_MSG_TOO_MANY_TXS_CONSTRUCTED;
+    }
+  }
+  catch (const std::exception& e)
+  {
+    result.msg = ERR_MSG_EXCEPTION_THROWN;
+    result.msg += e.what();
+    return result;
+  }
+
+  return result;
+}
+
 wallet2::register_master_node_result wallet2::create_register_master_node_tx(const std::vector<std::string> &args_, uint32_t subaddr_account)
 {
   std::vector<std::string> local_args = args_;

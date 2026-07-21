@@ -76,6 +76,11 @@ private:
   // consumed by the seated masternode's off-chain threshold signer.
   void on_bridge_committee(oxenmq::Message& m);
 
+  // Sovereign Bridge Phase F: intake for a committee-signed slashing report. The
+  // daemon verifies the evidence against the report's epoch committee and returns
+  // the serialized tx_extra for the operator wallet to submit.
+  void on_bridge_slash_report(oxenmq::Message& m);
+
   void on_mempool_sub_request(oxenmq::Message& m);
 
   void on_block_sub_request(oxenmq::Message& m);

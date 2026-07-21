@@ -781,6 +781,24 @@ namespace cryptonote::rpc {
             {"signature", tools::type_to_hex(x.signature)},
         });
       }
+      void operator()(const tx_extra_bridge_slash& x) {
+        auto accusers = json::array();
+        for (const auto& a : x.accusers)
+          accusers.push_back(json{
+              {"voter_index", a.voter_index},
+              {"signature", tools::type_to_hex(a.signature)},
+          });
+        set("bridge_slash", json{
+            {"version", x.version},
+            {"scheme", x.scheme},
+            {"failing_check", x.failing_check},
+            {"accused_index", x.accused_index},
+            {"epoch", x.epoch},
+            {"height", x.height},
+            {"transcript_root", tools::type_to_hex(x.transcript_root)},
+            {"accusers", std::move(accusers)},
+        });
+      }
       void operator()(const tx_extra_gateway_deposit_memo& x) {
         auto& memo = set("gateway_deposit_memo", json{
             {"version", x.version},

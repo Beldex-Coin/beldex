@@ -1423,6 +1423,21 @@ private:
     };
     bridge_unbond_result create_bridge_unbond_tx(const std::string& unbond_hex, uint32_t priority = 0, std::set<uint32_t> subaddr_indices = {});
 
+    // HF23 Sovereign Bridge (Phase F): build the accountability *slash* tx from the
+    // blob the daemon's `bridge.slash_report` OMQ intake returned. Unlike the other
+    // two bridge-lifecycle txs this one is not authorised by the submitting wallet
+    // at all — the authority is the ≥t+1 committee ed25519 evidence inside the blob,
+    // which the daemon already verified and consensus verifies again. This wallet
+    // only pays the fee, so *any* wallet may submit a valid report. Rides
+    // txtype::bridge_registration, dispatched by the presence of the slash field.
+    struct bridge_slash_result
+    {
+      bool        success = false;
+      std::string msg;
+      pending_tx  ptx;
+    };
+    bridge_slash_result create_bridge_slash_tx(const std::string& slash_hex, uint32_t priority = 0, std::set<uint32_t> subaddr_indices = {});
+
     struct request_stake_unlock_result
     {
       bool        success;

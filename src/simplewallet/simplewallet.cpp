@@ -254,6 +254,7 @@ namespace
   const char* USAGE_REGISTER_MASTER_NODE("register_master_node [index=<N1>[,<N2>,...]] [<priority>] <operator cut> <address1> <fraction1> [<address2> <fraction2> [...]] <expiration timestamp> <pubkey> <signature>");
   const char* USAGE_BRIDGE_REGISTER("bridge_register [<priority>] <registration_hex>");
   const char* USAGE_BRIDGE_UNBOND("bridge_unbond [<priority>] <unbond_hex>");
+  const char* USAGE_BRIDGE_SLASH("bridge_slash [<priority>] <slash_hex>");
   const char* USAGE_STAKE("stake [index=<N1>[,<N2>,...]] [<priority>] <master node pubkey> <amount|percent%>");
   const char* USAGE_REQUEST_STAKE_UNLOCK("request_stake_unlock <master_node_pubkey>");
   const char* USAGE_PRINT_LOCKED_STAKES("print_locked_stakes [key_images]");
@@ -3131,6 +3132,10 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
                            [this](const auto& x) { return bridge_unbond(x); },
                            tr(USAGE_BRIDGE_UNBOND),
                            tr("Voluntarily exit the bonded bridge set for this wallet's Master Node (HF23 Sovereign Bridge). The seat stops being committee-eligible immediately; the 100,000 BDX bond unlocks only after the ~30-day unbonding period, during which the operator remains bonded and slashable. <unbond_hex> is produced on the Master Node by the daemon's `get_bridge_unbond_cmd' RPC."));
+  m_cmd_binder.set_handler("bridge_slash",
+                           [this](const auto& x) { return bridge_slash(x); },
+                           tr(USAGE_BRIDGE_SLASH),
+                           tr("Submit a bridge accountability slash report (HF23 Sovereign Bridge, Phase F). The report's authority is the committee evidence it carries, not this wallet — this wallet only pays the fee, so any wallet may submit a valid report. <slash_hex> is produced by a bridge signer and verified by the daemon's `bridge.slash_report' OMQ endpoint."));
   m_cmd_binder.set_handler("stake",
                            [this](const auto& x) { return stake(x); },
                            tr(USAGE_STAKE),
@@ -6300,6 +6305,65 @@ bool simple_wallet::bridge_unbond(const std::vector<std::string> &args_)
   // here): confirm the fee, then relay. The seat stops being committee-eligible
   // immediately; the 100k BDX bond unlocks in consensus after the ~30-day window.
   std::string prompt = (boost::format(tr("Requesting a voluntary bridge-seat unbond for this wallet's Master Node. The 100,000 BDX bond unlocks after the ~30-day unbonding period, during which the operator stays bonded and slashable. Transaction fee is %s. Is this okay? (Y/Yes/N/No): ")) % print_money(result.ptx.fee)).str();
+  if (!command_line::is_yes(input_line(prompt, true)))
+  {
+    fail_msg_writer() << tr("Transaction cancelled.");
+    return true;
+  }
+
+  try
+  {
+    std::vector<tools::wallet2::pending_tx> ptx_vector = {result.ptx};
+    commit_or_save(ptx_vector, m_do_not_relay, false /* don't flash */);
+  }
+  catch (const std::exception& e)
+  {
+    handle_transfer_exception(std::current_exception(), m_wallet->is_trusted_daemon());
+  }
+  catch (...)
+  {
+    LOG_ERROR("unknown error");
+    fail_msg_writer() << tr("unknown error");
+  }
+
+  return true;
+}
+//----------------------------------------------------------------------------------------------------
+bool simple_wallet::bridge_slash(const std::vector<std::string> &args_)
+{
+  if (!try_connect_to_daemon())
+    return true;
+
+  // bridge_slash [<priority>] <slash_hex>
+  std::vector<std::string> local_args = args_;
+  uint32_t priority = 0;
+  if (local_args.size() == 2)
+  {
+    if (!epee::string_tools::get_xtype_from_string(priority, local_args[0]))
+    {
+      fail_msg_writer() << tr(USAGE_BRIDGE_SLASH);
+      return true;
+    }
+    local_args.erase(local_args.begin());
+  }
+  if (local_args.size() != 1)
+  {
+    fail_msg_writer() << tr(USAGE_BRIDGE_SLASH);
+    return true;
+  }
+
+  SCOPED_WALLET_UNLOCK()
+  tools::wallet2::bridge_slash_result result = m_wallet->create_bridge_slash_tx(local_args[0], priority);
+  if (!result.success)
+  {
+    fail_msg_writer() << result.msg;
+    return true;
+  }
+
+  // Fee-only command tx. Worth being blunt in the prompt: submitting this burns
+  // another operator's 100k bond if consensus accepts the evidence, and the
+  // submitter is not the party being accused.
+  std::string prompt = (boost::format(tr("Submitting a bridge accountability slash report. If consensus accepts the committee evidence it carries, the accused Master Node's bridge seat is ejected and its 100,000 BDX bond is permanently forfeited. Transaction fee is %s. Is this okay? (Y/Yes/N/No): ")) % print_money(result.ptx.fee)).str();
   if (!command_line::is_yes(input_line(prompt, true)))
   {
     fail_msg_writer() << tr("Transaction cancelled.");

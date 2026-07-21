@@ -6,8 +6,11 @@
 #include "epee/string_tools.h"
 #include "cryptonote_core/master_node_list.h"
 #include "cryptonote_core/uptime_proof.h"
+#include "cryptonote_core/gateway_utils.h"          // verify_bridge_slash_evidence (Phase F)
+#include "cryptonote_basic/cryptonote_format_utils.h" // add_bridge_slash_to_tx_extra
 #include "oxenmq/oxenmq.h"
 #include "oxenc/bt.h"
+#include "oxenc/hex.h"
 #include <fmt/core.h>
 #include <nlohmann/json.hpp>
 
@@ -308,6 +311,16 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
     on_bridge_committee(m);
   });
 
+  // Phase F: `bridge.slash_report` is the intake for a committee-signed
+  // identifiable-abort report. The daemon verifies the ≥t+1 ed25519 evidence
+  // against the report's epoch committee and, on success, returns the serialized
+  // tx_extra blob for the operator wallet to attach to a bridge-lifecycle tx —
+  // the same daemon-verifies / wallet-submits split as
+  // `get_bridge_registration_cmd`, since only a wallet can pay the tx fee.
+  omq.add_request_command("bridge", "slash_report", [this](oxenmq::Message& m) {
+    on_bridge_slash_report(m);
+  });
+
   core_.get_blockchain_storage().hook_block_post_add([this] (const auto& info) { send_block_notifications(info.block); return true; });
   core_.get_pool().add_notify([this](const crypto::hash& id, const transaction& tx, const std::string& blob, const tx_pool_options& opts) {
       send_mempool_notifications(id, tx, blob, opts);
@@ -603,6 +616,106 @@ void omq_rpc::on_bridge_committee(oxenmq::Message& m)
       {"active", (q && !q->validators.empty())},
   };
 
+  m.send_reply(OMQ_OK, resp.dump());
+}
+
+void omq_rpc::on_bridge_slash_report(oxenmq::Message& m)
+{
+  // One data part: the JSON report the off-chain signer produced, matching the
+  // Rust `SignedSlashReport` wire shape:
+  //
+  //   { "scheme": 1, "failing_check": 0, "accused_index": 3,
+  //     "epoch": 42, "height": 123456, "transcript_root": "<64 hex>",
+  //     "accusers": [ { "voter_index": 0, "signature": "<128 hex>" }, ... ] }
+  //
+  // The daemon does not construct the transaction (it cannot pay a fee); it
+  // verifies the evidence and hands back `slash_hex` for the operator wallet.
+  if (m.data.size() != 1 || m.data[0].empty())
+  {
+    m.send_reply(OMQ_BAD_REQUEST, "bridge.slash_report: expected a single JSON data part");
+    return;
+  }
+
+  tx_extra_bridge_slash slash{};
+  try
+  {
+    auto req = nlohmann::json::parse(m.data[0]);
+    slash.version       = req.value("version", 0);
+    slash.scheme        = req.at("scheme").get<uint8_t>();
+    slash.failing_check = req.at("failing_check").get<uint8_t>();
+    slash.accused_index = req.at("accused_index").get<uint16_t>();
+    slash.epoch         = req.at("epoch").get<uint64_t>();
+    slash.height        = req.at("height").get<uint64_t>();
+
+    if (!tools::hex_to_type(req.at("transcript_root").get<std::string>(), slash.transcript_root))
+    {
+      m.send_reply(OMQ_BAD_REQUEST, "bridge.slash_report: transcript_root must be 32-byte hex");
+      return;
+    }
+
+    for (const auto& a : req.at("accusers"))
+    {
+      bridge_slash_signature sig{};
+      sig.voter_index = a.at("voter_index").get<uint16_t>();
+      if (!tools::hex_to_type(a.at("signature").get<std::string>(), sig.signature))
+      {
+        m.send_reply(OMQ_BAD_REQUEST, "bridge.slash_report: signature must be 64-byte hex");
+        return;
+      }
+      slash.accusers.push_back(sig);
+    }
+  }
+  catch (const std::exception& e)
+  {
+    m.send_reply(OMQ_BAD_REQUEST, std::string{"bridge.slash_report: malformed report: "} + e.what());
+    return;
+  }
+
+  const auto nettype = core_.get_nettype();
+  const uint64_t epoch_height = slash.epoch * cryptonote::bridge_epoch_blocks(nettype);
+
+  std::vector<crypto::public_key> members;
+  std::vector<crypto::ed25519_public_key> signer_keys;
+  size_t threshold = 0;
+  if (!core_.get_master_node_list().get_bridge_committee(epoch_height, members, signer_keys, threshold))
+  {
+    m.send_reply(OMQ_BAD_REQUEST,
+                 "bridge.slash_report: no bridge committee for epoch " + std::to_string(slash.epoch));
+    return;
+  }
+
+  // The same verification consensus will apply — reject here so a bad report never
+  // reaches a wallet, let alone the mempool.
+  std::string reason;
+  if (!cryptonote::verify_bridge_slash_evidence(slash, signer_keys, threshold, nettype, reason))
+  {
+    m.send_reply(OMQ_BAD_REQUEST, "bridge.slash_report: " + reason);
+    return;
+  }
+  if (slash.accused_index >= members.size())
+  {
+    m.send_reply(OMQ_BAD_REQUEST, "bridge.slash_report: accused index out of committee range");
+    return;
+  }
+
+  std::vector<uint8_t> extra;
+  if (!cryptonote::add_bridge_slash_to_tx_extra(extra, slash))
+  {
+    m.send_reply(OMQ_BAD_REQUEST, "bridge.slash_report: failed to serialize the slash report");
+    return;
+  }
+
+  nlohmann::json resp{
+      {"slash_hex", oxenc::to_hex(extra.begin(), extra.end())},
+      {"accused", tools::type_to_hex(members[slash.accused_index])},
+      {"accused_index", slash.accused_index},
+      {"epoch", slash.epoch},
+      {"accusers", slash.accusers.size()},
+      {"threshold", threshold},
+  };
+  MGINFO("Bridge slash report accepted for committee index "
+         << slash.accused_index << " (epoch " << slash.epoch << ", " << slash.accusers.size()
+         << " accusers)");
   m.send_reply(OMQ_OK, resp.dump());
 }
 
