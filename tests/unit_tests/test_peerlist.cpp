@@ -31,6 +31,7 @@
 #include "gtest/gtest.h"
 
 #include "common/util.h"
+#include "net/tor_address.h"
 #include "p2p/net_peerlist.h"
 #include "epee/net/net_utils_base.h"
 
