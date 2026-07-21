@@ -852,79 +852,110 @@ namespace
         gws.insert(g->gateway_addr);
     return gws;
   }
+
+  // Core apply logic shared by simulate (dry-run) and append (persist). Fills
+  // `cache` with the post-block gateway state, processing txs in block order
+  // and, per tx, descriptor ops then deposits then withdrawals (so a same-block
+  // deposit funds a later withdrawal). Returns false on any block-invalidating
+  // condition (over-withdrawal underflow, overflow, register-of-existing, etc.)
+  // WITHOUT mutating the DB — it reads accounts but never writes, so a false
+  // return leaves no trace.
+  bool compute_gateway_changes(BlockchainDB& db, const std::vector<transaction>& txs,
+                               std::unordered_map<crypto::public_key, gateway_account_data>& cache,
+                               std::string* reason)
+  {
+    auto get = [&](const crypto::public_key& id) -> gateway_account_data& {
+      auto [it, inserted] = cache.try_emplace(id);
+      if (inserted)
+        load_gateway_account(db, id, it->second); // absent => default (empty)
+      return it->second;
+    };
+
+    for (const auto& tx : txs)
+    {
+      // 1) descriptor ops (register / update)
+      for (const auto& op : extract_gateway_ops(tx))
+      {
+        gateway_account_data& acct = get(op.address_id);
+
+        if (op.op_type == gateway_descriptor_op_type::register_address)
+        {
+          if (!acct.descriptor_history.empty())
+          {
+            set_reason(reason, "register op for an already-existing gateway");
+            return false;
+          }
+        }
+        else // update_address
+        {
+          if (acct.descriptor_history.empty())
+          {
+            set_reason(reason, "update op for an unknown gateway");
+            return false;
+          }
+        }
+        acct.descriptor_history.push_back(op.descriptor);
+      }
+
+      // 2) deposits (tx_out_gateway): increase balance
+      for (const auto& o : tx.vout)
+      {
+        if (const auto* g = std::get_if<tx_out_gateway>(&o.target))
+        {
+          gateway_account_data& acct = get(g->gateway_addr);
+          if (acct.descriptor_history.empty())
+          {
+            set_reason(reason, "deposit to an unregistered gateway");
+            return false;
+          }
+          if (!change_gateway_balance(acct, g->asset_id, g->amount, /*increase=*/true, reason))
+            return false;
+        }
+      }
+
+      // 3) withdrawals (txin_gateway): decrease balance (underflow => block invalid)
+      for (const auto& in : tx.vin)
+      {
+        if (const auto* g = std::get_if<txin_gateway>(&in))
+        {
+          gateway_account_data& acct = get(g->gateway_addr);
+          if (acct.descriptor_history.empty())
+          {
+            set_reason(reason, "withdrawal from an unregistered gateway");
+            return false;
+          }
+          if (!change_gateway_balance(acct, g->asset_id, g->amount, /*increase=*/false, reason))
+            return false;
+        }
+      }
+    }
+
+    return true;
+  }
+}
+
+bool simulate_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason)
+{
+  // Dry-run: compute the post-block state but write nothing. Used to reject an
+  // over-withdrawing (or otherwise invalid) block BEFORE it is added to the DB.
+  std::unordered_map<crypto::public_key, gateway_account_data> cache;
+  return compute_gateway_changes(db, txs, cache, reason);
 }
 
 bool append_gateways_from_transactions(BlockchainDB& db, uint64_t height, const std::vector<transaction>& txs, std::string* reason)
 {
   std::unordered_map<crypto::public_key, gateway_account_data> cache;
 
-  auto get = [&](const crypto::public_key& id) -> gateway_account_data& {
-    auto [it, inserted] = cache.try_emplace(id);
-    if (inserted)
-      load_gateway_account(db, id, it->second); // absent => default (empty)
-    return it->second;
-  };
+  // Dry-run first; persist only after the whole block computed cleanly
+  // (atomic: all-or-nothing). A false return therefore guarantees no gateway
+  // state was written — the caller must NOT rewind (see header).
+  if (!compute_gateway_changes(db, txs, cache, reason))
+    return false;
 
+  // transaction-history table (second gateway table): record each tx under
+  // every gateway it touched.
   for (const auto& tx : txs)
   {
-    // 1) descriptor ops (register / update)
-    for (const auto& op : extract_gateway_ops(tx))
-    {
-      gateway_account_data& acct = get(op.address_id);
-
-      if (op.op_type == gateway_descriptor_op_type::register_address)
-      {
-        if (!acct.descriptor_history.empty())
-        {
-          set_reason(reason, "register op for an already-existing gateway");
-          return false;
-        }
-      }
-      else // update_address
-      {
-        if (acct.descriptor_history.empty())
-        {
-          set_reason(reason, "update op for an unknown gateway");
-          return false;
-        }
-      }
-      acct.descriptor_history.push_back(op.descriptor);
-    }
-
-    // 2) deposits (tx_out_gateway): increase balance
-    for (const auto& o : tx.vout)
-    {
-      if (const auto* g = std::get_if<tx_out_gateway>(&o.target))
-      {
-        gateway_account_data& acct = get(g->gateway_addr);
-        if (acct.descriptor_history.empty())
-        {
-          set_reason(reason, "deposit to an unregistered gateway");
-          return false;
-        }
-        if (!change_gateway_balance(acct, g->asset_id, g->amount, /*increase=*/true, reason))
-          return false;
-      }
-    }
-
-    // 3) withdrawals (txin_gateway): decrease balance (underflow => block invalid)
-    for (const auto& in : tx.vin)
-    {
-      if (const auto* g = std::get_if<txin_gateway>(&in))
-      {
-        gateway_account_data& acct = get(g->gateway_addr);
-        if (acct.descriptor_history.empty())
-        {
-          set_reason(reason, "withdrawal from an unregistered gateway");
-          return false;
-        }
-        if (!change_gateway_balance(acct, g->asset_id, g->amount, /*increase=*/false, reason))
-          return false;
-      }
-    }
-
-    // 4) transaction-history table (second gateway table): record this tx under
-    //    every gateway it touched.
     const crypto::hash tx_hash = get_transaction_hash(tx);
     for (const auto& gw : gateways_touched_by_tx(tx))
       db.add_gateway_tx(gw, height, tx_hash);

@@ -380,7 +380,7 @@ namespace cryptonote::rpc {
   }
 
   void parse_request(GET_GATEWAY_INFO& c, rpc_input in) {
-    get_values(in, "gateway_id", required{c.request.gateway_id});
+    get_values(in, "gateway_address", required{c.request.gateway_address});
   }
 
   void parse_request(GET_ALL_GATEWAYS& c, rpc_input in) {
@@ -393,7 +393,7 @@ namespace cryptonote::rpc {
     get_values(in,
         "count",      c.request.count,
         "from",       c.request.from,
-        "gateway_id", required{c.request.gateway_id});
+        "gateway_address", required{c.request.gateway_address});
   }
 
   void parse_request(GATEWAY_CREATE_TRANSFER& c, rpc_input in) {
@@ -401,7 +401,6 @@ namespace cryptonote::rpc {
         "amounts",      required{c.request.amounts},
         "destinations", required{c.request.destinations},
         "fee",          c.request.fee,
-        "owner_secret", c.request.owner_secret,
         "source",       required{c.request.source});
   }
 
