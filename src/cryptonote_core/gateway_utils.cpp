@@ -1294,7 +1294,7 @@ namespace
   // return leaves no trace.
   bool compute_gateway_changes(BlockchainDB& db, const std::vector<transaction>& txs,
                                std::unordered_map<crypto::public_key, gateway_account_data>& cache,
-                               std::string* reason)
+                               uint64_t block_height, bool bridge_active, std::string* reason)
   {
     auto get = [&](const crypto::public_key& id) -> gateway_account_data& {
       auto [it, inserted] = cache.try_emplace(id);
@@ -1329,6 +1329,34 @@ namespace
         acct.descriptor_history.push_back(op.descriptor);
       }
 
+      // 1b) governance re-point (HF23): append the new descriptor and bump the nonce.
+      for (const auto& op : extract_gateway_repoints(tx))
+      {
+        gateway_account_data& acct = get(op.gateway_id);
+        if (acct.descriptor_history.empty())
+        {
+          set_reason(reason, "repoint for an unknown gateway");
+          return false;
+        }
+        acct.descriptor_history.push_back(op.new_owner_descriptor);
+        ++acct.governance_seq;
+        if (acct.version < 1) acct.version = 1;
+      }
+
+      // 1c) governance freeze/unfreeze (HF23): toggle the flag and bump the nonce.
+      for (const auto& op : extract_gateway_freezes(tx))
+      {
+        gateway_account_data& acct = get(op.gateway_id);
+        if (acct.descriptor_history.empty())
+        {
+          set_reason(reason, "freeze for an unknown gateway");
+          return false;
+        }
+        acct.frozen = (op.freeze != 0) ? 1 : 0;
+        ++acct.governance_seq;
+        if (acct.version < 1) acct.version = 1;
+      }
+
       // 2) deposits (tx_out_gateway): increase balance
       for (const auto& o : tx.vout)
       {
@@ -1358,6 +1386,8 @@ namespace
           }
           if (!change_gateway_balance(acct, g->asset_id, g->amount, /*increase=*/false, reason))
             return false;
+          if (bridge_active && !add_release(acct, block_height, g->amount, reason))
+            return false;
         }
       }
     }
@@ -1366,12 +1396,13 @@ namespace
   }
 }
 
-bool simulate_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason)
+bool simulate_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs,
+                                         uint64_t block_height, bool bridge_active, std::string* reason)
 {
   // Dry-run: compute the post-block state but write nothing. Used to reject an
   // over-withdrawing (or otherwise invalid) block BEFORE it is added to the DB.
   std::unordered_map<crypto::public_key, gateway_account_data> cache;
-  return compute_gateway_changes(db, txs, cache, reason);
+  return compute_gateway_changes(db, txs, cache, block_height, bridge_active, reason);
 }
 
 bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, uint64_t block_height, bool bridge_active, std::string* reason)
@@ -1381,103 +1412,13 @@ bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
   // Dry-run first; persist only after the whole block computed cleanly
   // (atomic: all-or-nothing). A false return therefore guarantees no gateway
   // state was written — the caller must NOT rewind (see header).
-  if (!compute_gateway_changes(db, txs, cache, reason))
+  if (!compute_gateway_changes(db, txs, cache, block_height, bridge_active, reason))
     return false;
 
   // transaction-history table (second gateway table): record each tx under
   // every gateway it touched.
   for (const auto& tx : txs)
   {
-    // 1) descriptor ops (register / update)
-    for (const auto& op : extract_gateway_ops(tx))
-    {
-      gateway_account_data& acct = get(op.address_id);
-
-      if (op.op_type == gateway_descriptor_op_type::register_address)
-      {
-        if (!acct.descriptor_history.empty())
-        {
-          set_reason(reason, "register op for an already-existing gateway");
-          return false;
-        }
-      }
-      else // update_address
-      {
-        if (acct.descriptor_history.empty())
-        {
-          set_reason(reason, "update op for an unknown gateway");
-          return false;
-        }
-      }
-      acct.descriptor_history.push_back(op.descriptor);
-    }
-
-    // 1b) governance re-point (HF23): append the new descriptor and bump the nonce.
-    for (const auto& op : extract_gateway_repoints(tx))
-    {
-      gateway_account_data& acct = get(op.gateway_id);
-      if (acct.descriptor_history.empty())
-      {
-        set_reason(reason, "repoint for an unknown gateway");
-        return false;
-      }
-      acct.descriptor_history.push_back(op.new_owner_descriptor);
-      ++acct.governance_seq;
-      if (acct.version < 1) acct.version = 1;
-    }
-
-    // 1c) governance freeze/unfreeze (HF23): toggle the flag and bump the nonce.
-    for (const auto& op : extract_gateway_freezes(tx))
-    {
-      gateway_account_data& acct = get(op.gateway_id);
-      if (acct.descriptor_history.empty())
-      {
-        set_reason(reason, "freeze for an unknown gateway");
-        return false;
-      }
-      acct.frozen = (op.freeze != 0) ? 1 : 0;
-      ++acct.governance_seq;
-      if (acct.version < 1) acct.version = 1;
-    }
-
-    // 2) deposits (tx_out_gateway): increase balance
-    for (const auto& o : tx.vout)
-    {
-      if (const auto* g = std::get_if<tx_out_gateway>(&o.target))
-      {
-        gateway_account_data& acct = get(g->gateway_addr);
-        if (acct.descriptor_history.empty())
-        {
-          set_reason(reason, "deposit to an unregistered gateway");
-          return false;
-        }
-        if (!change_gateway_balance(acct, g->asset_id, g->amount, /*increase=*/true, reason))
-          return false;
-      }
-    }
-
-    // 3) withdrawals (txin_gateway): decrease balance (underflow => block invalid)
-    //    and account the release against the fixed per-window cap (authoritative
-    //    here, where the block height is known — plan §A.3).
-    for (const auto& in : tx.vin)
-    {
-      if (const auto* g = std::get_if<txin_gateway>(&in))
-      {
-        gateway_account_data& acct = get(g->gateway_addr);
-        if (acct.descriptor_history.empty())
-        {
-          set_reason(reason, "withdrawal from an unregistered gateway");
-          return false;
-        }
-        if (!change_gateway_balance(acct, g->asset_id, g->amount, /*increase=*/false, reason))
-          return false;
-        if (bridge_active && !add_release(acct, block_height, g->amount, reason))
-          return false;
-      }
-    }
-
-    // 4) transaction-history table (second gateway table): record this tx under
-    //    every gateway it touched.
     const crypto::hash tx_hash = get_transaction_hash(tx);
     for (const auto& gw : gateways_touched_by_tx(tx))
       db.add_gateway_tx(gw, block_height, tx_hash);

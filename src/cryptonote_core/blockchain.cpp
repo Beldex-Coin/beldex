@@ -4587,7 +4587,8 @@ bool Blockchain::handle_block_to_main_chain(const block& bl, const crypto::hash&
     for (const auto& tx_pair : txs)
       gw_txs.push_back(tx_pair.first);
     std::string gw_reason;
-    if (!simulate_gateways_from_transactions(*m_db, gw_txs, &gw_reason))
+    if (!simulate_gateways_from_transactions(*m_db, gw_txs, cryptonote::get_block_height(bl),
+                                             bl.major_version >= feature::BRIDGE, &gw_reason))
     {
       MGINFO_RED("Block " << id << " rejected: invalid gateway balance change: " << gw_reason);
       bvc.m_verifivation_failed = true;

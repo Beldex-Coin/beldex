@@ -203,7 +203,8 @@ bool verify_pure_gateway_balance(const transaction& tx, uint64_t& fee, std::stri
 // append a true invariant-assert that cannot fail on a block that has already
 // been written — closing the non-atomic-append defect where a post-add_block
 // failure was "undone" by a rewind that assumed append had applied.
-bool simulate_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs, std::string* reason = nullptr);
+bool simulate_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs,
+                                         uint64_t block_height, bool bridge_active, std::string* reason = nullptr);
 
 // Read the transaction history for a gateway (height-ascending, paginated).
 std::vector<crypto::hash> get_gateway_history(BlockchainDB& db, const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count);
