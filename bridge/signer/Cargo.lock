@@ -70,6 +70,7 @@ name = "beldex-bridge-signer"
 version = "0.1.0"
 dependencies = [
  "cggmp21",
+ "frost-core",
  "frost-ed25519",
  "futures",
  "generic-ec",

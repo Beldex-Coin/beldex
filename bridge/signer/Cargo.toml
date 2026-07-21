@@ -44,7 +44,7 @@ default = []
 
 # (a) ecrecover round-trip + (b) libsodium consensus-verifier alignment / FROST.
 # rand_core is needed by the C.2 DKG driver's RngCore/CryptoRng bounds (non-test).
-tss-integration = ["dep:k256", "dep:sha3", "dep:frost-ed25519", "dep:libsodium-sys-stable", "dep:rand_core"]
+tss-integration = ["dep:k256", "dep:sha3", "dep:frost-ed25519", "dep:frost-core", "dep:libsodium-sys-stable", "dep:rand_core"]
 
 # cggmp21 key-material ↔ ecrecover interop (heavier dep tree). Implies the above
 # (needs k256/sha3). Kept a separate feature so a build/iteration issue in the
@@ -95,6 +95,9 @@ beldex-watcher-http = ["beldex-watcher", "dep:ureq"]
 k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"], optional = true }
 sha3                 = { version = "0.10", optional = true }
 frost-ed25519        = { version = "2", optional = true }
+# Direct dep only for frost_core::verify_signature_share (per-share fault
+# attribution in slash.rs); version unifies with frost-ed25519's own frost-core.
+frost-core           = { version = "2", optional = true }
 libsodium-sys-stable = { version = "1", optional = true }
 cggmp21              = { version = "=0.6.3", features = ["curve-secp256k1", "spof"], optional = true }
 generic-ec           = { version = "0.4", features = ["curve-secp256k1"], optional = true }

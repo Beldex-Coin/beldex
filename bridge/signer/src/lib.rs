@@ -162,6 +162,14 @@ pub mod frost_sign_driver;
 #[cfg(feature = "tss-integration")]
 pub mod frost_roast;
 
+/// **Phase F** accountability & slashing (signer side): the FROST identifiable-abort
+/// detector (F.1′ — verify each signature share, name the faulter), a coarse `Pevm`
+/// path (cggmp21 0.6.3 has no identifiable abort), and the genesis-bound
+/// [`slash::SlashReport`] co-signed by the accusing quorum (F.2) that `beldexd`
+/// verifies before a `state_change` deregister + bond forfeit.
+#[cfg(feature = "tss-integration")]
+pub mod slash;
+
 /// C.2 live-mesh **`Pevm` (cggmp21) DKG driver**: runs the real cggmp21 keygen MPC
 /// over a [`wire::SessionTransport`] via `round_based`'s sync state machine bridged
 /// to the mesh by channels. The `Pevm` counterpart to [`dkg_driver`]. Needs the
