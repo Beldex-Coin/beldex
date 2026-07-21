@@ -3385,6 +3385,39 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     return false;
   }
 
+  // HF23 Phase F: a bridge slash report is authorised by *committee evidence*, not by
+  // the accused's own signature, so validate that evidence here — otherwise an
+  // unauthenticated accusation would relay and get mined before consensus silently
+  // dropped it in process_bridge_slash_tx. Acceptance here is necessary but not
+  // sufficient: the block-time check re-resolves the committee against the state at
+  // that height, which is what actually binds the slash to consensus.
+  if (hf_version >= hf::hf23_bridge && tx.type == txtype::bridge_registration)
+  {
+    tx_extra_bridge_slash slash{};
+    if (cryptonote::get_field_from_tx_extra(tx.extra, slash))
+    {
+      const uint64_t epoch_height = slash.epoch * bridge_epoch_blocks(m_nettype);
+      std::vector<crypto::public_key> members;
+      std::vector<crypto::ed25519_public_key> signer_keys;
+      size_t threshold = 0;
+      std::string slash_reason;
+      if (!m_master_node_list.get_bridge_committee(epoch_height, members, signer_keys, threshold))
+        slash_reason = "no bridge committee for epoch " + std::to_string(slash.epoch);
+      else if (!cryptonote::verify_bridge_slash_evidence(slash, signer_keys, threshold, m_nettype, slash_reason))
+        { /* reason set by the verifier */ }
+      else if (slash.accused_index >= members.size())
+        slash_reason = "accused index out of committee range";
+
+      if (!slash_reason.empty())
+      {
+        MERROR_VER("Bridge slash validation failed for tx " << get_transaction_hash(tx) << ": " << slash_reason);
+        tvc.m_verbose_error = std::move(slash_reason);
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+    }
+  }
+
   if (tx.is_transfer())
   {
     // A tx whose outputs are ALL gateway deposits (e.g. an exchange sweep) needs

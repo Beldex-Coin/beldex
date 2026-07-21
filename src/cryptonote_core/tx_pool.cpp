@@ -221,22 +221,42 @@ namespace cryptonote
     }
     else if (tx.type == txtype::bridge_registration)
     {
-      // HF23 bridge-lifecycle tx: a seat registration (tx_extra_bridge_registration)
-      // or a voluntary unbond (tx_extra_bridge_unbond). Dedupe on the master node
-      // pubkey so at most one pending bridge op per MN sits in the pool.
-      crypto::public_key mn_pubkey{};
-      {
+      // HF23 bridge-lifecycle tx: a seat registration (tx_extra_bridge_registration),
+      // a voluntary unbond (tx_extra_bridge_unbond), or an accountability slash
+      // report (tx_extra_bridge_slash). The first two are operator-driven and keyed
+      // by the operator's master node pubkey; a slash is committee-driven, so it is
+      // keyed by (epoch, accused_index) instead — the accused does not sign it, and
+      // any committee member may be the one to submit it.
+      //
+      // Dedupe so at most one pending bridge op per subject sits in the pool.
+      auto bridge_op_key = [](const transaction& t, crypto::public_key& mn_pubkey,
+                              std::pair<uint64_t, uint16_t>& slash_key, bool& is_slash) -> bool {
+        tx_extra_bridge_slash slash{};
         tx_extra_bridge_registration reg{};
         tx_extra_bridge_unbond unbond{};
-        if (cryptonote::get_field_from_tx_extra(tx.extra, reg))
-          mn_pubkey = reg.master_node_pubkey;
-        else if (cryptonote::get_field_from_tx_extra(tx.extra, unbond))
-          mn_pubkey = unbond.master_node_pubkey;
-        else
+        if (cryptonote::get_field_from_tx_extra(t.extra, slash))
         {
-          MERROR("Could not get bridge registration/unbond from tx: " << get_transaction_hash(tx) << ", tx to add is possibly invalid, rejecting");
+          is_slash  = true;
+          slash_key = {slash.epoch, slash.accused_index};
           return true;
         }
+        is_slash = false;
+        if (cryptonote::get_field_from_tx_extra(t.extra, reg))
+          mn_pubkey = reg.master_node_pubkey;
+        else if (cryptonote::get_field_from_tx_extra(t.extra, unbond))
+          mn_pubkey = unbond.master_node_pubkey;
+        else
+          return false;
+        return true;
+      };
+
+      crypto::public_key mn_pubkey{};
+      std::pair<uint64_t, uint16_t> slash_key{};
+      bool is_slash = false;
+      if (!bridge_op_key(tx, mn_pubkey, slash_key, is_slash))
+      {
+        MERROR("Could not get bridge registration/unbond/slash from tx: " << get_transaction_hash(tx) << ", tx to add is possibly invalid, rejecting");
+        return true;
       }
 
       std::vector<transaction> pool_txs;
@@ -247,18 +267,17 @@ namespace cryptonote
           continue;
 
         crypto::public_key pool_mn_pubkey{};
-        tx_extra_bridge_registration pool_reg{};
-        tx_extra_bridge_unbond pool_unbond{};
-        if (cryptonote::get_field_from_tx_extra(pool_tx.extra, pool_reg))
-          pool_mn_pubkey = pool_reg.master_node_pubkey;
-        else if (cryptonote::get_field_from_tx_extra(pool_tx.extra, pool_unbond))
-          pool_mn_pubkey = pool_unbond.master_node_pubkey;
-        else
+        std::pair<uint64_t, uint16_t> pool_slash_key{};
+        bool pool_is_slash = false;
+        if (!bridge_op_key(pool_tx, pool_mn_pubkey, pool_slash_key, pool_is_slash))
           continue;
 
-        if (pool_mn_pubkey == mn_pubkey)
+        if (pool_is_slash != is_slash)
+          continue;
+
+        if (is_slash ? pool_slash_key == slash_key : pool_mn_pubkey == mn_pubkey)
         {
-          LOG_PRINT_L1("New TX: " << get_transaction_hash(tx) << ", has TX: " << get_transaction_hash(pool_tx) << " from the pool with a pending bridge operation for the same master node already.");
+          LOG_PRINT_L1("New TX: " << get_transaction_hash(tx) << ", has TX: " << get_transaction_hash(pool_tx) << " from the pool with a pending bridge operation for the same subject already.");
           return true;
         }
       }

@@ -176,6 +176,7 @@ namespace cryptonote
   bool add_gateway_deposit_memo_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_gateway_deposit_memo& memo);
   bool add_bridge_registration_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_bridge_registration& reg);
   bool add_bridge_unbond_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_bridge_unbond& unbond);
+  bool add_bridge_slash_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_bridge_slash& slash);
   bool is_out_to_acc(const account_keys& acc, const txout_to_key& out_key, const crypto::public_key& tx_pub_key, const std::vector<crypto::public_key>& additional_tx_public_keys, size_t output_index);
   struct subaddress_receive_info
   {

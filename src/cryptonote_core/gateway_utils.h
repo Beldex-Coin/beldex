@@ -84,6 +84,27 @@ bool verify_gateway_governance_evidence(const std::vector<gateway_governance_sig
                                         const checkpoint_quorum_resolver& resolve_quorum,
                                         std::string& reason);
 
+// ---- Bridge accountability slash (HF23, plan §10 Phase F) ------------------
+// The **raw** canonical bytes the bridge committee signs (ed25519) and consensus
+// re-verifies for a slash report. Domain-separated (hashkey::BRIDGE_SLASH) and
+// genesis-bound (no cross-net replay). MUST match the off-chain signer's
+// `slash::SlashReport::canonical` byte-for-byte:
+//   BRIDGE_SLASH ‖ genesis ‖ scheme(1) ‖ transcript_root(32) ‖ failing_check(1)
+//                ‖ accused_index(u16 LE) ‖ epoch(u64 LE) ‖ height(u64 LE)
+// Note: ed25519 signs the message directly, so this returns the bytes, not a hash.
+std::string bridge_slash_message(network_type nettype, const tx_extra_bridge_slash& slash);
+
+// Verify a bridge slash report: an **attributed** fault co-signed by ≥ `threshold`
+// distinct, strictly-ascending committee members, each ed25519 signature valid over
+// `bridge_slash_message` under that member's `signer_ed25519` (parallel to the epoch
+// committee). `signer_keys` is the committee's per-member signer_ed25519, ordered by
+// committee index. Returns false (with `reason`) on a coarse/unattributed fault, an
+// out-of-range index, non-ascending indices, too few/many signatures, or any bad
+// signature. This is the consensus intake check `beldexd` runs before forfeiting.
+bool verify_bridge_slash_evidence(const tx_extra_bridge_slash& slash,
+                                  const std::vector<crypto::ed25519_public_key>& signer_keys,
+                                  size_t threshold, network_type nettype, std::string& reason);
+
 // ---- Bridge deposit-routing memo (HF23, plan §A.5) -------------------------
 // Encrypt / decrypt the bounded {dst_chain_id, dst_addr} memo attached to a
 // bridge deposit. A keystream Hs(GW_DEPOSIT_MEMO ‖ h ‖ counter) — derived from

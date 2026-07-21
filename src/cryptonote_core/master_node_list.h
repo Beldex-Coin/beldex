@@ -29,6 +29,8 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <string_view>
@@ -203,6 +205,16 @@ namespace master_nodes
     END_SERIALIZE()
   };
 
+  // Resolves the bridge committee in effect for `epoch_height` (HF23, Phase F):
+  // the ordered committee `members` (masternode pubkeys, indexed by committee
+  // index) and their parallel bridge-signer `signer_keys`, plus the signing
+  // `threshold` (t+1). Injected by the caller so state processing stays free of
+  // historical-quorum lookup details — mirroring `checkpoint_quorum_resolver`,
+  // which the gateway governance evidence check uses for the same reason.
+  using bridge_committee_resolver =
+      std::function<bool(uint64_t epoch_height, std::vector<crypto::public_key>& members,
+                         std::vector<crypto::ed25519_public_key>& signer_keys, size_t& threshold)>;
+
   struct master_node_info // registration information
   {
     enum class version_t : uint8_t
@@ -290,6 +302,18 @@ namespace master_nodes
       uint64_t                    bond_unlock_height = 0;      // height at which a released bond becomes spendable
 
       bool is_active_seat() const { return registered && seated && requested_unbond_height == 0; }
+
+      // Phase F forfeiture: a slashed seat is recorded as an unbond that **never
+      // unlocks** (bond_unlock_height == UINT64_MAX). This reuses the existing
+      // unbonding semantics exactly — the seat stops being committee-eligible
+      // (requested_unbond_height != 0), the bond's key images stay blacklisted for
+      // as long as the seat is `registered`, and `finalize_bridge_unbonds` can never
+      // reach the unlock height — so the 100k bond is permanently unspendable, i.e.
+      // burned. Deliberately no new serialized field (no state-format change).
+      bool is_forfeited() const
+      {
+        return registered && bond_unlock_height == std::numeric_limits<uint64_t>::max();
+      }
 
       BEGIN_SERIALIZE_OBJECT()
         VARINT_FIELD(version)
@@ -494,6 +518,24 @@ namespace master_nodes
     /// return: nullptr if the quorum is not cached in memory (pruned from memory).
     std::shared_ptr<const quorum> get_quorum(quorum_type type, uint64_t height, bool include_old = false, std::vector<std::shared_ptr<const quorum>> *alt_states = nullptr) const;
     bool                          get_quorum_pubkey(quorum_type type, quorum_group group, uint64_t height, size_t quorum_index, crypto::public_key &key) const;
+
+    /// HF23 Phase F: the bridge committee in effect at `epoch_height` — the ordered
+    /// `members` (from that height's stored bridge quorum) and their parallel
+    /// bridge-signer `signer_keys`, plus the signing `threshold` (t+1). This is the
+    /// concrete [bridge_committee_resolver] for callers *outside* block processing
+    /// (tx validation, the `bridge.slash_report` OMQ intake); inside
+    /// `state_t::update_from_block` the resolver is built against the in-flight
+    /// state_history/state_archive instead, to avoid reading a half-updated m_state.
+    ///
+    /// A member whose seat is no longer in the current list gets a zero signer key
+    /// rather than failing the whole lookup: a zero ed25519 key is a small-order
+    /// point that libsodium rejects, so such a member simply cannot be counted as an
+    /// accuser, while the rest of the historical committee stays verifiable.
+    /// return: false if that height's bridge quorum is not available (pruned/absent).
+    bool get_bridge_committee(uint64_t epoch_height,
+                              std::vector<crypto::public_key>& members,
+                              std::vector<crypto::ed25519_public_key>& signer_keys,
+                              size_t& threshold) const;
 
     size_t get_master_node_count() const;
     std::vector<master_node_pubkey_info> get_master_node_list_state(const std::vector<crypto::public_key> &master_node_pubkeys = {}) const;
@@ -743,6 +785,12 @@ namespace master_nodes
       bool process_bridge_registration_tx(cryptonote::network_type nettype, cryptonote::block const &block, const cryptonote::transaction& tx, uint32_t index);
       // Returns true if a bridge seat was moved into the unbonding state (HF23):
       bool process_bridge_unbond_tx(cryptonote::network_type nettype, cryptonote::block const &block, const cryptonote::transaction& tx);
+      // Returns true if a bridge seat was slashed and its bond forfeited (HF23,
+      // Phase F). `resolve_committee` supplies the committee in effect for the
+      // report's epoch (see bridge_committee_resolver).
+      bool process_bridge_slash_tx(cryptonote::network_type nettype, cryptonote::block const &block,
+                                   const cryptonote::transaction& tx,
+                                   const bridge_committee_resolver& resolve_committee);
       // Release (clear) any bridge seat whose bond unlock height has been reached.
       void finalize_bridge_unbonds(uint64_t block_height);
       // Number of currently seated (not merely queued) bridge operators.

@@ -208,6 +208,9 @@ namespace hashkey {
   inline constexpr std::string_view GW_FREEZE       = "gateway_freeze"sv;       // supermajority freeze/unfreeze attestation message
   inline constexpr std::string_view GW_REPOINT      = "gateway_repoint"sv;      // supermajority owner re-point attestation message
   inline constexpr std::string_view GW_DEPOSIT_MEMO = "gateway_deposit_memo"sv; // bridge deposit-routing memo encryption mask
+  // Phase F accountability: the bridge-committee slash-report domain. MUST match the
+  // off-chain signer's `slash::SLASH_REPORT_DOMAIN` byte-for-byte.
+  inline constexpr std::string_view BRIDGE_SLASH    = "bridge_slash_report_v1"sv; // bridge accountability slash report
 }
 
 // Maximum allowed stake contribution, as a fraction of the available contribution room.  This

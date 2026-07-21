@@ -69,6 +69,7 @@ constexpr uint8_t
   TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO         = 0x7F, // HF23 (bridge deposit routing)
   TX_EXTRA_TAG_BRIDGE_REGISTRATION          = 0x80, // HF23 (bonded bridge set)
   TX_EXTRA_TAG_BRIDGE_UNBOND                = 0x81, // HF23 (bonded bridge set)
+  TX_EXTRA_TAG_BRIDGE_SLASH                 = 0x82, // HF23 (Phase F accountability)
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
@@ -718,6 +719,53 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // One accuser's ed25519 signature on a bridge slash report (HF23, Phase F). The
+  // accuser is a bridge-committee member; `voter_index` is its index in that epoch's
+  // committee. The signature is over the canonical, genesis-bound slash message
+  // (see `bridge_slash_message` in gateway_utils) — the same bytes the off-chain
+  // bridge signer produced.
+  struct bridge_slash_signature
+  {
+    uint16_t                  voter_index = 0;
+    crypto::ed25519_signature signature{};
+
+    BEGIN_SERIALIZE()
+      VARINT_FIELD(voter_index)
+      FIELD(signature)
+    END_SERIALIZE()
+  };
+
+  // Bridge accountability slash (HF23, plan §10 Phase F). Carries a bridge-committee-
+  // signed identifiable-abort report: the accused seat's masternode is deregistered
+  // and its 100k bridge bond is **forfeited**. The evidence is transferable and
+  // cryptographic (≥ `t+1` committee ed25519 signatures over the canonical report),
+  // so acceptance does not depend on an honest-majority vote about facts — only on
+  // verifying the signatures against the epoch's committee. Only the FROST (`Pgw`)
+  // leg is attributable today; a coarse (unattributed) `Pevm` fault is a governance
+  // freeze, not a slash (cggmp21 0.6.3 has no identifiable abort).
+  struct tx_extra_bridge_slash
+  {
+    uint8_t      version = 0;
+    uint8_t      scheme = 0;                       // 0 = Pevm, 1 = Pgw (matches the signer)
+    uint8_t      failing_check = 0;                // matches the signer's FailingCheck encoding
+    uint16_t     accused_index = 0;                // committee index of the accused member
+    uint64_t     epoch = 0;                        // committee epoch the report is rooted in
+    uint64_t     height = 0;                        // session height
+    crypto::hash transcript_root{};                // S4 agreed session transcript root
+    std::vector<bridge_slash_signature> accusers;  // >= t+1 distinct committee signers
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      FIELD(scheme)
+      FIELD(failing_check)
+      VARINT_FIELD(accused_index)
+      VARINT_FIELD(epoch)
+      VARINT_FIELD(height)
+      FIELD(transcript_root)
+      FIELD(accusers)
+    END_SERIALIZE()
+  };
+
   struct tx_extra_beldex_name_system
   {
     uint8_t                 version = 0;
@@ -821,6 +869,7 @@ namespace cryptonote
       tx_extra_gateway_deposit_memo,
       tx_extra_bridge_registration,
       tx_extra_bridge_unbond,
+      tx_extra_bridge_slash,
       tx_extra_merge_mining_tag,
       tx_extra_mysterious_minergate,
       tx_extra_padding,
@@ -853,5 +902,6 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_repoint,              cryptonote
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_deposit_memo,         cryptonote::TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_registration,          cryptonote::TX_EXTRA_TAG_BRIDGE_REGISTRATION);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_unbond,                cryptonote::TX_EXTRA_TAG_BRIDGE_UNBOND);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_slash,                 cryptonote::TX_EXTRA_TAG_BRIDGE_SLASH);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_beldex_name_system,            cryptonote::TX_EXTRA_TAG_BELDEX_NAME_SYSTEM);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_security_signature,            cryptonote::TX_EXTRA_TAG_SECURITY_SIGNATURE);

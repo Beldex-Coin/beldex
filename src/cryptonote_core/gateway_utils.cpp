@@ -24,6 +24,8 @@
 #include "ringct/rctSigs.h" // verRctSemanticsSimple (range-proof + balance)
 #include "beldex_economy.h"
 
+#include <sodium/crypto_sign.h> // crypto_sign_verify_detached (bridge slash ed25519 evidence)
+
 namespace cryptonote
 {
 
@@ -284,6 +286,85 @@ bool verify_gateway_governance_evidence(const std::vector<gateway_governance_sig
     if (!crypto::check_signature(msg, validators[e.voter_index], e.signature))
     {
       reason = "governance signature verification failed at voter index " + std::to_string(e.voter_index);
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string bridge_slash_message(network_type nettype, const tx_extra_bridge_slash& slash)
+{
+  const crypto::hash& genesis = gateway_chain_binding(nettype);
+  std::string buf;
+  buf.reserve(hashkey::BRIDGE_SLASH.size() + sizeof(genesis) + 1 + sizeof(slash.transcript_root) + 1 + 2 + 8 + 8);
+  buf.append(hashkey::BRIDGE_SLASH);
+  buf.append(reinterpret_cast<const char*>(&genesis), sizeof(genesis));
+  buf.push_back(static_cast<char>(slash.scheme));
+  buf.append(reinterpret_cast<const char*>(&slash.transcript_root), sizeof(slash.transcript_root));
+  buf.push_back(static_cast<char>(slash.failing_check));
+  buf.push_back(static_cast<char>(slash.accused_index & 0xff));        // u16 LE
+  buf.push_back(static_cast<char>((slash.accused_index >> 8) & 0xff));
+  append_u64_le(buf, slash.epoch);
+  append_u64_le(buf, slash.height);
+  return buf;
+}
+
+bool verify_bridge_slash_evidence(const tx_extra_bridge_slash& slash,
+                                  const std::vector<crypto::ed25519_public_key>& signer_keys,
+                                  size_t threshold, network_type nettype, std::string& reason)
+{
+  // Coarse/unattributed `Pevm` fault (failing_check == 3) is a governance freeze,
+  // not a slash — never admissible slashing evidence.
+  if (slash.failing_check == 3)
+  {
+    reason = "unattributed fault is not slashable evidence";
+    return false;
+  }
+  if (threshold == 0)
+  {
+    reason = "zero slash threshold";
+    return false;
+  }
+  if (slash.accused_index >= signer_keys.size())
+  {
+    reason = "accused index out of committee range";
+    return false;
+  }
+  if (slash.accusers.size() < threshold)
+  {
+    reason = "insufficient slash accusers (" + std::to_string(slash.accusers.size()) + " < required "
+             + std::to_string(threshold) + ")";
+    return false;
+  }
+  if (slash.accusers.size() > signer_keys.size())
+  {
+    reason = "more slash accusers than committee members";
+    return false;
+  }
+
+  // The exact bytes the off-chain committee signed.
+  const std::string msg = bridge_slash_message(nettype, slash);
+
+  // Distinct, strictly-ascending accuser indices (no double-count; canonical order),
+  // each ed25519 signature valid over `msg` under that member's signer_ed25519.
+  for (size_t i = 0; i < slash.accusers.size(); ++i)
+  {
+    const auto& a = slash.accusers[i];
+    if (a.voter_index >= signer_keys.size())
+    {
+      reason = "slash accuser index out of range";
+      return false;
+    }
+    if (i > 0 && slash.accusers[i - 1].voter_index >= a.voter_index)
+    {
+      reason = "slash accuser indices not strictly ascending";
+      return false;
+    }
+    if (crypto_sign_verify_detached(a.signature.data,
+                                    reinterpret_cast<const unsigned char*>(msg.data()), msg.size(),
+                                    signer_keys[a.voter_index].data) != 0)
+    {
+      reason = "slash signature verification failed at accuser index " + std::to_string(a.voter_index);
       return false;
     }
   }

@@ -46,6 +46,7 @@ extern "C" {
 #include "cryptonote_basic/tx_extra.h"
 #include "cryptonote_basic/hardfork.h"
 #include "cryptonote_core/uptime_proof.h"
+#include "cryptonote_core/gateway_utils.h"
 #include "epee/int-util.h"
 #include "common/scoped_message_writer.h"
 #include "common/i18n.h"
@@ -185,6 +186,33 @@ namespace master_nodes
 
     std::shared_ptr<const quorum> result = quorums->get(type);
     return result;
+  }
+
+  bool master_node_list::get_bridge_committee(uint64_t epoch_height,
+                                              std::vector<crypto::public_key> &members,
+                                              std::vector<crypto::ed25519_public_key> &signer_keys,
+                                              size_t &threshold) const
+  {
+    auto q = get_quorum(quorum_type::bridge, epoch_height, /*include_old=*/true);
+    if (!q || q->validators.empty())
+      return false;
+
+    std::lock_guard lock(m_mn_mutex);
+    members = q->validators;
+    signer_keys.clear();
+    signer_keys.reserve(members.size());
+    for (const crypto::public_key &pk : members)
+    {
+      auto it = m_state.master_nodes_infos.find(pk);
+      // Zero key for a member we can no longer key (seat released/expired): it can
+      // never verify (small-order point), so it drops out as a possible accuser
+      // without invalidating the rest of the historical committee.
+      signer_keys.push_back(it != m_state.master_nodes_infos.end() && it->second->bridge_seat.registered
+                                ? it->second->bridge_seat.signer_ed25519
+                                : crypto::ed25519_public_key::null());
+    }
+    threshold = cryptonote::bridge_committee_threshold(m_blockchain.nettype());
+    return true;
   }
 
   static bool get_pubkey_from_quorum(quorum const &quorum, quorum_group group, size_t quorum_index, crypto::public_key &key)
@@ -2271,6 +2299,96 @@ namespace master_nodes
     return true;
   }
 
+  bool master_node_list::state_t::process_bridge_slash_tx(cryptonote::network_type nettype,
+                                                          const cryptonote::block &block,
+                                                          const cryptonote::transaction &tx,
+                                                          const bridge_committee_resolver &resolve_committee)
+  {
+    const uint64_t block_height = cryptonote::get_block_height(block);
+    const auto hf_version       = block.major_version;
+    if (hf_version < cryptonote::hf::hf23_bridge)
+      return false;
+
+    cryptonote::tx_extra_bridge_slash op{};
+    if (!cryptonote::get_field_from_tx_extra(tx.extra, op))
+      return false;
+
+    if (!resolve_committee)
+    {
+      LOG_PRINT_L1("Bridge slash TX: no bridge committee resolver available");
+      return false;
+    }
+
+    // The committee in effect for the epoch the report is rooted in. Slashing is
+    // judged against *that* committee, not the current one, so a report stays
+    // verifiable after the committee rotates.
+    const uint64_t epoch_height = op.epoch * cryptonote::bridge_epoch_blocks(nettype);
+    std::vector<crypto::public_key> members;
+    std::vector<crypto::ed25519_public_key> signer_keys;
+    size_t threshold = 0;
+    if (!resolve_committee(epoch_height, members, signer_keys, threshold) || members.empty()
+        || members.size() != signer_keys.size())
+    {
+      LOG_PRINT_L1("Bridge slash TX: no bridge committee for epoch " << op.epoch
+                   << " (height " << epoch_height << ")");
+      return false;
+    }
+
+    // Transferable cryptographic evidence: >= t+1 distinct committee members signed
+    // this exact report. Acceptance does not depend on an honest-majority vote about
+    // facts, only on verifying these signatures (plan §10 F.2).
+    std::string reason;
+    if (!cryptonote::verify_bridge_slash_evidence(op, signer_keys, threshold, nettype, reason))
+    {
+      LOG_PRINT_L1("Bridge slash TX: rejected evidence: " << reason);
+      return false;
+    }
+
+    if (op.accused_index >= members.size())
+    {
+      LOG_PRINT_L1("Bridge slash TX: accused index " << op.accused_index << " out of committee range");
+      return false;
+    }
+    const crypto::public_key &accused = members[op.accused_index];
+
+    auto iter = master_nodes_infos.find(accused);
+    if (iter == master_nodes_infos.end())
+    {
+      LOG_PRINT_L1("Bridge slash TX: unknown master node " << accused << " on height " << block_height);
+      return false;
+    }
+    const master_node_info &curinfo = *iter->second;
+    if (!curinfo.bridge_seat.registered)
+    {
+      LOG_PRINT_L1("Bridge slash TX: master node " << accused << " holds no bridge seat");
+      return false;
+    }
+    if (curinfo.bridge_seat.is_forfeited())
+    {
+      LOG_PRINT_L1("Bridge slash TX: master node " << accused << " is already slashed (idempotent)");
+      return false;
+    }
+
+    // Forfeit: record an unbond that can never unlock. The seat stops being
+    // committee-eligible immediately (refresh_bridge_seats promotes the queue head
+    // into the freed seat), while the bond's key images stay blacklisted for as long
+    // as the seat is `registered` and `finalize_bridge_unbonds` can never reach
+    // UINT64_MAX — so the 100k bond is permanently unspendable, i.e. burned.
+    // DECIDED penalty scope (plan §10 F.3): the slashing target is the bridge bond
+    // *only*. The base masternode stake is deliberately untouched and the node is
+    // NOT deregistered as a masternode — a bridge seat is an opt-in duty, so the
+    // penalty is scoped to the bond that opts into it. Do not "upgrade" this to a
+    // state_change deregister without revisiting that decision.
+    auto &info = duplicate_info(iter->second);
+    info.bridge_seat.requested_unbond_height = block_height;
+    info.bridge_seat.bond_unlock_height      = std::numeric_limits<uint64_t>::max();
+    info.bridge_seat.seated                  = false;
+    MGINFO("Bridge slash: forfeited the bridge bond of master node "
+           << accused << " (committee index " << op.accused_index << ", epoch " << op.epoch
+           << ") at height " << block_height);
+    return true;
+  }
+
   void master_node_list::state_t::finalize_bridge_unbonds(uint64_t block_height)
   {
     // Release any seat whose unbonding period has elapsed: clear the bridge_seat
@@ -2281,6 +2399,11 @@ namespace master_nodes
     for (const auto &[pk, info] : master_nodes_infos)
     {
       const auto &bs = info->bridge_seat;
+      // A forfeited (slashed) bond is never released — its unlock height is
+      // UINT64_MAX, so the comparison below can never hold, but skip it explicitly
+      // so the intent is not accidental (Phase F).
+      if (bs.is_forfeited())
+        continue;
       if (bs.registered && bs.requested_unbond_height != 0 && block_height >= bs.bond_unlock_height)
         to_release.push_back(pk);
     }
@@ -2410,6 +2533,48 @@ namespace master_nodes
     //
     // Process TXs in the Block
     //
+    // HF23 Phase F: resolves the bridge committee that was in effect for a *past*
+    // epoch, so a slash report stays verifiable after the committee rotates. Built
+    // here (rather than calling master_node_list::get_bridge_committee) for the same
+    // reason process_state_change_tx resolves its obligations quorum this way: during
+    // block processing `m_state` is the state being mutated, so the historical lookup
+    // must go through the state_history/state_archive/alt_states snapshots that are
+    // passed in. Signer keys come from this state's infos — a seat's signer_ed25519 is
+    // fixed at registration and never rotates in place.
+    const bridge_committee_resolver resolve_bridge_committee =
+        [&](uint64_t epoch_height, std::vector<crypto::public_key> &members,
+            std::vector<crypto::ed25519_public_key> &signer_keys, size_t &threshold) -> bool
+    {
+      quorum_manager const *quorums = nullptr;
+      if (auto it = state_history.find(epoch_height); it != state_history.end())
+        quorums = &it->quorums;
+      else if (auto it = state_archive.find(epoch_height); it != state_archive.end())
+        quorums = &it->quorums;
+      else
+      {
+        for (const auto &[hash, alt_state] : alt_states)
+          if (alt_state.height == epoch_height) { quorums = &alt_state.quorums; break; }
+      }
+      if (!quorums || !quorums->bridge || quorums->bridge->validators.empty())
+        return false;
+
+      members = quorums->bridge->validators;
+      signer_keys.clear();
+      signer_keys.reserve(members.size());
+      for (const crypto::public_key &pk : members)
+      {
+        auto it = master_nodes_infos.find(pk);
+        // Zero key for a member we can no longer key: a zero ed25519 key is a
+        // small-order point libsodium rejects, so that member simply cannot be
+        // counted as an accuser — the rest of the committee stays verifiable.
+        signer_keys.push_back(it != master_nodes_infos.end() && it->second->bridge_seat.registered
+                                  ? it->second->bridge_seat.signer_ed25519
+                                  : crypto::ed25519_public_key::null());
+      }
+      threshold = cryptonote::bridge_committee_threshold(nettype);
+      return true;
+    };
+
     cryptonote::txtype max_tx_type     = cryptonote::transaction::get_max_type_for_hf(hf_version);
     cryptonote::txtype staking_tx_type = (max_tx_type < cryptonote::txtype::stake) ? cryptonote::txtype::standard : cryptonote::txtype::stake;
     for (uint32_t index = 0; index < txs.size(); ++index)
@@ -2430,10 +2595,16 @@ namespace master_nodes
       }
       else if (tx.type == cryptonote::txtype::bridge_registration)
       {
-        // A bridge-lifecycle tx carries either a voluntary unbond request or a
-        // seat registration; route by which field is present.
+        // A bridge-lifecycle tx carries an accountability slash report, a voluntary
+        // unbond request, or a seat registration; route by which field is present.
+        // Slash is probed first: it is the only one authorised by *committee*
+        // evidence rather than the operator's own signature, so it must not be
+        // mistaken for either of the operator-driven ops.
+        cryptonote::tx_extra_bridge_slash  slash{};
         cryptonote::tx_extra_bridge_unbond unbond{};
-        if (cryptonote::get_field_from_tx_extra(tx.extra, unbond))
+        if (cryptonote::get_field_from_tx_extra(tx.extra, slash))
+          process_bridge_slash_tx(nettype, block, tx, resolve_bridge_committee);
+        else if (cryptonote::get_field_from_tx_extra(tx.extra, unbond))
           process_bridge_unbond_tx(nettype, block, tx);
         else
           process_bridge_registration_tx(nettype, block, tx, index);
