@@ -88,6 +88,14 @@ pub mod ffi;
 #[cfg(feature = "omq-client")]
 pub mod omq_client;
 
+/// Phase E.2 EVM watcher (`l2_tracker` port): decodes wBDX burn logs from a
+/// member's own Ethereum JSON-RPC endpoint, gates on confirmations + reorgs
+/// (feeding [`watch::Tracker`]), and emits normalized [`watch::ReleaseEvent`]s.
+/// Decode + reorg logic is testable with a mock client; the real HTTP backend is
+/// behind `evm-watcher-http`. Built under the `evm-watcher` feature.
+#[cfg(feature = "evm-watcher")]
+pub mod evm_watcher;
+
 /// Direct peer-to-peer curve-authenticated session transport (C.4). Carries
 /// [`wire::WireMsg`]s between signers. Only built under the `omq-mesh` feature.
 #[cfg(feature = "omq-mesh")]

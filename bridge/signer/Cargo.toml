@@ -75,6 +75,14 @@ omq-mesh = ["dep:zmq"]
 # client (omq-client). The `main.rs` `dkg` subcommand is gated on this.
 live-dkg = ["tss-integration", "omq-mesh", "omq-client", "dep:rand"]
 
+# Phase E.2 EVM watcher (l2_tracker port): decode wBDX burn logs from eth_getLogs,
+# confirmation + reorg gating feeding watch::Tracker, emit normalized ReleaseEvents.
+# The security-critical decode/gating logic is testable with a mock JSON-RPC client
+# (needs serde_json for the reply shape + sha3 for the event topic hash); the real
+# blocking HTTP client is a separate, thin opt-in so the core stays dep-light.
+evm-watcher = ["dep:serde_json", "dep:sha3"]
+evm-watcher-http = ["evm-watcher", "dep:ureq"]
+
 [dependencies]
 # All optional; pulled in only by the features above (verified 2026-07).
 k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"], optional = true }
@@ -102,6 +110,9 @@ zmq                  = { version = "0.10", optional = true }
 rand                 = { version = "0.8", optional = true }
 # The DKG driver's RngCore/CryptoRng trait bounds (enabled by tss-integration).
 rand_core            = { version = "0.6", optional = true }
+# Blocking HTTP client for the EVM watcher's real JSON-RPC backend (opt-in via
+# `evm-watcher-http`). `rustls` avoids a system OpenSSL build dependency.
+ureq                 = { version = "2", default-features = false, features = ["tls", "json"], optional = true }
 
 [dev-dependencies]
 rand         = "0.8"

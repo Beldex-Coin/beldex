@@ -62,6 +62,11 @@ fn print_status(cfg: &Config) {
     } else {
         println!("(build with --features live-dkg for the `dkg` / `sign` subcommands)");
     }
+    if cfg!(feature = "evm-watcher-http") {
+        println!("  watch-evm — poll EVM chains for finalized wBDX burns (BRIDGE_SIGNER_EVM_CHAINS)");
+    } else {
+        println!("(build with --features evm-watcher-http for the `watch-evm` subcommand)");
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -671,6 +676,88 @@ fn run_sign(_cfg: &Config) -> Result<(), String> {
     Err("the `sign` subcommand requires a build with `--features live-dkg`".into())
 }
 
+/// `watch-evm` subcommand: build one EVM watcher per chain from
+/// `BRIDGE_SIGNER_EVM_CHAINS` and poll for finalized wBDX burns (E.2). Prints each
+/// finalized `ReleaseEvent` and its canonical id (what members agree on). Only built
+/// with `--features evm-watcher-http`.
+#[cfg(feature = "evm-watcher-http")]
+fn run_watch_evm(_cfg: &Config) -> Result<(), String> {
+    use beldex_bridge_signer::evm_watcher::{build_registry, parse_evm_chains};
+    use std::time::Duration;
+
+    let chains_json = std::env::var("BRIDGE_SIGNER_EVM_CHAINS").map_err(|_| {
+        "set BRIDGE_SIGNER_EVM_CHAINS — a JSON array of \
+         {chain_id, contract, confirmations, rpc, per_tx_max, per_epoch_cap, start_block}"
+            .to_string()
+    })?;
+    let configs = parse_evm_chains(&chains_json)?;
+    if configs.is_empty() {
+        return Err("BRIDGE_SIGNER_EVM_CHAINS is empty — no chains to watch".into());
+    }
+    // Build the E.3 registry (validates uniqueness) even though the loop below only
+    // needs the watchers — it is the config's single source of truth.
+    let _registry = build_registry(&configs)?;
+
+    // The L1 genesis binds every release canonical id (S6/S14, no cross-net replay).
+    let genesis: [u8; 32] = match std::env::var("BRIDGE_SIGNER_GENESIS_HASH") {
+        Ok(h) => config::parse_hex32(&h).ok_or("BRIDGE_SIGNER_GENESIS_HASH must be 32-byte hex")?,
+        Err(_) => {
+            println!("WARNING: no BRIDGE_SIGNER_GENESIS_HASH — using zeros for release canonical ids");
+            [0u8; 32]
+        }
+    };
+    let poll_secs: u64 = std::env::var("BRIDGE_SIGNER_WATCH_POLL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(12);
+    // Bound the loop for a scripted run; unset = run until interrupted.
+    let max_iters: Option<u64> = std::env::var("BRIDGE_SIGNER_WATCH_ITERS")
+        .ok()
+        .and_then(|s| s.parse().ok());
+
+    let mut watchers: Vec<_> = configs.iter().map(|c| (c.chain_id, c.build_watcher())).collect();
+    println!(
+        "watching {} EVM chain(s), polling every {poll_secs}s: {:?}",
+        watchers.len(),
+        configs.iter().map(|c| c.chain_id).collect::<Vec<_>>()
+    );
+
+    let mut iter = 0u64;
+    loop {
+        for (chain_id, w) in watchers.iter_mut() {
+            match w.advance() {
+                Ok(update) => {
+                    for ev in &update.finalized {
+                        let cid = ev.canonical_id(genesis);
+                        println!(
+                            "chain {chain_id}: RELEASE finalized — amount={} recipient=0x{} evm_txid=0x{} canonical_id=0x{}",
+                            ev.amount,
+                            hex(&ev.beldex_recipient),
+                            hex(&ev.evm_txid),
+                            hex(&cid),
+                        );
+                    }
+                    for d in &update.dropped {
+                        println!("chain {chain_id}: burn dropped (reorg) at height {}", d.inclusion_height);
+                    }
+                }
+                Err(e) => eprintln!("chain {chain_id}: advance error: {e:?}"),
+            }
+        }
+        iter += 1;
+        if max_iters.is_some_and(|m| iter >= m) {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(poll_secs));
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "evm-watcher-http"))]
+fn run_watch_evm(_cfg: &Config) -> Result<(), String> {
+    Err("the `watch-evm` subcommand requires a build with `--features evm-watcher-http`".into())
+}
+
 fn main() -> ExitCode {
     let subcommand = std::env::args().nth(1);
     let cfg = match Config::from_map(&config_map()) {
@@ -694,6 +781,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("sign: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("watch-evm") => match run_watch_evm(&cfg) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("watch-evm: {e}");
                 ExitCode::FAILURE
             }
         },

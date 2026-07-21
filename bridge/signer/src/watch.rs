@@ -200,6 +200,12 @@ impl<E: Clone> Tracker<E> {
         self.pending.len()
     }
 
+    /// The observations awaiting finality — the caller reads their inclusion
+    /// heights to fetch current block hashes before [`poll`](Self::poll).
+    pub fn pending(&self) -> &[Observation<E>] {
+        &self.pending
+    }
+
     /// Advance to `tip_height`. `is_canonical(inclusion_height, &block_hash)` must
     /// report whether that exact block is still on the canonical chain (the RPC
     /// layer answers this; in tests it's a closure). Returns what finalized and what
