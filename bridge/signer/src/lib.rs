@@ -96,6 +96,15 @@ pub mod omq_client;
 #[cfg(feature = "evm-watcher")]
 pub mod evm_watcher;
 
+/// Phase E.1 Beldex watcher + the A.5 bridge-memo codec: consumes
+/// `gateway_get_history` deposit events, decodes the destination memo
+/// ([`beldex_watcher::BridgeMemo`]), resolves it via the E.3 chain registry into a
+/// [`watch::MintEvent`], and gates on **checkpoint finality** (reorg-safe). Testable
+/// with a mock daemon; real HTTP backend behind `beldex-watcher-http`. Built under
+/// the `beldex-watcher` feature.
+#[cfg(feature = "beldex-watcher")]
+pub mod beldex_watcher;
+
 /// Direct peer-to-peer curve-authenticated session transport (C.4). Carries
 /// [`wire::WireMsg`]s between signers. Only built under the `omq-mesh` feature.
 #[cfg(feature = "omq-mesh")]

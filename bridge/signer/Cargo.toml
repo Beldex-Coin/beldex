@@ -83,6 +83,13 @@ live-dkg = ["tss-integration", "omq-mesh", "omq-client", "dep:rand"]
 evm-watcher = ["dep:serde_json", "dep:sha3"]
 evm-watcher-http = ["evm-watcher", "dep:ureq"]
 
+# Phase E.1 Beldex watcher: consume `gateway_get_history` deposit events, decode the
+# A.5 bridge memo (destination), resolve via the E.3 chain registry into a MintEvent,
+# and gate on checkpoint finality. Std-only core + serde_json; real HTTP client (the
+# member's own beldexd JSON-RPC) is a thin, separate opt-in.
+beldex-watcher = ["dep:serde_json"]
+beldex-watcher-http = ["beldex-watcher", "dep:ureq"]
+
 [dependencies]
 # All optional; pulled in only by the features above (verified 2026-07).
 k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"], optional = true }
