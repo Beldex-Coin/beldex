@@ -47,11 +47,16 @@ namespace
     auto it = cache.find(static_cast<uint8_t>(nettype));
     if (it == cache.end())
     {
-      crypto::hash h = crypto::null_hash;
       block genesis{};
-      if (generate_genesis_block(genesis, nettype))
-        h = get_block_hash(genesis);
-      it = cache.emplace(static_cast<uint8_t>(nettype), h).first;
+      // Hard-fail rather than fall back to null_hash. The genesis hash is the
+      // SOLE anti-cross-chain-replay binding for keyless gateway signatures; an
+      // all-zero fallback would make every signature on this network share the
+      // same (zero) binding and become replayable across chains. A failure here
+      // means a misconfigured network and must not be silently papered over.
+      // See docs/GATEWAY_SECURITY_FIXES.md (F4).
+      CHECK_AND_ASSERT_THROW_MES(generate_genesis_block(genesis, nettype),
+          "gateway: failed to generate genesis block for chain binding");
+      it = cache.emplace(static_cast<uint8_t>(nettype), get_block_hash(genesis)).first;
     }
     return it->second;
   }
