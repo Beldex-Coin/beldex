@@ -92,14 +92,50 @@ impl BridgeMemo {
     }
 }
 
-/// A normalized gateway **deposit** from `gateway_get_history` (E.1). `memo` is the
-/// daemon-decrypted A.5 bridge memo, present once A.5 ships (absent → unresolvable).
+/// The encrypted A.5 memo bundle surfaced by `gateway_get_history` (the raw
+/// on-chain ciphertext + the two inputs the signer needs to decrypt it with the
+/// shared gateway view secret — the daemon never holds that secret).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncMemo {
+    pub ciphertext: Vec<u8>,
+    pub tx_pubkey: [u8; 32],
+    pub output_index: u64,
+}
+
+/// A normalized gateway **deposit** from `gateway_get_history` (E.1).
+///
+/// `enc_memo` is the raw encrypted A.5 bundle (present once A.5's daemon delta
+/// ships); `memo` is the **decrypted** 32-byte plaintext, filled by
+/// [`decrypt_memo`](DepositRecord::decrypt_memo) with the gateway view secret. A
+/// deposit with neither is unresolvable (held, not minted).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DepositRecord {
     pub beldex_txid: [u8; 32],
     pub amount: u128,
     pub height: u64,
+    pub enc_memo: Option<EncMemo>,
     pub memo: Option<[u8; MEMO_LEN]>,
+}
+
+impl DepositRecord {
+    /// Decrypt `enc_memo` with the shared gateway view secret and store the plaintext
+    /// in `memo` (A.5, signer side). No-op if there is no ciphertext or it is already
+    /// decrypted; the plaintext must be exactly [`MEMO_LEN`] to be accepted.
+    #[cfg(feature = "tss-integration")]
+    pub fn decrypt_memo(&mut self, view_secret: &[u8; 32]) {
+        if self.memo.is_some() {
+            return;
+        }
+        if let Some(enc) = &self.enc_memo {
+            if let Ok(pt) =
+                crate::gateway_memo::decrypt(&enc.ciphertext, &enc.tx_pubkey, view_secret, enc.output_index)
+            {
+                if let Ok(fixed) = <[u8; MEMO_LEN]>::try_from(pt.as_slice()) {
+                    self.memo = Some(fixed);
+                }
+            }
+        }
+    }
 }
 
 /// Why a deposit could not be turned into a mint (held pending policy / A.5).
@@ -208,9 +244,21 @@ pub fn parse_deposit_events(page: &Value) -> Vec<DepositRecord> {
         ) else {
             continue;
         };
-        // The decrypted A.5 memo, once the daemon surfaces it (hex, 32 bytes).
+        // Signer-decrypt path: the raw encrypted bundle {enc_memo, tx_pubkey,
+        // out_index}. Present only if all three decode.
+        let enc_memo = match (
+            e.get("enc_memo").and_then(Value::as_str).and_then(hex_to_bytes),
+            e.get("tx_pubkey").and_then(Value::as_str).and_then(hex_to_fixed::<32>),
+            e.get("out_index").and_then(Value::as_u64),
+        ) {
+            (Some(ciphertext), Some(tx_pubkey), Some(output_index)) if !ciphertext.is_empty() => {
+                Some(EncMemo { ciphertext, tx_pubkey, output_index })
+            }
+            _ => None,
+        };
+        // Optional already-plaintext memo (kept for tests / a daemon-decrypt fallback).
         let memo = e.get("memo").and_then(Value::as_str).and_then(hex_to_fixed::<MEMO_LEN>);
-        out.push(DepositRecord { beldex_txid: txid, amount: amount as u128, height, memo });
+        out.push(DepositRecord { beldex_txid: txid, amount: amount as u128, height, enc_memo, memo });
     }
     out
 }
@@ -382,6 +430,7 @@ mod tests {
             beldex_txid: [0x01; 32],
             amount,
             height: 100,
+            enc_memo: None,
             memo,
         };
 
@@ -479,5 +528,53 @@ mod tests {
         // And it resolves to a full MintEvent via the registry.
         let reg = registry(1, 1000);
         assert!(matches!(resolve_mint(&finals[0], &reg), Resolution::Mint(_)));
+    }
+
+    /// End-to-end (signer-decrypt path): a real encrypted memo bundle → `decrypt_memo`
+    /// → `resolve_mint` → `MintEvent`. Needs libsodium (run with
+    /// `--features "beldex-watcher,tss-integration"`).
+    #[cfg(feature = "tss-integration")]
+    #[test]
+    fn encrypted_bundle_decrypts_and_resolves() {
+        use crate::ffi::{ed25519_scalar_reduce32, ed25519_scalarmult_base_noclamp, ensure_init};
+        use rand::RngCore;
+        ensure_init().unwrap();
+
+        let keypair = || {
+            let mut seed = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut seed);
+            let sec = ed25519_scalar_reduce32(&seed);
+            let pubk = ed25519_scalarmult_base_noclamp(&sec).unwrap();
+            (sec, pubk)
+        };
+        let (tx_secret, tx_pubkey) = keypair();
+        let (view_secret, view_public) = keypair();
+        let output_index = 2u64;
+
+        // Wallet-side: encode the destination + encrypt to the gateway view key.
+        let plaintext = BridgeMemo { chain_id: 1, evm_addr: [0x11; 20] }.encode();
+        let ciphertext =
+            crate::gateway_memo::encrypt(&plaintext, &tx_secret, &view_public, output_index).unwrap();
+
+        let mut deposit = DepositRecord {
+            beldex_txid: [0x01; 32],
+            amount: 500,
+            height: 100,
+            enc_memo: Some(EncMemo { ciphertext, tx_pubkey, output_index }),
+            memo: None,
+        };
+        // Signer-side: decrypt with the shared view secret, then resolve.
+        deposit.decrypt_memo(&view_secret);
+        assert_eq!(deposit.memo, Some(plaintext), "recovered the plaintext memo");
+
+        let reg = registry(1, 1000);
+        match resolve_mint(&deposit, &reg) {
+            Resolution::Mint(ev) => {
+                assert_eq!(ev.dst_chain, ChainId(1));
+                assert_eq!(ev.to, [0x11; 20]);
+                assert_eq!(ev.amount, 500);
+            }
+            other => panic!("expected Mint, got {other:?}"),
+        }
     }
 }

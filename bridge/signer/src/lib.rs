@@ -83,6 +83,14 @@ pub mod wire_auth;
 #[cfg(feature = "tss-integration")]
 pub mod ffi;
 
+/// A.5 gateway deposit-memo decryption (signer side): reproduces `beldexd`'s
+/// `decrypt_gateway_deposit_memo` (Monero DH `generate_key_derivation` + the
+/// `GW_DEPOSIT_MEMO` keystream) so the signer recovers a
+/// [`beldex_watcher::BridgeMemo`] from the on-chain ciphertext. Needs libsodium
+/// (`tss-integration`).
+#[cfg(feature = "tss-integration")]
+pub mod gateway_memo;
+
 /// OMQ client that calls `beldexd`'s `bridge.committee` endpoint (Phase B.9).
 /// Only built under the `omq-client` feature (needs the `zmq` crate / libzmq).
 #[cfg(feature = "omq-client")]

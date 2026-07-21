@@ -136,6 +136,60 @@ pub fn ed25519_verify_consensus(sig64: &[u8; 64], msg: &[u8], pubkey32: &[u8; 32
     rc == 0
 }
 
+/// Low-level ed25519 group ops used to reproduce Beldex/Monero
+/// `generate_key_derivation` (the DH shared point) for the gateway deposit-memo
+/// keystream — see [`crate::gateway_memo`]. These mirror `ge_*` / `sc_*` exactly:
+/// `noclamp` scalar mult (Monero never clamps), explicit cofactor ×8 via point
+/// additions (`ge_mul8`), and a 32→mod-`L` scalar reduce (`sc_reduce32`).
+
+/// `n · p` on ed25519 **without** clamping `n` (libsodium
+/// `crypto_scalarmult_ed25519_noclamp`). Fails on a small-order / identity result.
+pub fn ed25519_scalarmult_noclamp(scalar32: &[u8; 32], point32: &[u8; 32]) -> Result<[u8; 32], &'static str> {
+    let mut q = [0u8; 32];
+    // SAFETY: all buffers are 32 bytes, the sizes libsodium reads/writes.
+    let rc = unsafe {
+        sodium::crypto_scalarmult_ed25519_noclamp(q.as_mut_ptr(), scalar32.as_ptr(), point32.as_ptr())
+    };
+    if rc != 0 {
+        return Err("crypto_scalarmult_ed25519_noclamp failed");
+    }
+    Ok(q)
+}
+
+/// `n · G` on ed25519 without clamping (`crypto_scalarmult_ed25519_base_noclamp`).
+pub fn ed25519_scalarmult_base_noclamp(scalar32: &[u8; 32]) -> Result<[u8; 32], &'static str> {
+    let mut q = [0u8; 32];
+    // SAFETY: 32-byte output; scalar is 32 bytes.
+    let rc = unsafe { sodium::crypto_scalarmult_ed25519_base_noclamp(q.as_mut_ptr(), scalar32.as_ptr()) };
+    if rc != 0 {
+        return Err("crypto_scalarmult_ed25519_base_noclamp failed");
+    }
+    Ok(q)
+}
+
+/// Point addition `p + q` on ed25519 (`crypto_core_ed25519_add`).
+pub fn ed25519_point_add(p: &[u8; 32], q: &[u8; 32]) -> Result<[u8; 32], &'static str> {
+    let mut r = [0u8; 32];
+    // SAFETY: all three buffers are 32-byte encoded points.
+    let rc = unsafe { sodium::crypto_core_ed25519_add(r.as_mut_ptr(), p.as_ptr(), q.as_ptr()) };
+    if rc != 0 {
+        return Err("crypto_core_ed25519_add failed");
+    }
+    Ok(r)
+}
+
+/// Reduce a 32-byte little-endian value mod the ed25519 group order `L`
+/// (Monero `sc_reduce32`), via libsodium's 64-byte `scalar_reduce` with the high
+/// half zeroed.
+pub fn ed25519_scalar_reduce32(bytes32: &[u8; 32]) -> [u8; 32] {
+    let mut wide = [0u8; 64];
+    wide[..32].copy_from_slice(bytes32);
+    let mut r = [0u8; 32];
+    // SAFETY: `wide` is the 64-byte non-reduced scalar libsodium reads; `r` is 32.
+    unsafe { sodium::crypto_core_ed25519_scalar_reduce(r.as_mut_ptr(), wide.as_ptr()) };
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
