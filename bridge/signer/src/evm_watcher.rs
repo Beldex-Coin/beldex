@@ -36,6 +36,16 @@ pub fn redeem_topic0() -> [u8; 32] {
     Keccak256::digest(REDEEM_EVENT_SIG).into()
 }
 
+/// The wBDX signer-rotation event signature (H.6). Emitted by both `activateRotation`
+/// and the admin break-glass, so a single decoder covers every gate-relevant key move
+/// (H.6.3). `topic0` is its keccak256.
+pub const ROTATED_EVENT_SIG: &[u8] = b"Rotated(address,uint64)";
+
+/// `topic0` = keccak256(`ROTATED_EVENT_SIG`).
+pub fn rotated_topic0() -> [u8; 32] {
+    Keccak256::digest(ROTATED_EVENT_SIG).into()
+}
+
 /// JSON-RPC transport / protocol failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RpcError {
@@ -168,6 +178,82 @@ pub fn decode_get_logs(result: &Value, chain: ChainId, contract: [u8; 20]) -> Ve
     result
         .as_array()
         .map(|arr| arr.iter().filter_map(|l| decode_redeem_log(l, chain, contract).ok()).collect())
+        .unwrap_or_default()
+}
+
+/// A normalized `Rotated(address indexed newSigner, uint64 newKeyEpoch)` observation
+/// (H.6.3): the wBDX `currentSigner` on `chain` moved to `new_signer` at key generation
+/// `key_epoch`. This is the fact the rotation-ack attests to L1 so an outgoing seat's
+/// bond can be released once every chain has rotated past its unbond-time baseline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RotationEvent {
+    /// The EVM tx that emitted the event (for the watcher's reorg/finality tracking).
+    pub evm_txid: [u8; 32],
+    pub chain: ChainId,
+    /// The contract's new monotonic key epoch after this rotation.
+    pub key_epoch: u64,
+    /// The incoming `Pevm` address the contract now trusts as mint authority.
+    pub new_signer: [u8; 20],
+}
+
+/// Decode one `eth_getLogs` entry into a rotation observation, verifying it is the
+/// `Rotated` event from this chain's wBDX contract.
+///
+/// `newSigner` is **indexed** → `topics[1]` (a 20-byte address right-aligned in the
+/// 32-byte topic word). `newKeyEpoch` is non-indexed → the single `data` word, a
+/// `uint64` in its low 8 bytes.
+pub fn decode_rotated_log(
+    log: &Value,
+    chain: ChainId,
+    contract: [u8; 20],
+) -> Result<Observation<RotationEvent>, DecodeError> {
+    let field = |k: &'static str| log.get(k).and_then(Value::as_str).ok_or(DecodeError::MissingField(k));
+
+    let addr = hex_to_bytes(field("address")?).ok_or(DecodeError::BadHex)?;
+    if addr != contract {
+        return Err(DecodeError::ForeignContract);
+    }
+    let topics = log.get("topics").and_then(Value::as_array).ok_or(DecodeError::MissingField("topics"))?;
+    let t0 = topics.first().and_then(Value::as_str).ok_or(DecodeError::MissingField("topics[0]"))?;
+    if hex_to_fixed32(t0).ok_or(DecodeError::BadHex)? != rotated_topic0() {
+        return Err(DecodeError::WrongTopic);
+    }
+
+    // topics[1] = indexed newSigner (address in the low 20 bytes; high 12 must be zero).
+    let t1 = topics.get(1).and_then(Value::as_str).ok_or(DecodeError::MissingField("topics[1]"))?;
+    let t1b = hex_to_fixed32(t1).ok_or(DecodeError::BadHex)?;
+    if t1b[0..12].iter().any(|&b| b != 0) {
+        return Err(DecodeError::BadHex);
+    }
+    let mut new_signer = [0u8; 20];
+    new_signer.copy_from_slice(&t1b[12..32]);
+
+    let inclusion_height = hex_to_u64(field("blockNumber")?).ok_or(DecodeError::BadHex)?;
+    let block_hash = hex_to_fixed32(field("blockHash")?).ok_or(DecodeError::BadHex)?;
+    let evm_txid = hex_to_fixed32(field("transactionHash")?).ok_or(DecodeError::BadHex)?;
+
+    // data = abi.encode(uint64 newKeyEpoch): one 32-byte word, value in the low 8 bytes.
+    let data = hex_to_bytes(field("data")?).ok_or(DecodeError::BadHex)?;
+    if data.len() < 32 {
+        return Err(DecodeError::MissingField("data"));
+    }
+    if data[0..24].iter().any(|&b| b != 0) {
+        return Err(DecodeError::AmountOverflow); // key epoch does not fit u64
+    }
+    let key_epoch = u64::from_be_bytes(data[24..32].try_into().unwrap());
+
+    Ok(Observation {
+        event: RotationEvent { evm_txid, chain, key_epoch, new_signer },
+        inclusion_height,
+        block_hash,
+    })
+}
+
+/// Decode an `eth_getLogs` result array of `Rotated` logs, skipping non-matching entries.
+pub fn decode_rotated_logs(result: &Value, chain: ChainId, contract: [u8; 20]) -> Vec<Observation<RotationEvent>> {
+    result
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|l| decode_rotated_log(l, chain, contract).ok()).collect())
         .unwrap_or_default()
 }
 
@@ -481,6 +567,48 @@ mod tests {
         let mut bad_topic = log.clone();
         bad_topic["topics"][0] = json!(to_hex_bytes(&[0xde; 32]));
         assert_eq!(decode_redeem_log(&bad_topic, ChainId(1), [0x22; 20]), Err(DecodeError::WrongTopic));
+    }
+
+    /// A `Rotated(address indexed newSigner, uint64 newKeyEpoch)` log (H.6.3): newSigner
+    /// in topic1 (right-aligned), newKeyEpoch as the single data word.
+    fn rotated_log(block: u64, block_hash: [u8; 32], txid: [u8; 32], new_signer: [u8; 20], key_epoch: u64) -> Value {
+        let mut signer_topic = [0u8; 32];
+        signer_topic[12..].copy_from_slice(&new_signer);
+        let mut data = [0u8; 32];
+        data[24..].copy_from_slice(&key_epoch.to_be_bytes());
+        json!({
+            "address": to_hex_bytes(&[0x22u8; 20]),
+            "topics": [to_hex_bytes(&rotated_topic0()), to_hex_bytes(&signer_topic)],
+            "data": to_hex_bytes(&data),
+            "blockNumber": to_hex_quantity(block),
+            "blockHash": to_hex_bytes(&block_hash),
+            "transactionHash": to_hex_bytes(&txid),
+        })
+    }
+
+    #[test]
+    fn decode_extracts_the_rotation() {
+        let signer = [0xCDu8; 20];
+        let log = rotated_log(200, [0xBB; 32], [0x02u8; 32], signer, 7);
+        let obs = decode_rotated_log(&log, ChainId(42), [0x22; 20]).expect("decode");
+        assert_eq!(obs.inclusion_height, 200);
+        assert_eq!(obs.block_hash, [0xBB; 32]);
+        assert_eq!(obs.event.chain, ChainId(42));
+        assert_eq!(obs.event.key_epoch, 7);
+        assert_eq!(obs.event.new_signer, signer);
+        assert_eq!(obs.event.evm_txid, [0x02u8; 32]);
+    }
+
+    #[test]
+    fn decode_rotation_rejects_foreign_contract_and_wrong_topic() {
+        let log = rotated_log(200, [0xBB; 32], [2; 32], [0xCD; 20], 7);
+        assert_eq!(decode_rotated_log(&log, ChainId(1), [0x99; 20]), Err(DecodeError::ForeignContract));
+
+        // A burn log must not decode as a rotation (topic0 differs).
+        let burn = burn_log(100, [0xAA; 32], [1; 32], 1, b"x");
+        assert_eq!(decode_rotated_log(&burn, ChainId(1), [0x22; 20]), Err(DecodeError::WrongTopic));
+        // ...and vice-versa.
+        assert_eq!(decode_redeem_log(&log, ChainId(1), [0x22; 20]), Err(DecodeError::WrongTopic));
     }
 
     #[test]

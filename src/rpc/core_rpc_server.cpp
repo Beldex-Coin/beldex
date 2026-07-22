@@ -799,6 +799,23 @@ namespace cryptonote::rpc {
             {"accusers", std::move(accusers)},
         });
       }
+      void operator()(const tx_extra_bridge_rotation_ack& x) {
+        auto observers = json::array();
+        for (const auto& o : x.observers)
+          observers.push_back(json{
+              {"voter_index", o.voter_index},
+              {"signature", tools::type_to_hex(o.signature)},
+          });
+        auto& ack = set("bridge_rotation_ack", json{
+            {"version", x.version},
+            {"chain_id", x.chain_id},
+            {"key_epoch", x.key_epoch},
+            {"epoch", x.epoch},
+            {"observers", std::move(observers)},
+        });
+        json_binary_proxy{ack["new_signer"], format} =
+            std::string_view{reinterpret_cast<const char*>(x.new_signer.data()), x.new_signer.size()};
+      }
       void operator()(const tx_extra_gateway_deposit_memo& x) {
         auto& memo = set("gateway_deposit_memo", json{
             {"version", x.version},

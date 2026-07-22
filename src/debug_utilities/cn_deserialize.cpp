@@ -121,6 +121,10 @@ struct extra_printer {
   void operator()(const tx_extra_bridge_unbond& x) {
     std::cout << "Bridge unbond: MN " << x.master_node_pubkey;
   }
+  void operator()(const tx_extra_bridge_rotation_ack& x) {
+    std::cout << "Bridge rotation ack: chain " << x.chain_id << " -> key epoch " << x.key_epoch
+              << " (" << x.observers.size() << " observers)";
+  }
   template <typename T> void operator()(const T&) { std::cout << "unknown"; }
 };
 

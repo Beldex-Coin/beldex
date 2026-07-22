@@ -25,9 +25,15 @@
 #include "cryptonote_basic/cryptonote_basic.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_core/gateway_utils.h"
+#include "cryptonote_core/master_node_list.h"     // state_t + bridge_committee_resolver (Phase F consensus action)
+#include "cryptonote_core/master_node_quorum_cop.h" // quorum / quorum_manager
+#include "cryptonote_core/uptime_proof.h"          // complete uptime_proof::Proof for master_node_info's proof dtor
 #include "cryptonote_config.h"
 #include "crypto/crypto.h"
 
+#include <limits>
+#include <memory>
+#include <set>
 #include <sodium/crypto_sign.h> // ed25519 keypair/sign for the slash-evidence test
 
 using namespace cryptonote;
@@ -273,6 +279,141 @@ TEST(GatewayBridgeSlash, non_ascending_and_unattributed_rejected)
   EXPECT_FALSE(verify_bridge_slash_evidence(coarse, pubs, 4, NET, reason));
 }
 
+// --------------------------------------------------------------------------
+// H.6.3 — rotation-ack evidence (the mirror of the slash evidence gate; used to
+// advance L1's per-chain observed key epoch, which releases an outgoing seat's bond).
+// --------------------------------------------------------------------------
+static std::vector<uint8_t> addr20(uint8_t fill) { return std::vector<uint8_t>(20, fill); }
+
+TEST(GatewayBridgeRotation, verify_evidence_threshold_and_binding)
+{
+  const network_type NET_R = network_type::MAINNET;
+  const uint16_t n = 6, t_plus_1 = 4;
+  std::vector<crypto::ed25519_public_key> pubs(n);
+  std::vector<crypto::ed25519_secret_key> secs(n);
+  for (uint16_t i = 0; i < n; ++i) crypto_sign_ed25519_keypair(pubs[i].data, secs[i].data);
+
+  tx_extra_bridge_rotation_ack ack{};
+  ack.version   = 0;
+  ack.chain_id  = 42;
+  ack.key_epoch = 8;
+  ack.new_signer = addr20(0xCD);
+  ack.epoch     = 7;
+
+  const std::string msg = bridge_rotation_ack_message(NET_R, ack);
+  auto observe = [&](uint16_t idx) {
+    bridge_rotation_signature s{};
+    s.voter_index = idx;
+    crypto_sign_detached(s.signature.data, nullptr,
+                         reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), secs[idx].data);
+    ack.observers.push_back(s);
+  };
+  std::string reason;
+
+  // Below threshold → rejected.
+  observe(0); observe(1); observe(3);
+  EXPECT_FALSE(verify_bridge_rotation_evidence(ack, pubs, t_plus_1, NET_R, reason));
+
+  // The 4th distinct ascending observer → admissible.
+  observe(4);
+  EXPECT_TRUE(verify_bridge_rotation_evidence(ack, pubs, t_plus_1, NET_R, reason)) << reason;
+
+  // Genesis binding: the same signatures verified on a different net fail (the message,
+  // hence the required signatures, differs).
+  EXPECT_FALSE(verify_bridge_rotation_evidence(ack, pubs, t_plus_1, network_type::TESTNET, reason));
+
+  // A forged observer (member 5's key signing the wrong bytes) is caught.
+  tx_extra_bridge_rotation_ack forged = ack;
+  bridge_rotation_signature bad{};
+  bad.voter_index = 5;
+  const std::string other = bridge_rotation_ack_message(NET_R, forged) + "x";
+  crypto_sign_detached(bad.signature.data, nullptr,
+                       reinterpret_cast<const unsigned char*>(other.data()), other.size(), secs[5].data);
+  forged.observers.push_back(bad);
+  EXPECT_FALSE(verify_bridge_rotation_evidence(forged, pubs, t_plus_1 + 1, NET_R, reason));
+}
+
+TEST(GatewayBridgeRotation, non_ascending_and_bad_length_rejected)
+{
+  const network_type NET_R = network_type::MAINNET;
+  const uint16_t n = 6;
+  std::vector<crypto::ed25519_public_key> pubs(n);
+  std::vector<crypto::ed25519_secret_key> secs(n);
+  for (uint16_t i = 0; i < n; ++i) crypto_sign_ed25519_keypair(pubs[i].data, secs[i].data);
+
+  tx_extra_bridge_rotation_ack ack{};
+  ack.chain_id = 1; ack.key_epoch = 2; ack.new_signer = addr20(0x11); ack.epoch = 3;
+  const std::string msg = bridge_rotation_ack_message(NET_R, ack);
+  auto sig_of = [&](uint16_t idx) {
+    bridge_rotation_signature s{}; s.voter_index = idx;
+    crypto_sign_detached(s.signature.data, nullptr,
+                         reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), secs[idx].data);
+    return s;
+  };
+  std::string reason;
+
+  // Duplicate / non-ascending indices are rejected even with enough signatures.
+  ack.observers = {sig_of(0), sig_of(2), sig_of(2), sig_of(3)};
+  EXPECT_FALSE(verify_bridge_rotation_evidence(ack, pubs, 4, NET_R, reason));
+
+  // A malformed new_signer (not 20 bytes) is rejected outright.
+  tx_extra_bridge_rotation_ack bad_len = ack;
+  bad_len.new_signer = std::vector<uint8_t>(19, 0x11);
+  bad_len.observers  = {sig_of(0), sig_of(1), sig_of(2), sig_of(3)};
+  EXPECT_FALSE(verify_bridge_rotation_evidence(bad_len, pubs, 4, NET_R, reason));
+}
+
+// The ack must survive the tx_extra round trip byte-for-byte (the observer signatures
+// cover the field values), and a rotation-ack tx must be recognised as such — not as a
+// slash, unbond, or registration (all four ride txtype::bridge_registration).
+TEST(GatewayBridgeRotation, tx_extra_round_trip_and_dispatch)
+{
+  const network_type NET_R = network_type::MAINNET;
+  const uint16_t n = 6, t_plus_1 = 4;
+  std::vector<crypto::ed25519_public_key> pubs(n);
+  std::vector<crypto::ed25519_secret_key> secs(n);
+  for (uint16_t i = 0; i < n; ++i) crypto_sign_ed25519_keypair(pubs[i].data, secs[i].data);
+
+  tx_extra_bridge_rotation_ack ack{};
+  ack.chain_id = 42; ack.key_epoch = 8; ack.new_signer = addr20(0xCD); ack.epoch = 7;
+  const std::string msg = bridge_rotation_ack_message(NET_R, ack);
+  for (uint16_t idx : {0, 1, 3, 4})
+  {
+    bridge_rotation_signature s{}; s.voter_index = idx;
+    crypto_sign_detached(s.signature.data, nullptr,
+                         reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), secs[idx].data);
+    ack.observers.push_back(s);
+  }
+  std::string reason;
+  ASSERT_TRUE(verify_bridge_rotation_evidence(ack, pubs, t_plus_1, NET_R, reason)) << reason;
+
+  std::vector<uint8_t> extra;
+  ASSERT_TRUE(add_bridge_rotation_ack_to_tx_extra(extra, ack));
+
+  tx_extra_bridge_rotation_ack back{};
+  ASSERT_TRUE(get_field_from_tx_extra(extra, back));
+  EXPECT_EQ(back.version, ack.version);
+  EXPECT_EQ(back.chain_id, ack.chain_id);
+  EXPECT_EQ(back.key_epoch, ack.key_epoch);
+  EXPECT_EQ(back.epoch, ack.epoch);
+  EXPECT_EQ(back.new_signer, ack.new_signer);
+  ASSERT_EQ(back.observers.size(), ack.observers.size());
+  for (size_t i = 0; i < back.observers.size(); ++i)
+  {
+    EXPECT_EQ(back.observers[i].voter_index, ack.observers[i].voter_index);
+    EXPECT_EQ(0, std::memcmp(back.observers[i].signature.data, ack.observers[i].signature.data,
+                             sizeof(back.observers[i].signature.data)));
+  }
+  EXPECT_TRUE(verify_bridge_rotation_evidence(back, pubs, t_plus_1, NET_R, reason)) << reason;
+
+  tx_extra_bridge_slash        as_slash{};
+  tx_extra_bridge_unbond       as_unbond{};
+  tx_extra_bridge_registration as_reg{};
+  EXPECT_FALSE(get_field_from_tx_extra(extra, as_slash));
+  EXPECT_FALSE(get_field_from_tx_extra(extra, as_unbond));
+  EXPECT_FALSE(get_field_from_tx_extra(extra, as_reg));
+}
+
 // The slash report has to survive the tx_extra round trip byte-for-byte, because
 // the signatures cover the *field values* — any serialization drift would make an
 // otherwise valid accusation unverifiable at block-processing time. This also
@@ -340,6 +481,254 @@ TEST(GatewayBridgeSlash, tx_extra_round_trip_and_dispatch)
   tx_extra_bridge_registration as_reg{};
   EXPECT_FALSE(get_field_from_tx_extra(extra, as_unbond));
   EXPECT_FALSE(get_field_from_tx_extra(extra, as_reg));
+}
+
+// --------------------------------------------------------------------------
+// Phase F — the slash as a *consensus action* on state_t. The evidence-verify
+// tests above pin the cryptographic gate; these drive process_bridge_slash_tx
+// end to end against constructed master-node state, exercising the bond-forfeit
+// mechanics, the history-backed committee resolver (the piece update_from_block
+// builds against state_history/state_archive), finalize-skip, idempotency, and
+// the queue-head promotion into the freed seat. Uses FAKECHAIN, whose bridge
+// committee is the devnet-shape 6-of-4.
+// --------------------------------------------------------------------------
+namespace
+{
+  using master_nodes::master_node_info;
+  using master_nodes::master_node_list;
+  using master_nodes::quorum;
+
+  constexpr network_type NET_FC = network_type::FAKECHAIN; // 6-member committee, t+1 = 4
+
+  struct committee_keys
+  {
+    std::vector<crypto::public_key>         mn;     // committee member masternode pubkeys, by index
+    std::vector<crypto::ed25519_public_key> ed_pub; // parallel bridge-signer pubs
+    std::vector<crypto::ed25519_secret_key> ed_sec; // parallel bridge-signer secrets
+  };
+
+  committee_keys make_committee(size_t n)
+  {
+    committee_keys c;
+    for (size_t i = 0; i < n; ++i)
+    {
+      crypto::public_key pk; crypto::secret_key sk; crypto::generate_keys(pk, sk);
+      c.mn.push_back(pk);
+      crypto::ed25519_public_key ep; crypto::ed25519_secret_key es;
+      crypto_sign_ed25519_keypair(ep.data, es.data);
+      c.ed_pub.push_back(ep); c.ed_sec.push_back(es);
+    }
+    return c;
+  }
+
+  // Insert a registered (optionally seated) bridge seat into `st`.
+  void seat_member(master_node_list::state_t& st, const crypto::public_key& pk,
+                   const crypto::ed25519_public_key& signer, uint64_t reg_height, bool seated = true)
+  {
+    auto info = std::make_shared<master_node_info>();
+    info->version = master_node_info::version_t::v8_bridge;
+    auto& bs = info->bridge_seat;
+    bs.registered              = true;
+    bs.seated                  = seated;
+    bs.bond_amount             = cryptonote::BRIDGE_BOND;
+    bs.signer_ed25519          = signer;
+    bs.registration_height     = reg_height;
+    bs.requested_unbond_height = 0;
+    bs.bond_unlock_height      = 0;
+    st.master_nodes_infos[pk]  = info;
+  }
+
+  // Build + committee-sign an attributed FROST slash report.
+  tx_extra_bridge_slash sign_slash(const committee_keys& c, uint16_t accused_index,
+                                   const std::vector<uint16_t>& accusers, uint64_t epoch, uint64_t height)
+  {
+    tx_extra_bridge_slash slash{};
+    slash.version = 1; slash.scheme = 1; slash.failing_check = 0; // Pgw / InvalidSignatureShare (attributed)
+    slash.accused_index = accused_index; slash.epoch = epoch; slash.height = height;
+    for (int i = 0; i < 32; ++i) reinterpret_cast<unsigned char*>(&slash.transcript_root)[i] = 0xab;
+    const std::string msg = bridge_slash_message(NET_FC, slash);
+    for (uint16_t idx : accusers)
+    {
+      bridge_slash_signature s{}; s.voter_index = idx;
+      crypto_sign_detached(s.signature.data, nullptr,
+                           reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), c.ed_sec[idx].data);
+      slash.accusers.push_back(s);
+    }
+    return slash;
+  }
+
+  // Run process_bridge_slash_tx with a resolver that mirrors state_t::update_from_block
+  // *exactly*: validators come from the historical bridge quorum for the report's
+  // epoch, signer keys come from the current state's infos, and a member that can no
+  // longer be keyed gets a zero (small-order) ed25519 key.
+  bool run_slash(master_node_list::state_t& cur, const committee_keys& c,
+                 const tx_extra_bridge_slash& slash, uint64_t block_height)
+  {
+    const uint64_t epoch_height = slash.epoch * cryptonote::bridge_epoch_blocks(NET_FC);
+
+    master_node_list::state_t hist(nullptr);
+    hist.height = epoch_height;
+    auto q = std::make_shared<quorum>();
+    q->validators = c.mn;
+    hist.quorums.bridge = q;
+
+    std::set<master_node_list::state_t, std::less<>> history;
+    history.insert(std::move(hist));
+
+    // The resolver is only invoked synchronously inside process_bridge_slash_tx
+    // below, so `history`/`cur` outlive every call to it.
+    master_nodes::bridge_committee_resolver resolver =
+      [&](uint64_t eh, std::vector<crypto::public_key>& members,
+          std::vector<crypto::ed25519_public_key>& signer_keys, size_t& threshold) -> bool {
+        auto it = history.find(eh);
+        if (it == history.end() || !it->quorums.bridge || it->quorums.bridge->validators.empty())
+          return false;
+        members = it->quorums.bridge->validators;
+        signer_keys.clear();
+        for (const auto& pk : members)
+        {
+          auto mit = cur.master_nodes_infos.find(pk);
+          signer_keys.push_back(mit != cur.master_nodes_infos.end() && mit->second->bridge_seat.registered
+                                    ? mit->second->bridge_seat.signer_ed25519
+                                    : crypto::ed25519_public_key::null());
+        }
+        threshold = cryptonote::bridge_committee_threshold(NET_FC);
+        return true;
+      };
+
+    cryptonote::block blk{};
+    blk.major_version = cryptonote::hf::hf23_bridge;
+    blk.miner_tx.vin.push_back(cryptonote::txin_gen{block_height});
+
+    cryptonote::transaction tx{};
+    tx.type = cryptonote::txtype::bridge_registration;
+    add_bridge_slash_to_tx_extra(tx.extra, slash);
+
+    return cur.process_bridge_slash_tx(NET_FC, blk, tx, resolver);
+  }
+
+  size_t count_seated(const master_node_list::state_t& st)
+  {
+    size_t s = 0;
+    for (const auto& [pk, info] : st.master_nodes_infos)
+      if (info->bridge_seat.seated) ++s;
+    return s;
+  }
+} // namespace
+
+TEST(GatewayBridgeSlash, consensus_action_forfeits_bond_and_survives_finalize)
+{
+  const size_t N = cryptonote::bridge_committee_size(NET_FC); // 6
+  auto c = make_committee(N);
+
+  master_node_list::state_t cur(nullptr);
+  cur.height = 5000;
+  for (size_t i = 0; i < N; ++i)
+    seat_member(cur, c.mn[i], c.ed_pub[i], 100 + i);
+
+  const uint16_t accused = 2;
+  const uint64_t epoch = 3, block_height = 5000;
+
+  // Below threshold (3 < 4) → rejected, no state change.
+  {
+    auto slash = sign_slash(c, accused, {0, 1, 3}, epoch, block_height);
+    EXPECT_FALSE(run_slash(cur, c, slash, block_height));
+    EXPECT_TRUE(cur.master_nodes_infos.at(c.mn[accused])->bridge_seat.is_active_seat());
+  }
+
+  // t+1 distinct ascending accusers → accepted; the bond is forfeited.
+  {
+    auto slash = sign_slash(c, accused, {0, 1, 3, 4}, epoch, block_height);
+    EXPECT_TRUE(run_slash(cur, c, slash, block_height));
+    const auto& bs = cur.master_nodes_infos.at(c.mn[accused])->bridge_seat;
+    EXPECT_TRUE(bs.is_forfeited());
+    EXPECT_EQ(bs.bond_unlock_height, std::numeric_limits<uint64_t>::max());
+    EXPECT_EQ(bs.requested_unbond_height, block_height);
+    EXPECT_FALSE(bs.seated);
+    EXPECT_TRUE(bs.registered); // still registered → bond key images stay blacklisted = burned
+  }
+
+  // Idempotent: a second identical report is a no-op (already slashed).
+  {
+    auto slash = sign_slash(c, accused, {0, 1, 3, 4}, epoch, block_height);
+    EXPECT_FALSE(run_slash(cur, c, slash, block_height + 1));
+  }
+
+  // The forfeited bond is NEVER released — not even eons past any real unbond window.
+  cur.finalize_bridge_unbonds(block_height + cryptonote::bridge_bond_unlock_blocks(NET_FC) + 1000000);
+  const auto& bs = cur.master_nodes_infos.at(c.mn[accused])->bridge_seat;
+  EXPECT_TRUE(bs.is_forfeited());
+  EXPECT_TRUE(bs.registered);
+  EXPECT_EQ(bs.bond_amount, cryptonote::BRIDGE_BOND); // bond record intact, locked forever
+
+  // An honest committee member is untouched.
+  EXPECT_TRUE(cur.master_nodes_infos.at(c.mn[0])->bridge_seat.is_active_seat());
+}
+
+TEST(GatewayBridgeSlash, deregistered_accuser_gets_zero_key_and_is_not_counted)
+{
+  const size_t N = cryptonote::bridge_committee_size(NET_FC); // 6
+  auto c = make_committee(N);
+  master_node_list::state_t cur(nullptr);
+  cur.height = 5000;
+  for (size_t i = 0; i < N; ++i)
+    seat_member(cur, c.mn[i], c.ed_pub[i], 100 + i);
+
+  // Member 4's seat has since been released: in the current state it is no longer a
+  // registered bridge seat. The resolver keys it with a zero ed25519 key (a
+  // small-order point libsodium rejects), so its otherwise-valid signature cannot
+  // verify — with exactly t+1 accusers, the report is rejected.
+  {
+    auto info = std::make_shared<master_node_info>(*cur.master_nodes_infos.at(c.mn[4]));
+    info->bridge_seat = master_node_info::bridge_seat_info{}; // unregistered default
+    cur.master_nodes_infos[c.mn[4]] = info;
+  }
+
+  auto slash = sign_slash(c, /*accused=*/2, {0, 1, 3, 4}, /*epoch=*/3, /*height=*/5000);
+  EXPECT_FALSE(run_slash(cur, c, slash, 5000)) << "an accuser under a zero key must not count";
+  EXPECT_FALSE(cur.master_nodes_infos.at(c.mn[2])->bridge_seat.is_forfeited());
+
+  // Re-key member 4 back: the same accuser set now clears threshold and slashes.
+  seat_member(cur, c.mn[4], c.ed_pub[4], 104);
+  auto slash2 = sign_slash(c, 2, {0, 1, 3, 4}, 3, 5000);
+  EXPECT_TRUE(run_slash(cur, c, slash2, 5000));
+  EXPECT_TRUE(cur.master_nodes_infos.at(c.mn[2])->bridge_seat.is_forfeited());
+}
+
+TEST(GatewayBridgeSlash, forfeit_frees_seat_for_queue_head)
+{
+  const size_t N   = cryptonote::bridge_committee_size(NET_FC); // 6 committee members
+  const size_t CAP = cryptonote::BRIDGE_SEAT_CAP;               // 100 seats
+  auto c = make_committee(N);
+
+  master_node_list::state_t cur(nullptr);
+  cur.height = 6000;
+
+  // Seat the 6 committee members (FIFO heights 100..105), then fill the remaining
+  // seats up to exactly CAP, then one extra registered-but-queued node (FIFO tail).
+  for (size_t i = 0; i < N; ++i)
+    seat_member(cur, c.mn[i], c.ed_pub[i], 100 + i);
+  for (size_t i = N; i < CAP; ++i)
+  {
+    crypto::public_key pk; crypto::secret_key sk; crypto::generate_keys(pk, sk);
+    seat_member(cur, pk, crypto::ed25519_public_key::null(), 100 + i, /*seated=*/true);
+  }
+  crypto::public_key queued; { crypto::secret_key sk; crypto::generate_keys(queued, sk); }
+  seat_member(cur, queued, crypto::ed25519_public_key::null(), 100 + CAP, /*seated=*/false);
+
+  ASSERT_EQ(count_seated(cur), CAP);
+  ASSERT_FALSE(cur.master_nodes_infos.at(queued)->bridge_seat.seated);
+
+  // Forfeit a seated committee member.
+  auto slash = sign_slash(c, /*accused=*/2, {0, 1, 3, 4}, /*epoch=*/3, /*height=*/6000);
+  ASSERT_TRUE(run_slash(cur, c, slash, 6000));
+  EXPECT_FALSE(cur.master_nodes_infos.at(c.mn[2])->bridge_seat.seated);
+
+  // Deterministic re-assignment promotes the queue head into the freed seat.
+  cur.refresh_bridge_seats();
+  EXPECT_TRUE(cur.master_nodes_infos.at(queued)->bridge_seat.seated)  << "queue head must fill the freed seat";
+  EXPECT_FALSE(cur.master_nodes_infos.at(c.mn[2])->bridge_seat.seated) << "an exiting (forfeited) seat is never re-seated";
+  EXPECT_EQ(count_seated(cur), CAP); // still exactly CAP seats occupied
 }
 
 // --------------------------------------------------------------------------

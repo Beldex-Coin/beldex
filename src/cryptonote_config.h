@@ -211,6 +211,7 @@ namespace hashkey {
   // Phase F accountability: the bridge-committee slash-report domain. MUST match the
   // off-chain signer's `slash::SLASH_REPORT_DOMAIN` byte-for-byte.
   inline constexpr std::string_view BRIDGE_SLASH    = "bridge_slash_report_v1"sv; // bridge accountability slash report
+  inline constexpr std::string_view BRIDGE_ROTATION_ACK = "bridge_rotation_ack_v1"sv; // H.6.3 rotation observation (MUST match rotation_ack.rs)
 }
 
 // Maximum allowed stake contribution, as a fraction of the available contribution room.  This

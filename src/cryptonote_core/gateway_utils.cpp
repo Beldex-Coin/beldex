@@ -371,6 +371,76 @@ bool verify_bridge_slash_evidence(const tx_extra_bridge_slash& slash,
   return true;
 }
 
+std::string bridge_rotation_ack_message(network_type nettype, const tx_extra_bridge_rotation_ack& ack)
+{
+  const crypto::hash& genesis = gateway_chain_binding(nettype);
+  std::string buf;
+  buf.reserve(hashkey::BRIDGE_ROTATION_ACK.size() + sizeof(genesis) + 8 + 8 + ack.new_signer.size());
+  buf.append(hashkey::BRIDGE_ROTATION_ACK);
+  buf.append(reinterpret_cast<const char*>(&genesis), sizeof(genesis));
+  append_u64_le(buf, ack.chain_id);
+  append_u64_le(buf, ack.key_epoch);
+  buf.append(reinterpret_cast<const char*>(ack.new_signer.data()), ack.new_signer.size());
+  return buf;
+}
+
+bool verify_bridge_rotation_evidence(const tx_extra_bridge_rotation_ack& ack,
+                                     const std::vector<crypto::ed25519_public_key>& signer_keys,
+                                     size_t threshold, network_type nettype, std::string& reason)
+{
+  // The incoming Pevm address must be a well-formed 20-byte EVM address; the signed
+  // bytes append it raw, so a wrong length would silently change the message.
+  if (ack.new_signer.size() != 20)
+  {
+    reason = "rotation ack: new_signer must be exactly 20 bytes";
+    return false;
+  }
+  if (threshold == 0)
+  {
+    reason = "zero rotation threshold";
+    return false;
+  }
+  if (ack.observers.size() < threshold)
+  {
+    reason = "insufficient rotation observers (" + std::to_string(ack.observers.size()) + " < required "
+             + std::to_string(threshold) + ")";
+    return false;
+  }
+  if (ack.observers.size() > signer_keys.size())
+  {
+    reason = "more rotation observers than committee members";
+    return false;
+  }
+
+  // The exact bytes the off-chain committee signed.
+  const std::string msg = bridge_rotation_ack_message(nettype, ack);
+
+  // Distinct, strictly-ascending observer indices (no double-count; canonical order),
+  // each ed25519 signature valid over `msg` under that member's signer_ed25519.
+  for (size_t i = 0; i < ack.observers.size(); ++i)
+  {
+    const auto& o = ack.observers[i];
+    if (o.voter_index >= signer_keys.size())
+    {
+      reason = "rotation observer index out of range";
+      return false;
+    }
+    if (i > 0 && ack.observers[i - 1].voter_index >= o.voter_index)
+    {
+      reason = "rotation observer indices not strictly ascending";
+      return false;
+    }
+    if (crypto_sign_verify_detached(o.signature.data,
+                                    reinterpret_cast<const unsigned char*>(msg.data()), msg.size(),
+                                    signer_keys[o.voter_index].data) != 0)
+    {
+      reason = "rotation signature verification failed at observer index " + std::to_string(o.voter_index);
+      return false;
+    }
+  }
+  return true;
+}
+
 bool summarize_gateway_withdraw(network_type nettype, const transaction& tx,
                                 gateway_withdraw_summary& out, std::string& reason)
 {

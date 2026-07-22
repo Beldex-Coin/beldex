@@ -170,6 +170,14 @@ pub mod frost_roast;
 #[cfg(feature = "tss-integration")]
 pub mod slash;
 
+/// **H.6.3** rotation-ack attestation (signer side): the observing committee co-signs a
+/// genesis-bound [`rotation_ack::RotationAck`] (`chain_id`, `key_epoch`, `new_signer`)
+/// observed from the wBDX `Rotated` event, which `beldexd` verifies to advance its
+/// per-chain observed key epoch — the gate that releases an outgoing seat's bond only
+/// once every chain has rotated past its unbond-time baseline. Mirrors [`slash`].
+#[cfg(feature = "tss-integration")]
+pub mod rotation_ack;
+
 /// C.2 live-mesh **`Pevm` (cggmp21) DKG driver**: runs the real cggmp21 keygen MPC
 /// over a [`wire::SessionTransport`] via `round_based`'s sync state machine bridged
 /// to the mesh by channels. The `Pevm` counterpart to [`dkg_driver`]. Needs the

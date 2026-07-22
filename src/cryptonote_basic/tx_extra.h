@@ -70,6 +70,7 @@ constexpr uint8_t
   TX_EXTRA_TAG_BRIDGE_REGISTRATION          = 0x80, // HF23 (bonded bridge set)
   TX_EXTRA_TAG_BRIDGE_UNBOND                = 0x81, // HF23 (bonded bridge set)
   TX_EXTRA_TAG_BRIDGE_SLASH                 = 0x82, // HF23 (Phase F accountability)
+  TX_EXTRA_TAG_BRIDGE_ROTATION_ACK          = 0x83, // HF23 (H.6.3 rotation observation)
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
@@ -766,6 +767,50 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // One observer's ed25519 signature on a bridge rotation ack (HF23, H.6.3). The
+  // observer is a bridge-committee member; `voter_index` is its index in the observing
+  // epoch's committee. The signature is over the canonical, genesis-bound rotation-ack
+  // message (see `bridge_rotation_ack_message` in gateway_utils) — the same bytes the
+  // off-chain signer produced (`rotation_ack.rs`).
+  struct bridge_rotation_signature
+  {
+    uint16_t                  voter_index = 0;
+    crypto::ed25519_signature signature{};
+
+    BEGIN_SERIALIZE()
+      VARINT_FIELD(voter_index)
+      FIELD(signature)
+    END_SERIALIZE()
+  };
+
+  // Bridge signer-rotation observation (HF23, plan §12 H.6.3). Carries a bridge-
+  // committee-signed attestation that a wBDX contract's `currentSigner` was repointed
+  // (a `Rotated(newSigner, keyEpoch)` event) on a given EVM chain. Consensus verifies
+  // the >= t+1 committee ed25519 signatures over the canonical, genesis-bound fact and
+  // advances its per-chain observed key epoch, which gates the release of an outgoing
+  // bridge seat's bond (a departing operator's 100k bond unlocks only once every chain
+  // has rotated past the epoch it was serving at unbond time). The observed fact is
+  // objective (chain_id, key_epoch, new_signer); `epoch` is the observing committee's
+  // L1 epoch — a resolver hint that is NOT part of the signed bytes.
+  struct tx_extra_bridge_rotation_ack
+  {
+    uint8_t              version = 0;
+    uint64_t             chain_id = 0;      // EVM chain id (E.3 registry key)
+    uint64_t             key_epoch = 0;     // the contract's new key epoch after the rotation
+    std::vector<uint8_t> new_signer;        // the incoming Pevm address (exactly 20 bytes)
+    uint64_t             epoch = 0;         // observing L1 committee epoch (unsigned resolver hint)
+    std::vector<bridge_rotation_signature> observers; // >= t+1 distinct committee signers
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      VARINT_FIELD(chain_id)
+      VARINT_FIELD(key_epoch)
+      FIELD(new_signer)
+      VARINT_FIELD(epoch)
+      FIELD(observers)
+    END_SERIALIZE()
+  };
+
   struct tx_extra_beldex_name_system
   {
     uint8_t                 version = 0;
@@ -870,6 +915,7 @@ namespace cryptonote
       tx_extra_bridge_registration,
       tx_extra_bridge_unbond,
       tx_extra_bridge_slash,
+      tx_extra_bridge_rotation_ack,
       tx_extra_merge_mining_tag,
       tx_extra_mysterious_minergate,
       tx_extra_padding,
@@ -903,5 +949,6 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_deposit_memo,         cryptonote
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_registration,          cryptonote::TX_EXTRA_TAG_BRIDGE_REGISTRATION);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_unbond,                cryptonote::TX_EXTRA_TAG_BRIDGE_UNBOND);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_slash,                 cryptonote::TX_EXTRA_TAG_BRIDGE_SLASH);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_rotation_ack,          cryptonote::TX_EXTRA_TAG_BRIDGE_ROTATION_ACK);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_beldex_name_system,            cryptonote::TX_EXTRA_TAG_BELDEX_NAME_SYSTEM);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_security_signature,            cryptonote::TX_EXTRA_TAG_SECURITY_SIGNATURE);

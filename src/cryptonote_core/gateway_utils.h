@@ -105,6 +105,25 @@ bool verify_bridge_slash_evidence(const tx_extra_bridge_slash& slash,
                                   const std::vector<crypto::ed25519_public_key>& signer_keys,
                                   size_t threshold, network_type nettype, std::string& reason);
 
+// The canonical, genesis-bound bytes an observing committee signs to attest a wBDX
+// signer rotation (HF23, plan §12 H.6.3). MUST match the off-chain signer's
+// `rotation_ack.rs::RotationAck::canonical` byte-for-byte:
+//   BRIDGE_ROTATION_ACK ‖ genesis ‖ chain_id(u64 LE) ‖ key_epoch(u64 LE) ‖ new_signer(20)
+// The observed fact is objective (chain/epoch/signer); the observing committee's L1
+// `epoch` is NOT part of these bytes. ed25519 signs the message directly.
+std::string bridge_rotation_ack_message(network_type nettype, const tx_extra_bridge_rotation_ack& ack);
+
+// Verify a bridge rotation ack: co-signed by ≥ `threshold` distinct, strictly-ascending
+// committee members, each ed25519 signature valid over `bridge_rotation_ack_message`
+// under that member's `signer_ed25519`. `signer_keys` is the observing committee's
+// per-member signer_ed25519, ordered by committee index. Returns false (with `reason`)
+// on a malformed new_signer, out-of-range/non-ascending index, too few/many signatures,
+// or any bad signature. The consensus intake check `beldexd` runs before advancing its
+// observed key epoch.
+bool verify_bridge_rotation_evidence(const tx_extra_bridge_rotation_ack& ack,
+                                     const std::vector<crypto::ed25519_public_key>& signer_keys,
+                                     size_t threshold, network_type nettype, std::string& reason);
+
 // ---- Bridge deposit-routing memo (HF23, plan §A.5) -------------------------
 // Encrypt / decrypt the bounded {dst_chain_id, dst_addr} memo attached to a
 // bridge deposit. A keystream Hs(GW_DEPOSIT_MEMO ‖ h ‖ counter) — derived from
