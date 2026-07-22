@@ -31,14 +31,20 @@ use std::collections::BTreeSet;
 /// `config::GW_INPUT_SIG`, with genesis binding — S6).
 pub const GW_INPUT_SIG: &[u8] = b"gateway_input_sig";
 
-/// The wBDX mint domain tag as a Solidity `bytes32` string literal
-/// (`bytes32 constant MINT_TAG = "BELDEX_BRIDGE_MINT_V1";`) — ASCII, right-padded
-/// with zeros. The contract mirrors this constant so the digests coincide.
+/// The wBDX mint domain tag: **`keccak256("BELDEX_BRIDGE_MINT_V1")`** — matching the
+/// contract's `bytes32 constant MINT_TAG = keccak256("BELDEX_BRIDGE_MINT_V1")`, so the
+/// digests coincide. Hardcoded as the precomputed hash (this module is std-only core;
+/// `sha3` is a feature-gated dep, so we do not hash at runtime here). The
+/// `mint_tag_is_keccak_of_the_domain_string` test re-derives it wherever a keccak is
+/// available, guarding against drift.
+pub const MINT_TAG: [u8; 32] = [
+    0x2a, 0xdd, 0x0a, 0xf7, 0xa2, 0x98, 0xcb, 0x19, 0x70, 0x30, 0xba, 0x89, 0x3d, 0x16, 0x27, 0x98,
+    0x20, 0xa5, 0x3d, 0x92, 0x14, 0xb4, 0xd3, 0x13, 0x17, 0x33, 0xa2, 0x48, 0x6b, 0x33, 0x66, 0xd4,
+];
+
+/// `keccak256("BELDEX_BRIDGE_MINT_V1")`. See [`MINT_TAG`].
 pub fn mint_tag() -> [u8; 32] {
-    let mut t = [0u8; 32];
-    let s = b"BELDEX_BRIDGE_MINT_V1";
-    t[..s.len()].copy_from_slice(s);
-    t
+    MINT_TAG
 }
 
 /// A `uint256` big-endian encoding of a `u128` (left-padded to 32 bytes).
@@ -71,8 +77,9 @@ pub struct MintEvent {
 impl MintEvent {
     /// The `abi.encode(MINT_TAG, chainid, wBDX, to, amount, beldexTxid)` preimage the
     /// wBDX contract keccak-hashes and `ecrecover`s (`Pevm` signs `keccak256` of
-    /// this). Binding the contract address + chain id makes a mint non-replayable
-    /// across chains/contracts; `beldex_txid` makes it single-use.
+    /// this), where `MINT_TAG = keccak256("BELDEX_BRIDGE_MINT_V1")`. Binding the
+    /// contract address + chain id makes a mint non-replayable across chains/contracts;
+    /// `beldex_txid` makes it single-use.
     pub fn mint_preimage(&self, contract: [u8; 20]) -> Vec<u8> {
         let mut v = Vec::with_capacity(32 * 6);
         v.extend_from_slice(&mint_tag());
@@ -302,6 +309,17 @@ mod tests {
         assert_eq!(&a[..32], &mint_tag(), "leads with MINT_TAG");
         // amount lives in the 5th word, big-endian in the low 16 bytes.
         assert_eq!(&a[32 * 4 + 16..32 * 5], &1000u128.to_be_bytes());
+    }
+
+    /// Drift guard: the hardcoded [`MINT_TAG`] must equal `keccak256("BELDEX_BRIDGE_MINT_V1")`
+    /// — the same value the contract computes. Runs wherever a keccak is available
+    /// (`sha3` is feature-gated; this module's core is std-only, hence the hardcode).
+    #[cfg(any(feature = "evm-watcher", feature = "tss-integration"))]
+    #[test]
+    fn mint_tag_is_keccak_of_the_domain_string() {
+        use sha3::{Digest, Keccak256};
+        let expected: [u8; 32] = Keccak256::digest(b"BELDEX_BRIDGE_MINT_V1").into();
+        assert_eq!(MINT_TAG, expected, "MINT_TAG must be keccak256 of the domain string");
     }
 
     #[test]
