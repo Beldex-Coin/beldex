@@ -321,6 +321,14 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
     on_bridge_slash_report(m);
   });
 
+  // Phase H (H.6.3): `bridge.rotation_ack` is the intake for a committee-signed wBDX
+  // rotation observation. The daemon verifies the ≥t+1 ed25519 evidence against the
+  // observing epoch's committee and returns the serialized tx_extra for any wallet to
+  // submit — the same daemon-verifies / wallet-submits split as `bridge.slash_report`.
+  omq.add_request_command("bridge", "rotation_ack", [this](oxenmq::Message& m) {
+    on_bridge_rotation_ack(m);
+  });
+
   core_.get_blockchain_storage().hook_block_post_add([this] (const auto& info) { send_block_notifications(info.block); return true; });
   core_.get_pool().add_notify([this](const crypto::hash& id, const transaction& tx, const std::string& blob, const tx_pool_options& opts) {
       send_mempool_notifications(id, tx, blob, opts);
@@ -716,6 +724,100 @@ void omq_rpc::on_bridge_slash_report(oxenmq::Message& m)
   MGINFO("Bridge slash report accepted for committee index "
          << slash.accused_index << " (epoch " << slash.epoch << ", " << slash.accusers.size()
          << " accusers)");
+  m.send_reply(OMQ_OK, resp.dump());
+}
+
+void omq_rpc::on_bridge_rotation_ack(oxenmq::Message& m)
+{
+  // One data part: the JSON ack the off-chain signer produced, matching the Rust
+  // `SignedRotationAck::to_submission_json` wire shape:
+  //
+  //   { "version": 0, "chain_id": 42, "key_epoch": 8, "new_signer": "<40 hex>",
+  //     "epoch": 7, "observers": [ { "voter_index": 0, "signature": "<128 hex>" }, ... ] }
+  //
+  // The daemon verifies the committee evidence and hands back `rotation_hex` for the
+  // (any) submitting wallet; it does not build the tx (it cannot pay a fee).
+  if (m.data.size() != 1 || m.data[0].empty())
+  {
+    m.send_reply(OMQ_BAD_REQUEST, "bridge.rotation_ack: expected a single JSON data part");
+    return;
+  }
+
+  tx_extra_bridge_rotation_ack ack{};
+  try
+  {
+    auto req = nlohmann::json::parse(m.data[0]);
+    ack.version   = req.value("version", 0);
+    ack.chain_id  = req.at("chain_id").get<uint64_t>();
+    ack.key_epoch = req.at("key_epoch").get<uint64_t>();
+    ack.epoch     = req.at("epoch").get<uint64_t>();
+
+    const std::string ns_hex = req.at("new_signer").get<std::string>();
+    if (ns_hex.size() != 40 || !oxenc::is_hex(ns_hex))
+    {
+      m.send_reply(OMQ_BAD_REQUEST, "bridge.rotation_ack: new_signer must be 20-byte hex");
+      return;
+    }
+    const std::string ns = oxenc::from_hex(ns_hex);
+    ack.new_signer.assign(ns.begin(), ns.end());
+
+    for (const auto& o : req.at("observers"))
+    {
+      bridge_rotation_signature sig{};
+      sig.voter_index = o.at("voter_index").get<uint16_t>();
+      if (!tools::hex_to_type(o.at("signature").get<std::string>(), sig.signature))
+      {
+        m.send_reply(OMQ_BAD_REQUEST, "bridge.rotation_ack: signature must be 64-byte hex");
+        return;
+      }
+      ack.observers.push_back(sig);
+    }
+  }
+  catch (const std::exception& e)
+  {
+    m.send_reply(OMQ_BAD_REQUEST, std::string{"bridge.rotation_ack: malformed ack: "} + e.what());
+    return;
+  }
+
+  const auto nettype = core_.get_nettype();
+  const uint64_t epoch_height = ack.epoch * cryptonote::bridge_epoch_blocks(nettype);
+
+  std::vector<crypto::public_key> members;
+  std::vector<crypto::ed25519_public_key> signer_keys;
+  size_t threshold = 0;
+  if (!core_.get_master_node_list().get_bridge_committee(epoch_height, members, signer_keys, threshold))
+  {
+    m.send_reply(OMQ_BAD_REQUEST,
+                 "bridge.rotation_ack: no bridge committee for epoch " + std::to_string(ack.epoch));
+    return;
+  }
+
+  // The same verification consensus will apply — reject here so a bad ack never reaches a
+  // wallet, let alone the mempool.
+  std::string reason;
+  if (!cryptonote::verify_bridge_rotation_evidence(ack, signer_keys, threshold, nettype, reason))
+  {
+    m.send_reply(OMQ_BAD_REQUEST, "bridge.rotation_ack: " + reason);
+    return;
+  }
+
+  std::vector<uint8_t> extra;
+  if (!cryptonote::add_bridge_rotation_ack_to_tx_extra(extra, ack))
+  {
+    m.send_reply(OMQ_BAD_REQUEST, "bridge.rotation_ack: failed to serialize the rotation ack");
+    return;
+  }
+
+  nlohmann::json resp{
+      {"rotation_hex", oxenc::to_hex(extra.begin(), extra.end())},
+      {"chain_id", ack.chain_id},
+      {"key_epoch", ack.key_epoch},
+      {"epoch", ack.epoch},
+      {"observers", ack.observers.size()},
+      {"threshold", threshold},
+  };
+  MGINFO("Bridge rotation ack accepted for chain " << ack.chain_id << " -> key epoch "
+         << ack.key_epoch << " (epoch " << ack.epoch << ", " << ack.observers.size() << " observers)");
   m.send_reply(OMQ_OK, resp.dump());
 }
 

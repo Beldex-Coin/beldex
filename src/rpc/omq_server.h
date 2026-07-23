@@ -81,6 +81,11 @@ private:
   // the serialized tx_extra for the operator wallet to submit.
   void on_bridge_slash_report(oxenmq::Message& m);
 
+  // Sovereign Bridge Phase H (H.6.3): intake for a committee-signed wBDX rotation
+  // observation. The daemon verifies the evidence and returns the serialized tx_extra
+  // for any wallet to submit (advances L1's observed key epoch, which gates bond release).
+  void on_bridge_rotation_ack(oxenmq::Message& m);
+
   void on_mempool_sub_request(oxenmq::Message& m);
 
   void on_block_sub_request(oxenmq::Message& m);

@@ -215,6 +215,23 @@ namespace master_nodes
       std::function<bool(uint64_t epoch_height, std::vector<crypto::public_key>& members,
                          std::vector<crypto::ed25519_public_key>& signer_keys, size_t& threshold)>;
 
+  // One (EVM chain id -> wBDX contract key epoch) entry (HF23, H.6.3). Used for both the
+  // global observed-key-epoch table (consensus's per-chain view of how far each wBDX
+  // contract has rotated, learned from committee-attested `Rotated` events) and for a
+  // bridge seat's per-chain baseline snapshot taken at unbond time. Serialized as a small
+  // vector rather than a map (the serialization framework has no map serializer; chains
+  // are few, so linear lookup is fine).
+  struct bridge_chain_epoch
+  {
+    uint64_t chain_id  = 0;
+    uint64_t key_epoch = 0;
+
+    BEGIN_SERIALIZE_OBJECT()
+      VARINT_FIELD(chain_id)
+      VARINT_FIELD(key_epoch)
+    END_SERIALIZE()
+  };
+
   struct master_node_info // registration information
   {
     enum class version_t : uint8_t
@@ -300,6 +317,12 @@ namespace master_nodes
       crypto::hash                registration_txid{};      // FIFO tie-break within a block
       uint64_t                    requested_unbond_height = 0; // 0 = active; else the height an exit/eject was requested
       uint64_t                    bond_unlock_height = 0;      // height at which a released bond becomes spendable
+      // H.6.3 rotation gate: a per-chain snapshot of the global observed key epoch taken at
+      // unbond-request time — "where each EVM chain stood when I asked to leave". The bond
+      // is released only once every chain here has rotated strictly past its baseline (see
+      // finalize_bridge_unbonds). Present only for seats serialized at bridge_seat version
+      // >= 1 (a seat that never unbonded stays version 0 and omits it).
+      std::vector<bridge_chain_epoch> serving_key_epoch;
 
       bool is_active_seat() const { return registered && seated && requested_unbond_height == 0; }
 
@@ -326,6 +349,8 @@ namespace master_nodes
         FIELD(registration_txid)
         VARINT_FIELD(requested_unbond_height)
         VARINT_FIELD(bond_unlock_height)
+        if (version >= 1)
+          FIELD(serving_key_epoch)
       END_SERIALIZE()
     };
 
@@ -693,8 +718,8 @@ namespace master_nodes
 
     struct state_serialized
     {
-      enum struct version_t : uint8_t { version_0, version_1_serialize_hash, count, };
-      static version_t get_version(cryptonote::hf /*hf_version*/) { return version_t::version_1_serialize_hash; }
+      enum struct version_t : uint8_t { version_0, version_1_serialize_hash, version_2_bridge_rotation, count, };
+      static version_t get_version(cryptonote::hf /*hf_version*/) { return version_t::version_2_bridge_rotation; }
 
       version_t                              version;
       uint64_t                               height;
@@ -703,6 +728,7 @@ namespace master_nodes
       quorum_for_serialization               quorums;
       bool                                   only_stored_quorums;
       crypto::hash                           block_hash;
+      std::vector<bridge_chain_epoch>        observed_key_epoch; // HF23 H.6.3
 
       BEGIN_SERIALIZE()
         ENUM_FIELD(version, version < version_t::count)
@@ -714,6 +740,8 @@ namespace master_nodes
 
         if (version >= version_t::version_1_serialize_hash)
           FIELD(block_hash);
+        if (version >= version_t::version_2_bridge_rotation)
+          FIELD(observed_key_epoch);
       END_SERIALIZE()
     };
 
@@ -745,6 +773,10 @@ namespace master_nodes
       std::vector<key_image_blacklist_entry> key_image_blacklist;
       block_height                           height{0};
       mutable quorum_manager                 quorums;          // Mutable because we are allowed to (and need to) change it via std::set iterator
+      // H.6.3: the per-chain highest observed wBDX contract key epoch, advanced by a
+      // committee-attested rotation-ack tx. Carried block-to-block like the other state
+      // and snapshotted per height into state_history, so it is reorg-safe for free.
+      std::vector<bridge_chain_epoch>        observed_key_epoch;
       master_node_list*                     mn_list;
 
       state_t(master_node_list* mnl) : mn_list{mnl} {}
@@ -791,6 +823,12 @@ namespace master_nodes
       bool process_bridge_slash_tx(cryptonote::network_type nettype, cryptonote::block const &block,
                                    const cryptonote::transaction& tx,
                                    const bridge_committee_resolver& resolve_committee);
+      // Returns true if a committee-attested wBDX rotation observation advanced this
+      // state's observed key epoch for some chain (HF23, H.6.3). `resolve_committee`
+      // supplies the committee that observed + signed the ack (its L1 epoch).
+      bool process_bridge_rotation_ack_tx(cryptonote::network_type nettype, cryptonote::block const &block,
+                                          const cryptonote::transaction& tx,
+                                          const bridge_committee_resolver& resolve_committee);
       // Release (clear) any bridge seat whose bond unlock height has been reached.
       void finalize_bridge_unbonds(uint64_t block_height);
       // Number of currently seated (not merely queued) bridge operators.

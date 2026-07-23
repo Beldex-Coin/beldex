@@ -221,41 +221,41 @@ namespace cryptonote
     }
     else if (tx.type == txtype::bridge_registration)
     {
-      // HF23 bridge-lifecycle tx: a seat registration (tx_extra_bridge_registration),
-      // a voluntary unbond (tx_extra_bridge_unbond), or an accountability slash
-      // report (tx_extra_bridge_slash). The first two are operator-driven and keyed
-      // by the operator's master node pubkey; a slash is committee-driven, so it is
-      // keyed by (epoch, accused_index) instead — the accused does not sign it, and
-      // any committee member may be the one to submit it.
+      // HF23 bridge-lifecycle tx, one of four kinds carried by which field is present:
+      //   * registration / unbond — operator-driven, keyed by the master node pubkey;
+      //   * slash (Phase F)        — committee-driven, keyed by (epoch, accused_index);
+      //   * rotation-ack (H.6.3)   — committee-driven, keyed by (chain_id, key_epoch).
+      // The committee-driven ops are not signed by any operator, and any committee member
+      // may submit them — so they are keyed by their subject, not a pubkey.
       //
       // Dedupe so at most one pending bridge op per subject sits in the pool.
-      auto bridge_op_key = [](const transaction& t, crypto::public_key& mn_pubkey,
-                              std::pair<uint64_t, uint16_t>& slash_key, bool& is_slash) -> bool {
-        tx_extra_bridge_slash slash{};
+      enum class bridge_kind { op_pubkey, slash, rotation };
+      struct bridge_key {
+        bridge_kind kind;
+        crypto::public_key            mn_pubkey{};
+        std::pair<uint64_t, uint16_t> slash_key{};
+        std::pair<uint64_t, uint64_t> rot_key{};
+      };
+      auto bridge_op_key = [](const transaction& t, bridge_key& k) -> bool {
+        tx_extra_bridge_rotation_ack rot{};
+        tx_extra_bridge_slash        slash{};
         tx_extra_bridge_registration reg{};
-        tx_extra_bridge_unbond unbond{};
+        tx_extra_bridge_unbond       unbond{};
+        if (cryptonote::get_field_from_tx_extra(t.extra, rot))
+        { k.kind = bridge_kind::rotation; k.rot_key = {rot.chain_id, rot.key_epoch}; return true; }
         if (cryptonote::get_field_from_tx_extra(t.extra, slash))
-        {
-          is_slash  = true;
-          slash_key = {slash.epoch, slash.accused_index};
-          return true;
-        }
-        is_slash = false;
+        { k.kind = bridge_kind::slash; k.slash_key = {slash.epoch, slash.accused_index}; return true; }
         if (cryptonote::get_field_from_tx_extra(t.extra, reg))
-          mn_pubkey = reg.master_node_pubkey;
-        else if (cryptonote::get_field_from_tx_extra(t.extra, unbond))
-          mn_pubkey = unbond.master_node_pubkey;
-        else
-          return false;
-        return true;
+        { k.kind = bridge_kind::op_pubkey; k.mn_pubkey = reg.master_node_pubkey; return true; }
+        if (cryptonote::get_field_from_tx_extra(t.extra, unbond))
+        { k.kind = bridge_kind::op_pubkey; k.mn_pubkey = unbond.master_node_pubkey; return true; }
+        return false;
       };
 
-      crypto::public_key mn_pubkey{};
-      std::pair<uint64_t, uint16_t> slash_key{};
-      bool is_slash = false;
-      if (!bridge_op_key(tx, mn_pubkey, slash_key, is_slash))
+      bridge_key key{};
+      if (!bridge_op_key(tx, key))
       {
-        MERROR("Could not get bridge registration/unbond/slash from tx: " << get_transaction_hash(tx) << ", tx to add is possibly invalid, rejecting");
+        MERROR("Could not get bridge registration/unbond/slash/rotation from tx: " << get_transaction_hash(tx) << ", tx to add is possibly invalid, rejecting");
         return true;
       }
 
@@ -266,16 +266,20 @@ namespace cryptonote
         if (pool_tx.type != tx.type)
           continue;
 
-        crypto::public_key pool_mn_pubkey{};
-        std::pair<uint64_t, uint16_t> pool_slash_key{};
-        bool pool_is_slash = false;
-        if (!bridge_op_key(pool_tx, pool_mn_pubkey, pool_slash_key, pool_is_slash))
+        bridge_key pool_key{};
+        if (!bridge_op_key(pool_tx, pool_key))
+          continue;
+        if (pool_key.kind != key.kind)
           continue;
 
-        if (pool_is_slash != is_slash)
-          continue;
-
-        if (is_slash ? pool_slash_key == slash_key : pool_mn_pubkey == mn_pubkey)
+        bool same_subject = false;
+        switch (key.kind)
+        {
+          case bridge_kind::op_pubkey: same_subject = pool_key.mn_pubkey == key.mn_pubkey; break;
+          case bridge_kind::slash:     same_subject = pool_key.slash_key == key.slash_key; break;
+          case bridge_kind::rotation:  same_subject = pool_key.rot_key   == key.rot_key;   break;
+        }
+        if (same_subject)
         {
           LOG_PRINT_L1("New TX: " << get_transaction_hash(tx) << ", has TX: " << get_transaction_hash(pool_tx) << " from the pool with a pending bridge operation for the same subject already.");
           return true;

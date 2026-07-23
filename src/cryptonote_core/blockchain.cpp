@@ -3418,6 +3418,35 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     }
   }
 
+  // HF23 H.6.3: a bridge rotation-ack is likewise authorised by committee evidence, not by
+  // any operator, so verify it at tx-validation time — an unauthenticated ack must never
+  // relay. As with the slash, this is necessary but not sufficient: process_bridge_rotation_ack_tx
+  // re-resolves the committee against state at block time before advancing observed_key_epoch.
+  if (hf_version >= hf::hf23_bridge && tx.type == txtype::bridge_registration)
+  {
+    tx_extra_bridge_rotation_ack ack{};
+    if (cryptonote::get_field_from_tx_extra(tx.extra, ack))
+    {
+      const uint64_t epoch_height = ack.epoch * bridge_epoch_blocks(m_nettype);
+      std::vector<crypto::public_key> members;
+      std::vector<crypto::ed25519_public_key> signer_keys;
+      size_t threshold = 0;
+      std::string ack_reason;
+      if (!m_master_node_list.get_bridge_committee(epoch_height, members, signer_keys, threshold))
+        ack_reason = "no bridge committee for epoch " + std::to_string(ack.epoch);
+      else if (!cryptonote::verify_bridge_rotation_evidence(ack, signer_keys, threshold, m_nettype, ack_reason))
+        { /* reason set by the verifier */ }
+
+      if (!ack_reason.empty())
+      {
+        MERROR_VER("Bridge rotation-ack validation failed for tx " << get_transaction_hash(tx) << ": " << ack_reason);
+        tvc.m_verbose_error = std::move(ack_reason);
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+    }
+  }
+
   if (tx.is_transfer())
   {
     // A tx whose outputs are ALL gateway deposits (e.g. an exchange sweep) needs

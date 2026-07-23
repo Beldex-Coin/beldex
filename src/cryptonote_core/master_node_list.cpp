@@ -2296,6 +2296,12 @@ namespace master_nodes
     info.bridge_seat.requested_unbond_height = block_height;
     info.bridge_seat.bond_unlock_height      = block_height + cryptonote::bridge_bond_unlock_blocks(nettype);
     info.bridge_seat.seated                  = false;
+    // H.6.3: snapshot the per-chain baseline — where every EVM chain's wBDX key epoch
+    // stood right now. The bond is not released until every chain here has rotated
+    // strictly past its baseline (proof the departure's hand-off landed), gated in
+    // finalize_bridge_unbonds. bridge_seat version 1 marks the presence of this field.
+    info.bridge_seat.version           = 1;
+    info.bridge_seat.serving_key_epoch = observed_key_epoch;
     return true;
   }
 
@@ -2389,6 +2395,112 @@ namespace master_nodes
     return true;
   }
 
+  // --- H.6.3 rotation-observation helpers (small vectors; chains are few) -------------
+  namespace
+  {
+    uint64_t chain_epoch_get(const std::vector<bridge_chain_epoch> &v, uint64_t chain_id)
+    {
+      for (const auto &e : v)
+        if (e.chain_id == chain_id) return e.key_epoch;
+      return 0;
+    }
+    bool chain_epoch_present(const std::vector<bridge_chain_epoch> &v, uint64_t chain_id)
+    {
+      for (const auto &e : v)
+        if (e.chain_id == chain_id) return true;
+      return false;
+    }
+    // Advance to `epoch` monotonically (never lowers). Returns true if it changed.
+    bool chain_epoch_advance(std::vector<bridge_chain_epoch> &v, uint64_t chain_id, uint64_t epoch)
+    {
+      for (auto &e : v)
+        if (e.chain_id == chain_id)
+        {
+          if (epoch > e.key_epoch) { e.key_epoch = epoch; return true; }
+          return false;
+        }
+      bridge_chain_epoch e;
+      e.chain_id  = chain_id;
+      e.key_epoch = epoch;
+      v.push_back(e);
+      return true;
+    }
+
+    // H.6.3 gate: has every chain in this seat's baseline snapshot rotated strictly past
+    // its baseline? Iterates the SEAT's snapshot (grandfathering, §6.2): a chain added
+    // after the seat unbonded is simply not in the snapshot, so it is never required. A
+    // chain no longer "registered" (implicit model: no longer present in `observed`) is
+    // skipped, so a retired chain never strands an honest bond. An empty snapshot (taken
+    // before any rotation was observed) is vacuously satisfied.
+    bool rotation_completed_for(const std::vector<bridge_chain_epoch> &observed,
+                                const std::vector<bridge_chain_epoch> &serving)
+    {
+      for (const auto &b : serving)
+      {
+        if (!chain_epoch_present(observed, b.chain_id))
+          continue; // no longer registered (retired) → does not gate
+        if (chain_epoch_get(observed, b.chain_id) <= b.key_epoch)
+          return false; // this chain has not yet rotated past the seat's baseline
+      }
+      return true;
+    }
+  }
+
+  bool master_node_list::state_t::process_bridge_rotation_ack_tx(cryptonote::network_type nettype,
+                                                                 const cryptonote::block &block,
+                                                                 const cryptonote::transaction &tx,
+                                                                 const bridge_committee_resolver &resolve_committee)
+  {
+    const uint64_t block_height = cryptonote::get_block_height(block);
+    const auto hf_version       = block.major_version;
+    if (hf_version < cryptonote::hf::hf23_bridge)
+      return false;
+
+    cryptonote::tx_extra_bridge_rotation_ack op{};
+    if (!cryptonote::get_field_from_tx_extra(tx.extra, op))
+      return false;
+
+    if (!resolve_committee)
+    {
+      LOG_PRINT_L1("Bridge rotation-ack TX: no bridge committee resolver available");
+      return false;
+    }
+
+    // The committee that observed + signed this (its L1 epoch). Judged against that
+    // committee's registered signer keys, exactly like the slash path.
+    const uint64_t epoch_height = op.epoch * cryptonote::bridge_epoch_blocks(nettype);
+    std::vector<crypto::public_key> members;
+    std::vector<crypto::ed25519_public_key> signer_keys;
+    size_t threshold = 0;
+    if (!resolve_committee(epoch_height, members, signer_keys, threshold) || members.empty()
+        || members.size() != signer_keys.size())
+    {
+      LOG_PRINT_L1("Bridge rotation-ack TX: no bridge committee for epoch " << op.epoch
+                   << " (height " << epoch_height << ")");
+      return false;
+    }
+
+    std::string reason;
+    if (!cryptonote::verify_bridge_rotation_evidence(op, signer_keys, threshold, nettype, reason))
+    {
+      LOG_PRINT_L1("Bridge rotation-ack TX: rejected evidence: " << reason);
+      return false;
+    }
+
+    // Advance this state's observed key epoch for the chain (monotonic). A stale/duplicate
+    // ack (epoch not newer than what we already recorded) verifies fine but is a no-op.
+    if (!chain_epoch_advance(observed_key_epoch, op.chain_id, op.key_epoch))
+    {
+      LOG_PRINT_L1("Bridge rotation-ack TX: chain " << op.chain_id << " already at key epoch >= "
+                   << op.key_epoch << " (no-op) at height " << block_height);
+      return false;
+    }
+
+    MGINFO("Bridge rotation observed: chain " << op.chain_id << " advanced to key epoch "
+           << op.key_epoch << " (epoch " << op.epoch << ") at height " << block_height);
+    return true;
+  }
+
   void master_node_list::state_t::finalize_bridge_unbonds(uint64_t block_height)
   {
     // Release any seat whose unbonding period has elapsed: clear the bridge_seat
@@ -2404,7 +2516,8 @@ namespace master_nodes
       // so the intent is not accidental (Phase F).
       if (bs.is_forfeited())
         continue;
-      if (bs.registered && bs.requested_unbond_height != 0 && block_height >= bs.bond_unlock_height)
+      if (bs.registered && bs.requested_unbond_height != 0 && block_height >= bs.bond_unlock_height
+          && rotation_completed_for(observed_key_epoch, bs.serving_key_epoch))
         to_release.push_back(pk);
     }
     for (const auto &pk : to_release)
@@ -2595,14 +2708,18 @@ namespace master_nodes
       }
       else if (tx.type == cryptonote::txtype::bridge_registration)
       {
-        // A bridge-lifecycle tx carries an accountability slash report, a voluntary
-        // unbond request, or a seat registration; route by which field is present.
-        // Slash is probed first: it is the only one authorised by *committee*
-        // evidence rather than the operator's own signature, so it must not be
-        // mistaken for either of the operator-driven ops.
-        cryptonote::tx_extra_bridge_slash  slash{};
-        cryptonote::tx_extra_bridge_unbond unbond{};
-        if (cryptonote::get_field_from_tx_extra(tx.extra, slash))
+        // A bridge-lifecycle tx carries a committee-attested rotation observation, an
+        // accountability slash report, a voluntary unbond request, or a seat
+        // registration; route by which field is present. The two committee-evidence ops
+        // (rotation-ack, slash) are probed first: they are authorised by *committee*
+        // evidence rather than the operator's own signature, so they must not be mistaken
+        // for either operator-driven op.
+        cryptonote::tx_extra_bridge_rotation_ack rot_ack{};
+        cryptonote::tx_extra_bridge_slash        slash{};
+        cryptonote::tx_extra_bridge_unbond       unbond{};
+        if (cryptonote::get_field_from_tx_extra(tx.extra, rot_ack))
+          process_bridge_rotation_ack_tx(nettype, block, tx, resolve_bridge_committee);
+        else if (cryptonote::get_field_from_tx_extra(tx.extra, slash))
           process_bridge_slash_tx(nettype, block, tx, resolve_bridge_committee);
         else if (cryptonote::get_field_from_tx_extra(tx.extra, unbond))
           process_bridge_unbond_tx(nettype, block, tx);
@@ -3178,6 +3295,7 @@ namespace master_nodes
 
     result.key_image_blacklist = state.key_image_blacklist;
     result.block_hash          = state.block_hash;
+    result.observed_key_epoch  = state.observed_key_epoch; // HF23 H.6.3
     return result;
   }
 
@@ -3820,6 +3938,7 @@ namespace master_nodes
   , key_image_blacklist{std::move(state.key_image_blacklist)}
   , only_loaded_quorums{state.only_stored_quorums}
   , block_hash{state.block_hash}
+  , observed_key_epoch{std::move(state.observed_key_epoch)} // HF23 H.6.3
   , mn_list{mnl}
   {
     if (!mn_list)
