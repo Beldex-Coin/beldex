@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <array>
 #include <functional>
 #include <string>
 #include <vector>
@@ -140,6 +141,16 @@ bool encrypt_gateway_deposit_memo(const std::vector<uint8_t>& plaintext, const c
 bool decrypt_gateway_deposit_memo(const std::vector<uint8_t>& ciphertext, const crypto::public_key& tx_public,
                                   const crypto::secret_key& gateway_view_secret, size_t output_index,
                                   std::vector<uint8_t>& out_plaintext);
+
+// Build the 32-byte bridge deposit-routing memo **plaintext** (before encryption),
+// mirroring the signer's `beldex_watcher::BridgeMemo::encode` byte-for-byte so the
+// committee decodes exactly what the wallet wrote:
+//   byte 0     version (=1)
+//   byte 1     flags   (reserved, 0)
+//   bytes 2..10  chain_id (u64, big-endian)
+//   bytes 10..30 evm_addr (20 bytes)
+//   bytes 30..32 reserved (0)
+std::vector<uint8_t> build_bridge_deposit_memo(uint64_t chain_id, const std::array<uint8_t, 20>& evm_addr);
 
 // Validate a freeze / re-point op against current DB state + governance
 // evidence. Gated on HF23 by the caller. Freeze: gateway exists; op.governance_seq

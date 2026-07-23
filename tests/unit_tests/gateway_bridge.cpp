@@ -133,6 +133,32 @@ TEST(GatewayBridgeMemo, roundtrip_and_bounds)
   EXPECT_FALSE(encrypt_gateway_deposit_memo(too_big, tx_sec, gw_view, 0, unused));
 }
 
+// The wallet-side memo builder (bridge_deposit) must produce the exact 32-byte layout the
+// signer decodes (beldex_watcher::BridgeMemo::encode): version‖flags‖chain_id(BE)‖evm(20)‖rsvd.
+TEST(GatewayBridgeMemo, build_deposit_memo_layout)
+{
+  std::array<uint8_t, 20> evm{};
+  for (int i = 0; i < 20; ++i) evm[i] = static_cast<uint8_t>(0xa0 + i);
+
+  const auto m = build_bridge_deposit_memo(0x0102030405060708ULL, evm);
+  ASSERT_EQ(m.size(), 32u);
+  EXPECT_EQ(m[0], 1); // version
+  EXPECT_EQ(m[1], 0); // flags
+  const uint8_t expect_cid[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}; // big-endian
+  EXPECT_EQ(0, std::memcmp(m.data() + 2, expect_cid, 8));
+  EXPECT_EQ(0, std::memcmp(m.data() + 10, evm.data(), 20));
+  EXPECT_EQ(m[30], 0);
+  EXPECT_EQ(m[31], 0);
+
+  // And it survives the encrypt/decrypt round trip unchanged (what the committee decrypts).
+  crypto::public_key tx_pub;  crypto::secret_key tx_sec;  crypto::generate_keys(tx_pub, tx_sec);
+  crypto::public_key gw_view; crypto::secret_key gw_vsec; crypto::generate_keys(gw_view, gw_vsec);
+  std::vector<uint8_t> ct, pt;
+  ASSERT_TRUE(encrypt_gateway_deposit_memo(m, tx_sec, gw_view, 2, ct));
+  ASSERT_TRUE(decrypt_gateway_deposit_memo(ct, tx_pub, gw_vsec, 2, pt));
+  EXPECT_EQ(pt, m);
+}
+
 // Prints a DETERMINISTIC (tx_pubkey, view_secret, output_index, plaintext,
 // ciphertext) vector so the Rust signer's port (gateway_memo::cpp_cross_check_vector)
 // can assert byte-for-byte equality against beldexd's crypto. Run with:
@@ -494,6 +520,7 @@ TEST(GatewayBridgeSlash, tx_extra_round_trip_and_dispatch)
 // --------------------------------------------------------------------------
 namespace
 {
+  using master_nodes::bridge_chain_epoch;
   using master_nodes::master_node_info;
   using master_nodes::master_node_list;
   using master_nodes::quorum;
@@ -614,6 +641,94 @@ namespace
       if (info->bridge_seat.seated) ++s;
     return s;
   }
+
+  // ---- H.6.3 rotation helpers -------------------------------------------------------
+  bridge_chain_epoch chain_ep(uint64_t chain_id, uint64_t key_epoch)
+  {
+    bridge_chain_epoch e; e.chain_id = chain_id; e.key_epoch = key_epoch; return e;
+  }
+
+  uint64_t observed_epoch(const master_node_list::state_t& st, uint64_t chain_id)
+  {
+    for (const auto& e : st.observed_key_epoch)
+      if (e.chain_id == chain_id) return e.key_epoch;
+    return 0;
+  }
+
+  // Build + committee-sign a rotation ack for (chain_id, key_epoch), observed by `epoch`.
+  tx_extra_bridge_rotation_ack sign_rotation_ack(const committee_keys& c, uint64_t chain_id,
+                                                 uint64_t key_epoch, const std::vector<uint16_t>& observers,
+                                                 uint64_t epoch)
+  {
+    tx_extra_bridge_rotation_ack ack{};
+    ack.version = 0; ack.chain_id = chain_id; ack.key_epoch = key_epoch; ack.epoch = epoch;
+    ack.new_signer = std::vector<uint8_t>(20, 0xCD);
+    const std::string msg = bridge_rotation_ack_message(NET_FC, ack);
+    for (uint16_t idx : observers)
+    {
+      bridge_rotation_signature s{}; s.voter_index = idx;
+      crypto_sign_detached(s.signature.data, nullptr,
+                           reinterpret_cast<const unsigned char*>(msg.data()), msg.size(), c.ed_sec[idx].data);
+      ack.observers.push_back(s);
+    }
+    return ack;
+  }
+
+  // Run process_bridge_rotation_ack_tx with the same history-backed resolver as run_slash.
+  bool run_rotation_ack(master_node_list::state_t& cur, const committee_keys& c,
+                        const tx_extra_bridge_rotation_ack& ack, uint64_t block_height)
+  {
+    const uint64_t epoch_height = ack.epoch * cryptonote::bridge_epoch_blocks(NET_FC);
+    master_node_list::state_t hist(nullptr);
+    hist.height = epoch_height;
+    auto q = std::make_shared<quorum>();
+    q->validators = c.mn;
+    hist.quorums.bridge = q;
+    std::set<master_node_list::state_t, std::less<>> history;
+    history.insert(std::move(hist));
+
+    master_nodes::bridge_committee_resolver resolver =
+      [&](uint64_t eh, std::vector<crypto::public_key>& members,
+          std::vector<crypto::ed25519_public_key>& signer_keys, size_t& threshold) -> bool {
+        auto it = history.find(eh);
+        if (it == history.end() || !it->quorums.bridge || it->quorums.bridge->validators.empty())
+          return false;
+        members = it->quorums.bridge->validators;
+        signer_keys.clear();
+        for (const auto& pk : members)
+        {
+          auto mit = cur.master_nodes_infos.find(pk);
+          signer_keys.push_back(mit != cur.master_nodes_infos.end() && mit->second->bridge_seat.registered
+                                    ? mit->second->bridge_seat.signer_ed25519
+                                    : crypto::ed25519_public_key::null());
+        }
+        threshold = cryptonote::bridge_committee_threshold(NET_FC);
+        return true;
+      };
+
+    cryptonote::block blk{};
+    blk.major_version = cryptonote::hf::hf23_bridge;
+    blk.miner_tx.vin.push_back(cryptonote::txin_gen{block_height});
+    cryptonote::transaction tx{};
+    tx.type = cryptonote::txtype::bridge_registration;
+    add_bridge_rotation_ack_to_tx_extra(tx.extra, ack);
+    return cur.process_bridge_rotation_ack_tx(NET_FC, blk, tx, resolver);
+  }
+
+  // Put a seat into the unbonding state with a given per-chain baseline (bypasses the
+  // MN-signature path of process_bridge_unbond_tx; this exercises the gate, not the sig).
+  void set_unbonding(master_node_list::state_t& cur, const crypto::public_key& pk,
+                     uint64_t unbond_height, uint64_t unlock_height,
+                     const std::vector<bridge_chain_epoch>& serving)
+  {
+    auto info = std::make_shared<master_node_info>(*cur.master_nodes_infos.at(pk));
+    info->bridge_seat.requested_unbond_height = unbond_height;
+    info->bridge_seat.bond_unlock_height      = unlock_height;
+    info->bridge_seat.seated                  = false;
+    info->bridge_seat.version                 = 1;
+    info->bridge_seat.serving_key_epoch       = serving;
+    cur.master_nodes_infos[pk] = info;
+  }
 } // namespace
 
 TEST(GatewayBridgeSlash, consensus_action_forfeits_bond_and_survives_finalize)
@@ -729,6 +844,94 @@ TEST(GatewayBridgeSlash, forfeit_frees_seat_for_queue_head)
   EXPECT_TRUE(cur.master_nodes_infos.at(queued)->bridge_seat.seated)  << "queue head must fill the freed seat";
   EXPECT_FALSE(cur.master_nodes_infos.at(c.mn[2])->bridge_seat.seated) << "an exiting (forfeited) seat is never re-seated";
   EXPECT_EQ(count_seated(cur), CAP); // still exactly CAP seats occupied
+}
+
+// --------------------------------------------------------------------------
+// H.6.3 — the rotation gate as a consensus action on state_t: rotation-acks advance
+// observed_key_epoch; finalize_bridge_unbonds withholds a bond until every chain in the
+// seat's baseline has rotated past it; grandfathering exempts later-added chains.
+// --------------------------------------------------------------------------
+TEST(GatewayBridgeRotation, ack_advances_observed_key_epoch_monotonically)
+{
+  const size_t N = cryptonote::bridge_committee_size(NET_FC); // 6
+  auto c = make_committee(N);
+  master_node_list::state_t cur(nullptr);
+  cur.height = 5000;
+  for (size_t i = 0; i < N; ++i) seat_member(cur, c.mn[i], c.ed_pub[i], 100 + i);
+
+  // First ack for chain 1 → epoch 2 advances.
+  EXPECT_TRUE(run_rotation_ack(cur, c, sign_rotation_ack(c, 1, 2, {0, 1, 2, 3}, 3), 5000));
+  EXPECT_EQ(observed_epoch(cur, 1), 2u);
+
+  // A duplicate (same epoch) and a stale (lower epoch) both verify but are no-ops.
+  EXPECT_FALSE(run_rotation_ack(cur, c, sign_rotation_ack(c, 1, 2, {0, 1, 2, 3}, 3), 5001));
+  EXPECT_FALSE(run_rotation_ack(cur, c, sign_rotation_ack(c, 1, 1, {0, 1, 2, 3}, 3), 5001));
+  EXPECT_EQ(observed_epoch(cur, 1), 2u);
+
+  // A newer epoch advances again.
+  EXPECT_TRUE(run_rotation_ack(cur, c, sign_rotation_ack(c, 1, 3, {0, 1, 2, 3}, 3), 5002));
+  EXPECT_EQ(observed_epoch(cur, 1), 3u);
+
+  // Below-threshold evidence (3 < 4) is rejected outright.
+  EXPECT_FALSE(run_rotation_ack(cur, c, sign_rotation_ack(c, 1, 4, {0, 1, 2}, 3), 5003));
+  EXPECT_EQ(observed_epoch(cur, 1), 3u);
+}
+
+TEST(GatewayBridgeRotation, gate_withholds_bond_until_all_chains_rotate)
+{
+  const size_t N = cryptonote::bridge_committee_size(NET_FC); // 6
+  auto c = make_committee(N);
+  master_node_list::state_t cur(nullptr);
+  cur.height = 5000;
+  for (size_t i = 0; i < N; ++i) seat_member(cur, c.mn[i], c.ed_pub[i], 100 + i);
+
+  // Two chains known, both at key epoch 1.
+  ASSERT_TRUE(run_rotation_ack(cur, c, sign_rotation_ack(c, 1, 1, {0, 1, 2, 3}, 3), 5000));
+  ASSERT_TRUE(run_rotation_ack(cur, c, sign_rotation_ack(c, 2, 1, {0, 1, 2, 3}, 3), 5000));
+
+  // Seat 5 unbonds with baseline {chain1: 1, chain2: 1}; timer unlock at height 5000.
+  set_unbonding(cur, c.mn[5], 4000, 5000, {chain_ep(1, 1), chain_ep(2, 1)});
+  auto seat_registered = [&]() { return cur.master_nodes_infos.at(c.mn[5])->bridge_seat.registered; };
+
+  // Timer elapsed, but no chain rotated past baseline → withheld.
+  cur.finalize_bridge_unbonds(6000);
+  EXPECT_TRUE(seat_registered()) << "bond must be withheld until both chains rotate";
+
+  // Chain 1 rotates to 2 (chain 2 still 1) → still withheld (chain 2 not past baseline).
+  ASSERT_TRUE(run_rotation_ack(cur, c, sign_rotation_ack(c, 1, 2, {0, 1, 2, 3}, 3), 6000));
+  cur.finalize_bridge_unbonds(6000);
+  EXPECT_TRUE(seat_registered()) << "one chain rotated is not enough";
+
+  // Chain 2 rotates to 2 → every chain past its baseline → released.
+  ASSERT_TRUE(run_rotation_ack(cur, c, sign_rotation_ack(c, 2, 2, {0, 1, 2, 3}, 3), 6000));
+  cur.finalize_bridge_unbonds(6000);
+  EXPECT_FALSE(cur.master_nodes_infos.at(c.mn[5])->bridge_seat.registered) << "bond released once all chains rotated";
+}
+
+TEST(GatewayBridgeRotation, gate_grandfathers_chain_added_after_unbond)
+{
+  const size_t N = cryptonote::bridge_committee_size(NET_FC); // 6
+  auto c = make_committee(N);
+  master_node_list::state_t cur(nullptr);
+  cur.height = 5000;
+  for (size_t i = 0; i < N; ++i) seat_member(cur, c.mn[i], c.ed_pub[i], 100 + i);
+
+  // Only chain 1 known at unbond time; seat baseline = {chain1: 1}.
+  ASSERT_TRUE(run_rotation_ack(cur, c, sign_rotation_ack(c, 1, 1, {0, 1, 2, 3}, 3), 5000));
+  set_unbonding(cur, c.mn[5], 4000, 5000, {chain_ep(1, 1)});
+
+  // A brand-new chain 2 appears AFTER the seat unbonded (never in its snapshot).
+  ASSERT_TRUE(run_rotation_ack(cur, c, sign_rotation_ack(c, 2, 1, {0, 1, 2, 3}, 3), 6000));
+
+  // Not gated on chain 2 (grandfathered). Still gated on chain 1 (not yet past 1).
+  cur.finalize_bridge_unbonds(6000);
+  EXPECT_TRUE(cur.master_nodes_infos.at(c.mn[5])->bridge_seat.registered);
+
+  // Chain 1 rotates past baseline → released, even though chain 2 never rotated past 1.
+  ASSERT_TRUE(run_rotation_ack(cur, c, sign_rotation_ack(c, 1, 2, {0, 1, 2, 3}, 3), 6000));
+  cur.finalize_bridge_unbonds(6000);
+  EXPECT_FALSE(cur.master_nodes_infos.at(c.mn[5])->bridge_seat.registered)
+      << "a chain added after unbond must not gate the seat";
 }
 
 // --------------------------------------------------------------------------

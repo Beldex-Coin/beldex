@@ -958,6 +958,19 @@ bool decrypt_gateway_deposit_memo(const std::vector<uint8_t>& ciphertext, const 
   return xor_memo(ciphertext, derivation, output_index, out_plaintext);
 }
 
+std::vector<uint8_t> build_bridge_deposit_memo(uint64_t chain_id, const std::array<uint8_t, 20>& evm_addr)
+{
+  // 32-byte layout, mirroring beldex_watcher::BridgeMemo::encode (signer side).
+  std::vector<uint8_t> m(32, 0);
+  m[0] = 1; // version
+  // m[1] flags = 0
+  for (int i = 0; i < 8; ++i)
+    m[2 + i] = static_cast<uint8_t>((chain_id >> (8 * (7 - i))) & 0xff); // big-endian
+  std::copy(evm_addr.begin(), evm_addr.end(), m.begin() + 10);
+  // m[30..32] reserved = 0
+  return m;
+}
+
 bool validate_gateway_freeze_operation(BlockchainDB& db, network_type nettype, const transaction& /*tx*/,
                                        const tx_extra_gateway_freeze& op,
                                        const checkpoint_quorum_resolver& resolve_quorum, std::string& reason)

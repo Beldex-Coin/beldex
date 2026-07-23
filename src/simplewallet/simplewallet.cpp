@@ -255,6 +255,8 @@ namespace
   const char* USAGE_BRIDGE_REGISTER("bridge_register [<priority>] <registration_hex>");
   const char* USAGE_BRIDGE_UNBOND("bridge_unbond [<priority>] <unbond_hex>");
   const char* USAGE_BRIDGE_SLASH("bridge_slash [<priority>] <slash_hex>");
+  const char* USAGE_BRIDGE_ROTATION_ACK("bridge_rotation_ack [<priority>] <rotation_hex>");
+  const char* USAGE_BRIDGE_DEPOSIT("bridge_deposit [<priority>] <gateway_address> <amount> <chain_id> <evm_addr_hex>");
   const char* USAGE_STAKE("stake [index=<N1>[,<N2>,...]] [<priority>] <master node pubkey> <amount|percent%>");
   const char* USAGE_REQUEST_STAKE_UNLOCK("request_stake_unlock <master_node_pubkey>");
   const char* USAGE_PRINT_LOCKED_STAKES("print_locked_stakes [key_images]");
@@ -3136,6 +3138,14 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
                            [this](const auto& x) { return bridge_slash(x); },
                            tr(USAGE_BRIDGE_SLASH),
                            tr("Submit a bridge accountability slash report (HF23 Sovereign Bridge, Phase F). The report's authority is the committee evidence it carries, not this wallet — this wallet only pays the fee, so any wallet may submit a valid report. <slash_hex> is produced by a bridge signer and verified by the daemon's `bridge.slash_report' OMQ endpoint."));
+  m_cmd_binder.set_handler("bridge_rotation_ack",
+                           [this](const auto& x) { return bridge_rotation_ack(x); },
+                           tr(USAGE_BRIDGE_ROTATION_ACK),
+                           tr("Submit a bridge wBDX rotation observation (HF23 Sovereign Bridge, Phase H / H.6.3). The ack's authority is the committee evidence it carries, not this wallet — any wallet may submit it, paying only the fee. Accepting it advances the L1's observed key epoch, which gates the release of outgoing operators' bonds. <rotation_hex> is produced by a bridge signer and verified by the daemon's `bridge.rotation_ack' OMQ endpoint."));
+  m_cmd_binder.set_handler("bridge_deposit",
+                           [this](const auto& x) { return bridge_deposit(x); },
+                           tr(USAGE_BRIDGE_DEPOSIT),
+                           tr("Deposit BDX to a bridge gateway to mint wBDX (HF23 Sovereign Bridge, BDX->wBDX). Sends <amount> BDX to <gateway_address> and attaches the encrypted A.5 routing memo {<chain_id>, <evm_addr_hex>} so the committee knows the EVM destination to mint to. <evm_addr_hex> is a 20-byte (40 hex char) Ethereum address."));
   m_cmd_binder.set_handler("stake",
                            [this](const auto& x) { return stake(x); },
                            tr(USAGE_STAKE),
@@ -6374,6 +6384,142 @@ bool simple_wallet::bridge_slash(const std::vector<std::string> &args_)
   {
     std::vector<tools::wallet2::pending_tx> ptx_vector = {result.ptx};
     commit_or_save(ptx_vector, m_do_not_relay, false /* don't flash */);
+  }
+  catch (const std::exception& e)
+  {
+    handle_transfer_exception(std::current_exception(), m_wallet->is_trusted_daemon());
+  }
+  catch (...)
+  {
+    LOG_ERROR("unknown error");
+    fail_msg_writer() << tr("unknown error");
+  }
+
+  return true;
+}
+//----------------------------------------------------------------------------------------------------
+bool simple_wallet::bridge_rotation_ack(const std::vector<std::string> &args_)
+{
+  if (!try_connect_to_daemon())
+    return true;
+
+  // bridge_rotation_ack [<priority>] <rotation_hex>
+  std::vector<std::string> local_args = args_;
+  uint32_t priority = 0;
+  if (local_args.size() == 2)
+  {
+    if (!epee::string_tools::get_xtype_from_string(priority, local_args[0]))
+    {
+      fail_msg_writer() << tr(USAGE_BRIDGE_ROTATION_ACK);
+      return true;
+    }
+    local_args.erase(local_args.begin());
+  }
+  if (local_args.size() != 1)
+  {
+    fail_msg_writer() << tr(USAGE_BRIDGE_ROTATION_ACK);
+    return true;
+  }
+
+  SCOPED_WALLET_UNLOCK()
+  tools::wallet2::bridge_rotation_ack_result result = m_wallet->create_bridge_rotation_ack_tx(local_args[0], priority);
+  if (!result.success)
+  {
+    fail_msg_writer() << result.msg;
+    return true;
+  }
+
+  // Fee-only command tx carrying a committee-signed wBDX rotation observation. Accepting
+  // it advances L1's observed key epoch, which can release outgoing operators' bonds; the
+  // submitter is a neutral courier, not the subject.
+  std::string prompt = (boost::format(tr("Submitting a bridge rotation observation. If consensus accepts the committee evidence it carries, the L1 records that the wBDX signer rotated, which may release outgoing operators' bonds. Transaction fee is %s. Is this okay? (Y/Yes/N/No): ")) % print_money(result.ptx.fee)).str();
+  if (!command_line::is_yes(input_line(prompt, true)))
+  {
+    fail_msg_writer() << tr("Transaction cancelled.");
+    return true;
+  }
+
+  try
+  {
+    std::vector<tools::wallet2::pending_tx> ptx_vector = {result.ptx};
+    commit_or_save(ptx_vector, m_do_not_relay, false /* don't flash */);
+  }
+  catch (const std::exception& e)
+  {
+    handle_transfer_exception(std::current_exception(), m_wallet->is_trusted_daemon());
+  }
+  catch (...)
+  {
+    LOG_ERROR("unknown error");
+    fail_msg_writer() << tr("unknown error");
+  }
+
+  return true;
+}
+//----------------------------------------------------------------------------------------------------
+bool simple_wallet::bridge_deposit(const std::vector<std::string> &args_)
+{
+  if (!try_connect_to_daemon())
+    return true;
+
+  // bridge_deposit [<priority>] <gateway_address> <amount> <chain_id> <evm_addr_hex>
+  std::vector<std::string> local_args = args_;
+  uint32_t priority = 0;
+  if (local_args.size() == 5)
+  {
+    if (!epee::string_tools::get_xtype_from_string(priority, local_args[0]))
+    {
+      fail_msg_writer() << tr(USAGE_BRIDGE_DEPOSIT);
+      return true;
+    }
+    local_args.erase(local_args.begin());
+  }
+  if (local_args.size() != 4)
+  {
+    fail_msg_writer() << tr(USAGE_BRIDGE_DEPOSIT);
+    return true;
+  }
+
+  const std::string& gateway_address = local_args[0];
+  uint64_t amount = 0;
+  if (!cryptonote::parse_amount(amount, local_args[1]) || amount == 0)
+  {
+    fail_msg_writer() << tr("Invalid amount: ") << local_args[1];
+    return true;
+  }
+  uint64_t chain_id = 0;
+  if (!epee::string_tools::get_xtype_from_string(chain_id, local_args[2]))
+  {
+    fail_msg_writer() << tr("Invalid chain_id: ") << local_args[2];
+    return true;
+  }
+  const std::string& evm_addr_hex = local_args[3];
+
+  SCOPED_WALLET_UNLOCK()
+  tools::wallet2::bridge_deposit_result result =
+      m_wallet->create_bridge_deposit_tx(gateway_address, amount, chain_id, evm_addr_hex, priority, m_current_subaddress_account);
+  if (!result.success)
+  {
+    fail_msg_writer() << result.msg;
+    return true;
+  }
+
+  uint64_t total_fee = 0;
+  for (const auto& ptx : result.ptx)
+    total_fee += ptx.fee;
+
+  std::string prompt = (boost::format(tr("Depositing %s BDX to bridge gateway %s for minting wBDX to EVM address %s (chain %llu). Transaction fee is %s across %zu transaction(s). Is this okay? (Y/Yes/N/No): "))
+                        % print_money(amount) % gateway_address % evm_addr_hex
+                        % static_cast<unsigned long long>(chain_id) % print_money(total_fee) % result.ptx.size()).str();
+  if (!command_line::is_yes(input_line(prompt, true)))
+  {
+    fail_msg_writer() << tr("Transaction cancelled.");
+    return true;
+  }
+
+  try
+  {
+    commit_or_save(result.ptx, m_do_not_relay, false /* don't flash */);
   }
   catch (const std::exception& e)
   {

@@ -1438,6 +1438,35 @@ private:
     };
     bridge_slash_result create_bridge_slash_tx(const std::string& slash_hex, uint32_t priority = 0, std::set<uint32_t> subaddr_indices = {});
 
+    // HF23 Sovereign Bridge (Phase H, H.6.3): build the rotation-observation tx from the
+    // blob the daemon's `bridge.rotation_ack` OMQ intake returned. Like the slash, the
+    // authority is the ≥t+1 committee ed25519 evidence inside the blob, not the submitting
+    // wallet — so any wallet may submit it; this wallet only pays the fee. Rides
+    // txtype::bridge_registration, dispatched by the presence of the rotation-ack field.
+    struct bridge_rotation_ack_result
+    {
+      bool        success = false;
+      std::string msg;
+      pending_tx  ptx;
+    };
+    bridge_rotation_ack_result create_bridge_rotation_ack_tx(const std::string& rotation_hex, uint32_t priority = 0, std::set<uint32_t> subaddr_indices = {});
+
+    // HF23 Sovereign Bridge (Phase A.5 / Phase L): build a BDX->wBDX **bridge deposit** —
+    // a gateway deposit of `amount` to `gateway_address`, carrying the encrypted A.5
+    // routing memo {chain_id, evm_addr} so the committee knows the EVM destination to mint
+    // to. Unlike the other bridge txs this moves real value (with change), so it may split
+    // into multiple pending txs.
+    struct bridge_deposit_result
+    {
+      bool                    success = false;
+      std::string             msg;
+      std::vector<pending_tx> ptx;
+    };
+    bridge_deposit_result create_bridge_deposit_tx(const std::string& gateway_address, uint64_t amount,
+                                                   uint64_t chain_id, const std::string& evm_addr_hex,
+                                                   uint32_t priority = 0, uint32_t subaddr_account = 0,
+                                                   std::set<uint32_t> subaddr_indices = {});
+
     struct request_stake_unlock_result
     {
       bool        success;
