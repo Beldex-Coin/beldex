@@ -1,0 +1,24 @@
+[package]
+name = "beldex-bridge-relayer"
+version = "0.1.0"
+edition = "2021"
+description = "Keyless, permissionless courier for already-signed Beldex Sovereign Bridge payloads (Phase I)"
+license = "MIT"
+
+[lib]
+name = "beldex_bridge_relayer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "beldex-bridge-relayer"
+path = "src/main.rs"
+
+[dependencies]
+sha3 = "0.10"   # keccak256 for the 4-byte function selectors
+hex  = "0.4"
+# JSON payload codec for the "submit-your-own" interface (default on so the CLI works).
+serde_json = { version = "1", optional = true }
+
+[features]
+default = ["json"]
+json = ["dep:serde_json"]
