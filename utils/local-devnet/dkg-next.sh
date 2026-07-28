@@ -159,17 +159,36 @@ grep -h 'Pevm share material written\|Pevm complete share ready' dkg-next-*.log 
 # than useless: it looks like a participant that produced no shares, and it makes the promotion
 # step (`shares-next` -> `shares`) try to archive a `shares` tree that node never had, failing
 # with a bare "No such file or directory" that reads like the rotation went wrong.
+# An empty dir only MEANS "not a member" when the log says so. Every other early refusal --
+# a signer built without --features live-dkg, a config error, a dead mesh -- leaves exactly
+# the same empty dir behind, and reporting those as "not on the committee" sends you to look
+# at committee registration when the real cause is one line away in that node's log. Read it.
 NONMEMBER=""
+OTHERFAIL=""
 for d in beldex-127.0.0.1-*/; do
+  n="${d%/}"
   t="${d}devnet/$SUBDIR"
   [ -d "$t" ] || continue
   ls "$t"/pevm-*.keyshare >/dev/null 2>&1 && continue
-  rmdir "$t" 2>/dev/null && NONMEMBER="$NONMEMBER ${d%/}"
+  rmdir "$t" 2>/dev/null || true
+  if grep -q 'not on the current bridge committee' "dkg-next-$n.log" 2>/dev/null; then
+    NONMEMBER="$NONMEMBER $n"
+  else
+    OTHERFAIL="$OTHERFAIL $n"
+  fi
 done
 if [ -n "$NONMEMBER" ]; then
   echo ""
   echo "  not on the committee, no shares written (empty dir removed):"
   for n in $NONMEMBER; do echo "    $n"; done
+fi
+if [ -n "$OTHERFAIL" ]; then
+  echo ""
+  echo "  wrote no shares, and NOT because they are off the committee:"
+  for n in $OTHERFAIL; do
+    printf '    %-30s %s\n' "$n" \
+      "$(grep -v '^(no .env file' "dkg-next-$n.log" 2>/dev/null | tail -1)"
+  done
 fi
 
 NEW="$(ls beldex-127.0.0.1-*/devnet/"$SUBDIR"/pevm-*.keyshare 2>/dev/null | wc -l | tr -d ' ' || true)"
