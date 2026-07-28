@@ -67,6 +67,11 @@ fn print_status(cfg: &Config) {
     } else {
         println!("(build with --features evm-watcher-http for the `watch-evm` subcommand)");
     }
+    if cfg!(feature = "autonomy") {
+        println!("  serve — autonomous watcher pipeline: detect + dedup deposit/burn duties (dry-run backend)");
+    } else {
+        println!("(build with --features autonomy for the `serve` subcommand)");
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -758,6 +763,94 @@ fn run_watch_evm(_cfg: &Config) -> Result<(), String> {
     Err("the `watch-evm` subcommand requires a build with `--features evm-watcher-http`".into())
 }
 
+/// `serve` subcommand: the **autonomous watcher pipeline** (Phase L). Builds the Beldex
+/// deposit watcher + one EVM burn watcher per chain, then runs the orchestrator loop
+/// ([`service::serve`]) — each tick ingests finalized deposits/burns, deduplicates them into
+/// duties, and (with the **dry-run** `LoggingBackend`) reports each detected duty. This
+/// exercises the full autonomy pipeline (observe → resolve → dedup → duty) end to end; the
+/// live signing+submission backend swaps in for `LoggingBackend`. Needs `--features autonomy`.
+#[cfg(feature = "autonomy")]
+fn run_serve(cfg: &Config) -> Result<(), String> {
+    use beldex_bridge_signer::beldex_watcher::{BeldexWatcher, HttpBeldexRpc};
+    use beldex_bridge_signer::evm_watcher::{build_registry, parse_evm_chains};
+    use beldex_bridge_signer::orchestrator::{Duty, Orchestrator};
+    use beldex_bridge_signer::service::{serve, LoggingBackend, ServeOptions, WatcherEventSource};
+    use std::time::Duration;
+
+    // EVM chains (burns → releases).
+    let chains_json = std::env::var("BRIDGE_SIGNER_EVM_CHAINS")
+        .map_err(|_| "set BRIDGE_SIGNER_EVM_CHAINS (a JSON array of chain configs; see watch-evm)".to_string())?;
+    let configs = parse_evm_chains(&chains_json)?;
+    if configs.is_empty() {
+        return Err("BRIDGE_SIGNER_EVM_CHAINS is empty — no chains to watch".into());
+    }
+    let registry = build_registry(&configs)?;
+    let evm: Vec<_> = configs.iter().map(|c| c.build_watcher()).collect();
+
+    // Beldex gateway deposits (→ mints).
+    let beldexd_rpc =
+        std::env::var("BRIDGE_SIGNER_BELDEXD_RPC").unwrap_or_else(|_| cfg.beldexd_rpc_url.clone());
+    let gateway_id = std::env::var("BRIDGE_SIGNER_GATEWAY_ID")
+        .map_err(|_| "set BRIDGE_SIGNER_GATEWAY_ID (the bridge gateway to watch for deposits)".to_string())?;
+    let start_height: u64 = std::env::var("BRIDGE_SIGNER_BELDEX_START_HEIGHT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let view_secret = config::parse_hex32(
+        &std::env::var("BRIDGE_SIGNER_GATEWAY_VIEW_SECRET").map_err(|_| {
+            "set BRIDGE_SIGNER_GATEWAY_VIEW_SECRET (32-byte hex; the gateway view secret that decrypts A.5 memos)"
+                .to_string()
+        })?,
+    )
+    .ok_or("BRIDGE_SIGNER_GATEWAY_VIEW_SECRET must be 32-byte hex")?;
+    let beldex = BeldexWatcher::new(HttpBeldexRpc::new(beldexd_rpc), gateway_id, start_height);
+
+    let mut src = WatcherEventSource { beldex, evm, view_secret, registry };
+    let mut orch = Orchestrator::new();
+
+    let poll_secs: u64 = std::env::var("BRIDGE_SIGNER_WATCH_POLL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(12);
+    let max_ticks: Option<u64> = std::env::var("BRIDGE_SIGNER_WATCH_ITERS").ok().and_then(|s| s.parse().ok());
+    let opts = ServeOptions { interval: Duration::from_secs(poll_secs), max_ticks };
+
+    println!(
+        "serve: autonomous watcher pipeline — DRY-RUN backend (detects + dedups duties, does NOT sign/submit)"
+    );
+    println!("  polling every {poll_secs}s across {} EVM chain(s)", configs.len());
+
+    let mut backend = LoggingBackend::new(|d: &Duty| match d {
+        Duty::Mint(e) => println!(
+            "MINT duty: beldex_txid=0x{} chain={} to=0x{} amount={}",
+            hex(&e.beldex_txid),
+            e.dst_chain.0,
+            hex(&e.to),
+            e.amount
+        ),
+        Duty::Release(e) => println!(
+            "RELEASE duty: evm_txid=0x{} chain={} amount={} recipient=0x{}",
+            hex(&e.evm_txid),
+            e.chain.0,
+            e.amount,
+            hex(&e.beldex_recipient)
+        ),
+    });
+
+    let reports = serve(&mut orch, &mut src, &mut backend, &opts, || false);
+    let (pending, in_flight, done) = orch.counts();
+    println!(
+        "serve: finished after {} tick(s); duties pending={pending} in_flight={in_flight} done={done}",
+        reports.len()
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "autonomy"))]
+fn run_serve(_cfg: &Config) -> Result<(), String> {
+    Err("the `serve` subcommand requires a build with `--features autonomy`".into())
+}
+
 fn main() -> ExitCode {
     let subcommand = std::env::args().nth(1);
     let cfg = match Config::from_map(&config_map()) {
@@ -788,6 +881,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("watch-evm: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("serve") => match run_serve(&cfg) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("serve: {e}");
                 ExitCode::FAILURE
             }
         },

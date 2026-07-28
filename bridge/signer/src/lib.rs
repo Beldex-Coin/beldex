@@ -78,6 +78,19 @@ pub mod watch;
 pub mod wire;
 pub mod wire_auth;
 
+/// **Autonomy** — the duty orchestrator that turns finalized watcher events into
+/// deduplicated, lifecycle-tracked committee work items (mints/releases) and feeds them to
+/// the session engine, then to submission. The safety-critical bookkeeping (dedup, no
+/// double-work, crash-safe reconciliation) above [`session`]; std-only, testable.
+pub mod orchestrator;
+
+/// **Autonomy service** — the outer loop ([`service::serve`]) and its backends: the
+/// [`service::DutyBackend`] seam (dispatched to a [`orchestrator::DutyExecutor`]), a dry-run
+/// [`service::LoggingBackend`], and the concrete [`service::WatcherEventSource`] over the real
+/// watchers (feature-gated). std-only core; the live signing/submission backend is the outer
+/// wiring.
+pub mod service;
+
 /// libsodium consensus-verifier alignment for `Pgw` (C.1 gate (b)). Only built
 /// under the `tss-integration` feature (needs libsodium at link time).
 #[cfg(feature = "tss-integration")]

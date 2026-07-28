@@ -90,6 +90,10 @@ evm-watcher-http = ["evm-watcher", "dep:ureq"]
 beldex-watcher = ["dep:serde_json"]
 beldex-watcher-http = ["beldex-watcher", "dep:ureq"]
 
+# Autonomy: the `serve` subcommand's watcher-driven loop — both watchers over their real
+# HTTP RPCs, plus tss-integration for the A.5 memo decrypt in the mint EventSource.
+autonomy = ["beldex-watcher-http", "evm-watcher-http", "tss-integration"]
+
 [dependencies]
 # All optional; pulled in only by the features above (verified 2026-07).
 k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"], optional = true }
