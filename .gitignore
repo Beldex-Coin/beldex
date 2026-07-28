@@ -129,3 +129,4 @@ contrib/brew/Brewfile.lock.json
 /crash-reports/
 /runlog.sh
 /.debug/
+/utils/local-devnet/.ceremony/
