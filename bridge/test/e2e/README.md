@@ -171,22 +171,89 @@ wiring, not new cryptography.
 
 ---
 
-## Release loop — wBDX → BDX (not yet runnable)
+## Release loop — wBDX → BDX
 
-The reverse direction is designed and its cryptography is proven (the `Pgw` FROST sign leg
-produces a libsodium-verified ed25519 signature on the devnet), but two glue pieces remain:
+The reverse direction reuses the **existing gateway-withdrawal RPCs** — no new tx-builder code.
+The bridge's release gateway is simply a gateway whose owner key is the committee's `Pgw`
+ed25519 group key, so the gateway "owner signature" *is* a FROST aggregate ed25519 signature —
+exactly what the devnet `Pgw` sign leg already produces (libsodium-verified). The daemon builds
+and finalizes the withdrawal; the committee only supplies the signature.
 
-1. **A `Pgw`-owned funded devnet gateway** — a gateway account whose `owner_key` is the
-   committee's `Pgw` ed25519 address (installed via gateway register/re-point), holding locked
-   BDX reserves to release.
-2. **A release-tx builder** — construct and submit the gateway-withdrawal tx carrying the
-   `Pgw` signature over the release digest, so consensus validates it and releases BDX.
+Two daemon RPCs do the heavy lifting (the daemon NEVER holds an owner secret):
+- **`gateway_create_transfer`** — builds the withdrawal-to-wallet tx and returns
+  `{ unsigned_tx_blob, hash_to_sign, owner_key_type, summary }`. No signing.
+- **`gateway_submit_transfer`** — takes `{ tx_blob, signature }`, injects the owner signature
+  (the `eddsa`/ed25519 case = owner_key_type 2), verifies it against the gateway's `Pgw` owner
+  key via `finalize_gateway_withdraw_tx`, and relays.
 
-Outline once those exist:
-1. `cast send $WBDX "redeemToNative(uint256,string)" $AMOUNT "<beldex addr>" --private-key ...` — burns wBDX, emits `RedeemToNative`.
-2. Run the EVM watcher → the `ReleaseEvent` + its release digest.
-3. `BRIDGE_SIGNER_SIGN_LEG=pgw BRIDGE_SIGNER_SIGN_DIGEST=<release digest> $SIGNER sign` → ed25519 sig.
-4. Submit the gateway release tx with that sig; verify BDX arrives at the Beldex address.
+### 1. Register a `Pgw`-owned release gateway (once)
 
-These are the last two items for a full round-trip; the mint loop above already validates the
-signing → contract half end to end.
+Run the `Pgw` DKG across the committee and capture the group verifying key (the signer's `sign`
+run prints `owner_key : <group_vk hex>`; the `dkg` run persists it):
+
+```bash
+PGW_GROUP_VK=<32-byte ed25519 group key hex>
+```
+
+Register a gateway whose owner is that key (**eddsa** owner type), then note its address:
+
+```bash
+# in beldex-wallet-cli:
+register_gateway_address <gateway_secret_hex> eddsa $PGW_GROUP_VK
+RELEASE_GW=gwB...        # the bridge's release gateway (owner = the Pgw committee key)
+```
+
+### 2. Fund the gateway (locked-BDX reserve)
+
+Deposit BDX into `$RELEASE_GW` (via `bridge_deposit` or a plain `transfer` to the gateway
+address). This is the locked BDX that backs minted wBDX and is released on redemption.
+
+### 3. Burn wBDX on the EVM side
+
+```bash
+cast send $WBDX "redeemToNative(uint256,string)" $AMOUNT "<beldex recipient addr>" \
+  --rpc-url $ANVIL_RPC --private-key <wBDX holder key>   # burns wBDX, emits RedeemToNative
+```
+
+(The EVM watcher observes this and, in the autonomous flow, drives steps 4–6; for the manual
+loop the operator supplies the amount + Beldex recipient directly, from the burn.)
+
+### 4. Build the release and get the digest to sign
+
+```bash
+# daemon RPC gateway_create_transfer:
+#   { "source": "<RELEASE_GW>", "destinations": ["<beldex recipient addr>"],
+#     "amounts": [<amount>], "fee": <fee> }
+# -> { "unsigned_tx_blob": "<hex>", "hash_to_sign": "<32-byte hex>", "owner_key_type": 2, ... }
+BLOB=<unsigned_tx_blob>
+DIGEST=<hash_to_sign>
+```
+
+> Verify before signing: independently re-derive the `summary` from `unsigned_tx_blob` and
+> confirm `hash_to_sign`, the source gateway, and the total debit — never sign a bare hash.
+
+### 5. Threshold-sign the release (`Pgw`)
+
+```bash
+BRIDGE_SIGNER_SIGN_LEG=pgw BRIDGE_SIGNER_SIGN_DIGEST=$DIGEST \
+BRIDGE_SIGNER_SHARE_DIR=... BRIDGE_SIGNER_MESH_PORT_BASE=... BRIDGE_SIGNER_MN_KEY_FILE=... \
+  $SIGNER sign
+# -> Pgw signature : <64-byte ed25519 aggregate>   over digest = $DIGEST   (libsodium-verified)
+SIG=<64-byte ed25519 signature hex>
+```
+
+### 6. Submit the signed release
+
+```bash
+# daemon RPC gateway_submit_transfer:  { "tx_blob": "<BLOB>", "signature": "<SIG>" }
+# The daemon injects the eddsa signature, verifies it against the gateway's Pgw owner key,
+# and relays. BDX is released to the recipient.
+```
+
+✅ **Full round-trip:** wBDX burned on EVM → committee `Pgw` threshold ed25519 signature →
+gateway releases locked BDX on L1. The per-window **release cap** (Phase A.3) and the
+**freeze** circuit-breaker (Phase G) are enforced on submit — a frozen gateway rejects every
+withdrawal even with a valid signature.
+
+Only autonomy remains here too: wiring the EVM watcher's `RedeemToNative` observation to trigger
+the `gateway_create_transfer` → `Pgw` sign → `gateway_submit_transfer` sequence without a human.
