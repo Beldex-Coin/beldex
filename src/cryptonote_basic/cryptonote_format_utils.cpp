@@ -1389,6 +1389,22 @@ namespace cryptonote
       try {
         const_cast<transaction&>(t).rct_signatures.p.serialize_rctsig_prunable(
                 ba, t.rct_signatures.type, native_inputs, rct_outputs, mixin);
+        // Gateway proofs (HF22) are emitted immediately after rctsig_prunable in
+        // transaction::serialize_value and live in the PRUNABLE region, so this
+        // re-serialize path must reproduce them or the prunable hash will not
+        // match the blob-slice path above. This matters most for a pure-gateway
+        // withdrawal, where rct_signatures.type is Null: serialize_rctsig_prunable
+        // returns immediately for Null, so without this the prunable blob would be
+        // empty here while the blob path hashes the proof bytes.
+        // Guards mirror transaction::serialize_value exactly (!pruned, non-empty
+        // vin): without them a pruned tx or an empty-vin tx would get a 0x00
+        // empty-vector length prefix here where the wire format has no bytes at
+        // all, and the two prunable-hash paths would disagree by one byte.
+        if (!t.pruned && !t.vin.empty()
+            && (t.has_gateway_inputs()
+                || t.type == txtype::update_gateway_address
+                || t.type == txtype::register_gateway_address))
+          serialization::value(ba, const_cast<transaction&>(t).gateway_proofs);
       } catch (const std::exception& e) {
         LOG_ERROR("Failed to serialize rct signatures (prunable): " << e.what());
         return false;
@@ -1429,7 +1445,17 @@ namespace cryptonote
     }
 
     // prunable rct
-    if (t.rct_signatures.type == rct::RCTType::Null)
+    // RCTType::Null normally implies an empty prunable region, but a HF22
+    // pure-gateway withdrawal (gateway in -> gateway out) is Null and still
+    // carries gateway_proofs there. Those proofs are the sole authorization for
+    // a keyless txin_gateway, so the tx id must commit to them: only
+    // short-circuit when the prunable region is genuinely empty. This condition
+    // must stay identical to the gateway_proofs gate in
+    // transaction::serialize_value (cryptonote_basic.h).
+    if (t.rct_signatures.type == rct::RCTType::Null
+        && !(t.has_gateway_inputs()
+             || t.type == txtype::update_gateway_address
+             || t.type == txtype::register_gateway_address))
       hashes[2] = crypto::null_hash;
     else
       hashes[2] = pruned_data_hash;
@@ -1492,7 +1518,16 @@ namespace cryptonote
     }
 
     // prunable rct
-    if (t.rct_signatures.type == rct::RCTType::Null)
+    // See get_pruned_transaction_hash: a HF22 pure-gateway withdrawal is
+    // RCTType::Null yet has a non-empty prunable region (gateway_proofs), and
+    // those proofs are the only authorization for its keyless gateway input.
+    // Skipping the prunable hash here would leave the owner signature outside
+    // the tx id entirely. This condition must stay identical to the
+    // gateway_proofs gate in transaction::serialize_value (cryptonote_basic.h).
+    if (t.rct_signatures.type == rct::RCTType::Null
+        && !(t.has_gateway_inputs()
+             || t.type == txtype::update_gateway_address
+             || t.type == txtype::register_gateway_address))
     {
       hashes[2] = crypto::null_hash;
     }

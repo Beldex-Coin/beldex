@@ -680,6 +680,67 @@ namespace
       return false;
     }
 
+    // Canonical proof-container layout. The proof vector is covered by no
+    // signature (the owner signs the tx PREFIX, and gateway_proofs is not part
+    // of the prefix), so its encoding must be pinned exactly. Any spare degree
+    // of freedom here — a permuted order, or a surplus element that no rule
+    // counts — is a second, equally valid encoding of the same authorization,
+    // and therefore a second transaction with a different tx id. Since a
+    // txin_gateway has no key image, tx-id uniqueness is the ONLY replay guard,
+    // so such a variant is a replayable withdrawal that debits the gateway
+    // again; repeated with fresh padding it drains the account outright.
+    //
+    // Exact size + fixed position for every element, and reject anything else.
+    // Canonical order (matches construct_gateway_withdraw{,_to_wallet}_tx and
+    // finalize_gateway_withdraw_tx):
+    //   [ownership_proof]? [balance_proof]? [input_sig × gw_ins]
+    {
+      // Every gateway_input_sig signs the SAME tx-wide message
+      // (gateway_input_message carries no per-input index), so the positional
+      // check below pins each slot's TYPE but not its CONTENT. With two or more
+      // gateway inputs resolving to the same owner key, an external signer that
+      // emits byte-distinct signatures per slot (Schnorr nonces are random)
+      // would let a third party permute the slots: both still verify, but the
+      // tx id changes -- a replayable withdrawal. GATEWAY_TX_MAX_INPUTS == 1
+      // (enforced below in this file) makes that unreachable today.
+      static_assert(GATEWAY_TX_MAX_INPUTS == 1,
+          "raising GATEWAY_TX_MAX_INPUTS requires binding the input index into "
+          "gateway_input_message and verifying sigs[i] against input i, or the "
+          "input signatures become permutable between slots");
+
+      const bool is_descriptor_tx = tx.type == txtype::register_gateway_address
+                                 || tx.type == txtype::update_gateway_address;
+      const bool balance_required = gw_ins > 0 && non_gw_outs > 0;
+      const size_t expected = (is_descriptor_tx ? 1u : 0u) + (balance_required ? 1u : 0u) + gw_ins;
+
+      if (tx.gateway_proofs.size() != expected)
+      {
+        reason = "gateway proof count mismatch (expected " + std::to_string(expected) +
+                 ", got " + std::to_string(tx.gateway_proofs.size()) + ")";
+        return false;
+      }
+
+      size_t i = 0;
+      if (is_descriptor_tx && !std::holds_alternative<gateway_ownership_proof>(tx.gateway_proofs[i++]))
+      {
+        reason = "gateway proofs: expected the ownership proof at position 0";
+        return false;
+      }
+      if (balance_required && !std::holds_alternative<gateway_balance_proof>(tx.gateway_proofs[i++]))
+      {
+        reason = "gateway proofs: expected the balance proof at position " + std::to_string(i - 1);
+        return false;
+      }
+      for (; i < tx.gateway_proofs.size(); ++i)
+      {
+        if (!std::holds_alternative<gateway_input_sig>(tx.gateway_proofs[i]))
+        {
+          reason = "gateway proofs: expected an input signature at position " + std::to_string(i);
+          return false;
+        }
+      }
+    }
+
     // Balance proof presence: REQUIRED for gw→wallet withdrawals (gateway
     // inputs paying confidential stealth outputs — no pseudo-outs exist, so
     // the derived output masks leave a (Σmask)·G residual that must be proven
