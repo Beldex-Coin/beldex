@@ -91,6 +91,12 @@ pub mod orchestrator;
 /// wiring.
 pub mod service;
 
+/// **Autonomy live backend** — the [`service::DutyBackend`] that composes the mesh signer +
+/// submission into the mint/release flows ([`live_backend::LiveBackend`]): sign the mint and
+/// emit its relayer payload; `gateway_create_transfer` → sign → `gateway_submit_transfer` for a
+/// release. The mesh session + daemon RPC are injected seams, so the composition is unit-tested.
+pub mod live_backend;
+
 /// libsodium consensus-verifier alignment for `Pgw` (C.1 gate (b)). Only built
 /// under the `tss-integration` feature (needs libsodium at link time).
 #[cfg(feature = "tss-integration")]
