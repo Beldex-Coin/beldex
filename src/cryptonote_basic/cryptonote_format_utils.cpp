@@ -1449,13 +1449,16 @@ namespace cryptonote
     // pure-gateway withdrawal (gateway in -> gateway out) is Null and still
     // carries gateway_proofs there. Those proofs are the sole authorization for
     // a keyless txin_gateway, so the tx id must commit to them: only
-    // short-circuit when the prunable region is genuinely empty. This condition
-    // must stay identical to the gateway_proofs gate in
-    // transaction::serialize_value (cryptonote_basic.h).
-    if (t.rct_signatures.type == rct::RCTType::Null
-        && !(t.has_gateway_inputs()
-             || t.type == txtype::update_gateway_address
-             || t.type == txtype::register_gateway_address))
+    // short-circuit when the prunable region is genuinely empty.
+    //
+    // Testing has_gateway_inputs() alone is sufficient because a
+    // register_/update_gateway_address tx can never be RCTType::Null: both are
+    // is_transfer(), so blockchain.cpp's CLSAG-minimum rule rejects type < CLSAG
+    // for them (its exemption is !has_gateway_inputs(), which they fail), and
+    // check_tx_inputs rejects Null on any non-coinbase. If either of those rules
+    // ever gains an exemption for the descriptor tx types, this gate must be
+    // widened to the full gateway_proofs condition in serialize_value.
+    if (t.rct_signatures.type == rct::RCTType::Null && !t.has_gateway_inputs())
       hashes[2] = crypto::null_hash;
     else
       hashes[2] = pruned_data_hash;
@@ -1522,12 +1525,9 @@ namespace cryptonote
     // RCTType::Null yet has a non-empty prunable region (gateway_proofs), and
     // those proofs are the only authorization for its keyless gateway input.
     // Skipping the prunable hash here would leave the owner signature outside
-    // the tx id entirely. This condition must stay identical to the
-    // gateway_proofs gate in transaction::serialize_value (cryptonote_basic.h).
-    if (t.rct_signatures.type == rct::RCTType::Null
-        && !(t.has_gateway_inputs()
-             || t.type == txtype::update_gateway_address
-             || t.type == txtype::register_gateway_address))
+    // the tx id entirely. has_gateway_inputs() alone suffices -- see
+    // get_pruned_transaction_hash for why the descriptor tx types cannot be Null.
+    if (t.rct_signatures.type == rct::RCTType::Null && !t.has_gateway_inputs())
     {
       hashes[2] = crypto::null_hash;
     }
