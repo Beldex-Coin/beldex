@@ -2366,6 +2366,7 @@ gateway is thereafter operated via the owner key.)";
       std::string        owner_key_type;   // Owner key type: "schnorr" (native), "eth" (secp256k1), or "eddsa".
       std::string        owner_key;        // Hex owner key (64 for schnorr/eddsa, 66 for eth-compressed).
       std::string        meta_info;        // (Optional) descriptor meta string.
+      bool               bridge_reserve;   // (Optional) Mark this gateway a Sovereign Bridge reserve (HF23): consensus then REQUIRES every withdrawal from it to name the EVM burn it discharges (release replay guard §3.6). STICKY — cannot be cleared by a later update. Defaults to false.
 
       uint32_t           account_index;    // (Optional) Transfer from this account index. (Defaults to 0)
       std::set<uint32_t> subaddr_indices;  // (Optional) Transfer from this set of subaddresses. (Defaults to 0)

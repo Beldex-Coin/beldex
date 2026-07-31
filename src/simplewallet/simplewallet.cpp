@@ -262,7 +262,7 @@ namespace
   const char* USAGE_PRINT_LOCKED_STAKES("print_locked_stakes [key_images]");
 
   const char* USAGE_BNS_BUY_MAPPING("bns_buy_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] <name>");
-  const char* USAGE_REGISTER_GATEWAY_ADDRESS("register_gateway_address [index=<N1>[,<N2>,...]] [<priority>] <gateway_secret_hex> <owner_type: schnorr|eth|eddsa> <owner_key_hex> [meta...]");
+  const char* USAGE_REGISTER_GATEWAY_ADDRESS("register_gateway_address [index=<N1>[,<N2>,...]] [<priority>] <gateway_secret_hex> <owner_type: schnorr|eth|eddsa> <owner_key_hex> [bridge_reserve] [meta...]");
   const char* USAGE_BNS_RENEW_MAPPING("bns_renew_mapping [index=<N1>[,<N2>,...]] [<priority>] [years=1y|2y|5y|10y] <name>");
   const char* USAGE_BNS_UPDATE_MAPPING("bns_update_mapping [index=<N1>[,<N2>,...]] [<priority>] [owner=<value>] [backup_owner=<value>] [bchat_id=<value>] [belnet_id=<value>] [address=<value>] [eth=<value>] [signature=<hex_signature>] <name>");
 
@@ -3167,7 +3167,7 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
   m_cmd_binder.set_handler("register_gateway_address",
                            [this](const auto& x) { return register_gateway_address(x); },
                            tr(USAGE_REGISTER_GATEWAY_ADDRESS),
-                           tr("Register a gateway address (HF22). Burns the registration fee and stores the owner key on-chain. The gateway id is derived from <gateway_secret_hex> and the tx is self-signed with it to prove control of the id. Args: <gateway_secret_hex> <owner_type> <owner_key_hex> [meta]."));
+                           tr("Register a gateway address (HF22). Burns the registration fee and stores the owner key on-chain. The gateway id is derived from <gateway_secret_hex> and the tx is self-signed with it to prove control of the id. Args: <gateway_secret_hex> <owner_type> <owner_key_hex> [bridge_reserve] [meta]. Pass the literal token `bridge_reserve` to mark this gateway a Sovereign Bridge reserve (HF23): consensus then REQUIRES every withdrawal from it to name the EVM burn it discharges. That flag is STICKY and can never be cleared."));
 
   m_cmd_binder.set_handler("bns_renew_mapping",
                            [this](const auto& x) { return bns_renew_mapping(x); },
@@ -7243,16 +7243,43 @@ bool simple_wallet::register_gateway_address(std::vector<std::string> args)
     fail_msg_writer() << tr("owner_type must be one of: schnorr, eth, eddsa");
     return true;
   }
-  std::string meta = args.size() > 3 ? tools::join(" ", args.begin() + 3, args.end()) : std::string{};
+  // Optional `bridge_reserve` token anywhere in the trailing args: sets the STICKY
+  // HF23 descriptor flag that makes consensus require a release ref on every
+  // withdrawal from this gateway (§3.6). Irreversible — only for a real bridge reserve.
+  bool bridge_reserve = false;
+  std::vector<std::string> meta_args(args.begin() + std::min<size_t>(3, args.size()), args.end());
+  for (auto it = meta_args.begin(); it != meta_args.end();)
+  {
+    if (*it == "bridge_reserve")
+    {
+      bridge_reserve = true;
+      it = meta_args.erase(it);
+    }
+    else
+      ++it;
+  }
+  std::string meta = meta_args.empty() ? std::string{} : tools::join(" ", meta_args.begin(), meta_args.end());
   if (meta.size() >= 2 && meta.front() == '"' && meta.back() == '"')
     meta = meta.substr(1, meta.size() - 2);
+
+  if (bridge_reserve)
+  {
+    success_msg_writer() << tr("This gateway will be marked a BRIDGE RESERVE: consensus will then require\n"
+                               "every withdrawal from it to name the EVM burn it discharges. The flag is\n"
+                               "STICKY and can never be removed.");
+    if (!command_line::is_yes(input_line(tr("Proceed?"), true)))
+    {
+      fail_msg_writer() << tr("Registration cancelled.");
+      return true;
+    }
+  }
 
   SCOPED_WALLET_UNLOCK();
   std::string reason;
   std::vector<tools::wallet2::pending_tx> ptx_vector;
   try
   {
-    ptx_vector = m_wallet->create_gateway_register_tx(gateway_skey, owner_key, meta, &reason, priority, m_current_subaddress_account, subaddr_indices);
+    ptx_vector = m_wallet->create_gateway_register_tx(gateway_skey, owner_key, meta, &reason, priority, m_current_subaddress_account, subaddr_indices, bridge_reserve);
     if (ptx_vector.empty())
     {
       fail_msg_writer() << reason;

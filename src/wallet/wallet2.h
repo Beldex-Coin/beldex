@@ -1490,7 +1490,10 @@ private:
     // is the owner key that authorizes spends/updates — any of the three
     // supported types (native Schnorr `crypto::public_key`, secp256k1
     // `eth_public_key`, RFC-8032 `eddsa_public_key`); validated before building.
-    std::vector<pending_tx> create_gateway_register_tx(const crypto::secret_key& gateway_skey, const cryptonote::gateway_owner_key_v& owner_key, const std::string& meta_info, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {});
+    // `bridge_reserve`: set the STICKY descriptor flag marking this gateway a Sovereign
+    // Bridge reserve — consensus then requires a release ref on every withdrawal from it
+    // (HF23 §3.6). Irreversible; only for an actual bridge reserve gateway.
+    std::vector<pending_tx> create_gateway_register_tx(const crypto::secret_key& gateway_skey, const cryptonote::gateway_owner_key_v& owner_key, const std::string& meta_info, std::string *reason, uint32_t priority = 0, uint32_t account_index = 0, std::set<uint32_t> subaddr_indices = {}, bool bridge_reserve = false);
 
     // signature: (Optional) If set, use the signature given, otherwise by default derive the signature from the wallet spend key as an ed25519 key.
     //            The signature is derived from the hash of the previous txid blob and previous value blob of the mapping. By default this is signed using the wallet's spend key as an ed25519 keypair.

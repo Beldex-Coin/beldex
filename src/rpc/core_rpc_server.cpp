@@ -824,6 +824,14 @@ namespace cryptonote::rpc {
         json_binary_proxy{memo["enc_memo"], format} =
             std::string_view{reinterpret_cast<const char*>(x.enc_memo.data()), x.enc_memo.size()};
       }
+      void operator()(const tx_extra_gateway_release_ref& x) {
+        set("gateway_release_ref", json{
+            {"version", x.version},
+            {"chain_id", x.chain_id},
+            {"evm_txid", tools::type_to_hex(x.evm_txid)},
+            {"log_index", x.log_index},
+        });
+      }
       void operator()(const tx_extra_master_node_winner& x) { set("mn_winner", x.m_master_node_key); }
       void operator()(const tx_extra_master_node_pubkey& x) { set("mn_pubkey", x.m_master_node_key); }
       void operator()(const tx_extra_security_signature& x) { set("security_sig", tools::type_to_hex(x.m_security_signature)); }
@@ -3827,12 +3835,28 @@ namespace cryptonote::rpc {
     if (req.fee > std::numeric_limits<uint64_t>::max() - total || balance < total + req.fee)
       throw rpc_error{ERROR_WRONG_PARAM, "insufficient gateway balance for withdrawal + fee"};
 
+    // Optional release replay-guard binding (HF23): only meaningful on the
+    // wallet-destination (release) path, where the burn's recipient is paid.
+    cryptonote::tx_extra_gateway_release_ref release_ref{};
+    const bool with_ref = !req.ref_evm_txid.empty();
+    if (with_ref)
+    {
+      if (to_gateway)
+        throw rpc_error{ERROR_WRONG_PARAM, "release ref only applies to gateway->wallet withdrawals"};
+      if (!tools::hex_to_type(req.ref_evm_txid, release_ref.evm_txid))
+        throw rpc_error{ERROR_WRONG_PARAM, "ref_evm_txid must be 64-char hex"};
+      release_ref.chain_id  = req.ref_chain_id;
+      release_ref.log_index = req.ref_log_index;
+    }
+
     const auto hf_version = m_core.get_blockchain_storage().get_network_version();
     cryptonote::transaction tx;
     crypto::hash hash_to_sign;
+    crypto::secret_key tx_secret_key{};
     const bool built = to_gateway
         ? cryptonote::construct_gateway_withdraw_tx(hf_version, nettype, source_id, gw_dests, req.fee, tx, hash_to_sign)
-        : cryptonote::construct_gateway_withdraw_to_wallet_tx(hf_version, nettype, source_id, wallet_dests, req.fee, tx, hash_to_sign);
+        : cryptonote::construct_gateway_withdraw_to_wallet_tx(hf_version, nettype, source_id, wallet_dests, req.fee, tx, hash_to_sign,
+                                                              with_ref ? &release_ref : nullptr, &tx_secret_key);
     if (!built)
       throw rpc_error{ERROR_INTERNAL, "failed to construct gateway withdrawal transaction"};
 
@@ -3843,6 +3867,21 @@ namespace cryptonote::rpc {
     cmd.response["hash_to_sign"]      = tools::type_to_hex(hash_to_sign);
     cmd.response["amount"]            = total;
     cmd.response["fee"]               = req.fee;
+    if (!to_gateway)
+    {
+      // Disclosed so release verifiers can open the stealth outputs against the
+      // expected recipient (gateway_decode_withdrawal). Not a spend secret: it
+      // only reveals where this tx pays, which is exactly what verification needs.
+      cmd.response["tx_secret_key"] = tools::type_to_hex(tx_secret_key);
+    }
+    if (with_ref)
+    {
+      cmd.response["release_ref"] = json{
+          {"chain_id", release_ref.chain_id},
+          {"evm_txid", tools::type_to_hex(release_ref.evm_txid)},
+          {"log_index", release_ref.log_index},
+      };
+    }
 
     // Decode the built blob back into a signer-verifiable summary. The owner (or
     // its external signer) should re-derive this independently from the returned
@@ -3937,6 +3976,104 @@ namespace cryptonote::rpc {
   }
 
   //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GATEWAY_DECODE_WITHDRAWAL& cmd, rpc_context context)
+  {
+    auto& req = cmd.request;
+    const auto nettype = m_core.get_nettype();
+
+    if (!oxenc::is_hex(req.tx_blob))
+      throw rpc_error{ERROR_WRONG_PARAM, "tx_blob is not valid hex"};
+    cryptonote::transaction tx;
+    if (!cryptonote::parse_and_validate_tx_from_blob(oxenc::from_hex(req.tx_blob), tx))
+      throw rpc_error{ERROR_WRONG_PARAM, "failed to parse tx_blob"};
+
+    // The signer-verifiable summary: source, visible debit, declared fee, and
+    // the hash recomputed from THIS blob (the R5 ground truth — never trust a
+    // leader-stated hash).
+    cryptonote::gateway_withdraw_summary sum{};
+    std::string sreason;
+    if (!cryptonote::summarize_gateway_withdraw(nettype, tx, sum, sreason))
+      throw rpc_error{ERROR_WRONG_PARAM, "not a gateway withdrawal: " + sreason};
+
+    cmd.response["source_gateway_id"]      = tools::type_to_hex(sum.source_gateway_id);
+    cmd.response["source_gateway_address"] = cryptonote::get_gateway_address_as_str(nettype, sum.source_gateway_id);
+    cmd.response["total_debit"]            = sum.total_debit;
+    cmd.response["fee"]                    = sum.fee;
+    cmd.response["hash_to_sign"]           = tools::type_to_hex(sum.hash_to_sign);
+    cmd.response["to_wallet"]              = sum.to_wallet;
+
+    // Any carried release replay-guard ref (HF23) — the R1/R6 fields.
+    {
+      const auto refs = cryptonote::extract_gateway_release_refs(tx);
+      if (!refs.empty())
+        cmd.response["release_ref"] = json{
+            {"chain_id", refs.front().chain_id},
+            {"evm_txid", tools::type_to_hex(refs.front().evm_txid)},
+            {"log_index", refs.front().log_index},
+        };
+    }
+
+    // With the builder-disclosed tx key + the expected recipient, open the
+    // stealth outputs (R2/R3): every output must derive to `address`, and each
+    // ECDH amount must decode + re-commit to the stored output commitment.
+    if (!req.tx_key.empty() && !req.address.empty())
+    {
+      if (!sum.to_wallet)
+        throw rpc_error{ERROR_WRONG_PARAM, "tx_key/address verification only applies to gateway->wallet withdrawals"};
+      crypto::secret_key tx_key{};
+      if (!tools::hex_to_type(req.tx_key, tx_key))
+        throw rpc_error{ERROR_WRONG_PARAM, "tx_key must be 64-char hex"};
+      cryptonote::address_parse_info ainfo{};
+      if (!cryptonote::get_account_address_from_str(ainfo, nettype, req.address) || ainfo.is_subaddress)
+        throw rpc_error{ERROR_WRONG_PARAM, "invalid (or subaddress) expected recipient address"};
+
+      crypto::key_derivation derivation;
+      if (!crypto::generate_key_derivation(ainfo.address.m_view_public_key, tx_key, derivation))
+        throw rpc_error{ERROR_WRONG_PARAM, "key derivation failed (wrong tx_key?)"};
+
+      hw::device& hwdev = hw::get_device("default");
+      bool all_match = true;
+      uint64_t paid = 0;
+      for (size_t i = 0; i < tx.vout.size(); ++i)
+      {
+        const auto* tk = std::get_if<cryptonote::txout_to_key>(&tx.vout[i].target);
+        if (!tk) { all_match = false; break; }
+        crypto::public_key expected_key{};
+        if (!crypto::derive_public_key(derivation, i, ainfo.address.m_spend_public_key, expected_key) ||
+            expected_key != tk->key)
+        {
+          all_match = false;
+          break;
+        }
+        // Decode the ECDH amount with Hs(derivation, i) and verify it re-commits
+        // to the stored output commitment (so the decoded value is authentic).
+        if (tx.rct_signatures.ecdhInfo.size() <= i || tx.rct_signatures.outPk.size() <= i)
+        {
+          all_match = false;
+          break;
+        }
+        crypto::secret_key amount_key;
+        crypto::derivation_to_scalar(derivation, i, amount_key);
+        rct::ecdhTuple ecdh = tx.rct_signatures.ecdhInfo[i];
+        hwdev.ecdhDecode(ecdh, rct::sk2rct(amount_key), true /* v2 */);
+        const uint64_t amount = rct::h2d(ecdh.amount);
+        if (!rct::equalKeys(rct::commit(amount, ecdh.mask), tx.rct_signatures.outPk[i].mask))
+        {
+          all_match = false;
+          break;
+        }
+        if (paid > std::numeric_limits<uint64_t>::max() - amount)
+          throw rpc_error{ERROR_WRONG_PARAM, "decoded amount overflow"};
+        paid += amount;
+      }
+      cmd.response["dest_all_outputs_match"] = all_match;
+      cmd.response["dest_amount"]            = all_match ? paid : uint64_t{0};
+    }
+
+    cmd.response["status"] = STATUS_OK;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
   namespace
   {
     // Resolve a gwB… address or 64-char hex string to a gateway id.
@@ -3946,6 +4083,50 @@ namespace cryptonote::rpc {
       if (cryptonote::get_gateway_address_from_str(info, nettype, s)) { out = info.gateway_id; return true; }
       return tools::hex_to_type(s, out);
     }
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------------
+  void core_rpc_server::invoke(GATEWAY_RELEASE_REF_STATUS& cmd, rpc_context context)
+  {
+    auto& req = cmd.request;
+    const auto nettype = m_core.get_nettype();
+
+    crypto::public_key gw_id{};
+    if (!resolve_gateway_id(nettype, req.gateway_id, gw_id))
+      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_id (expected gwB… address or 64-char hex)"};
+    if (req.chain_ids.size() != req.evm_txids.size())
+      throw rpc_error{ERROR_WRONG_PARAM, "chain_ids and evm_txids must be the same length"};
+    if (!req.log_indices.empty() && req.log_indices.size() != req.chain_ids.size())
+      throw rpc_error{ERROR_WRONG_PARAM, "log_indices, when given, must match chain_ids in length"};
+    constexpr size_t MAX_REFS = 512; // bound the per-call work
+    if (req.chain_ids.size() > MAX_REFS)
+      throw rpc_error{ERROR_WRONG_PARAM, "too many refs in one call (max 512)"};
+
+    auto& db = m_core.get_blockchain_storage().get_db();
+    cryptonote::gateway_account_data acct;
+    const bool exists = cryptonote::load_gateway_account(db, gw_id, acct);
+
+    auto discharged = json::array();
+    for (size_t i = 0; i < req.chain_ids.size(); ++i)
+    {
+      crypto::hash txid{};
+      if (!tools::hex_to_type(req.evm_txids[i], txid))
+        throw rpc_error{ERROR_WRONG_PARAM, "evm_txids[" + std::to_string(i) + "] must be 64-char hex"};
+      const uint32_t log_index = req.log_indices.empty() ? 0u : req.log_indices[i];
+      const crypto::hash ref =
+          cryptonote::gateway_release_ref_hash(req.chain_ids[i], txid, log_index);
+      discharged.push_back(exists && acct.release_ref_recorded(ref));
+    }
+
+    // The retention floor: refs below this window have been pruned, so a `false`
+    // for an older burn is "not retained", not "never released".
+    uint64_t retained_from = 0;
+    for (const auto& w : acct.release_ref_windows)
+      if (retained_from == 0 || w.window_id < retained_from) retained_from = w.window_id;
+
+    cmd.response["discharged"]           = std::move(discharged);
+    cmd.response["retained_from_window"] = retained_from;
+    cmd.response["status"]               = STATUS_OK;
   }
 
   //------------------------------------------------------------------------------------------------------------------------------
@@ -3967,6 +4148,9 @@ namespace cryptonote::rpc {
     cmd.response["registered"]     = exists;
     cmd.response["address"]        = cryptonote::get_gateway_address_as_str(nettype, gw_id);
     cmd.response["frozen"]         = exists ? (acct.frozen != 0) : false;
+    // HF23 §3.6: when set, consensus requires every withdrawal from this gateway to
+    // name the EVM burn it discharges (sticky — cannot be cleared).
+    cmd.response["bridge_reserve"] = exists && acct.latest_descriptor().is_bridge_reserve();
     cmd.response["gateway_balance"]= exists ? acct.balance_for(crypto::null_aid) : uint64_t{0};
     cmd.response["window_id"]      = window;
     cmd.response["window_blocks"]  = cryptonote::GATEWAY_RELEASE_WINDOW_BLOCKS;

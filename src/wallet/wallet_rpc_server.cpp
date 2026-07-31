@@ -3301,7 +3301,8 @@ namespace {
     std::string reason;
     std::vector<wallet2::pending_tx> ptx_vector =
         m_wallet->create_gateway_register_tx(gateway_skey, owner_key, req.meta_info, &reason,
-                                             req.priority, req.account_index, req.subaddr_indices);
+                                             req.priority, req.account_index, req.subaddr_indices,
+                                             req.bridge_reserve);
     if (ptx_vector.empty())
       throw wallet_rpc_error{error_code::TX_NOT_POSSIBLE, "Failed to create gateway registration transaction: " + reason};
 

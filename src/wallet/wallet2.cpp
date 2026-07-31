@@ -9378,7 +9378,8 @@ std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypt
                                                                     std::string *reason,
                                                                     uint32_t priority,
                                                                     uint32_t account_index,
-                                                                    std::set<uint32_t> subaddr_indices)
+                                                                    std::set<uint32_t> subaddr_indices,
+                                                                    bool bridge_reserve)
 {
   auto hf_version = get_hard_fork_version();
   if (!hf_version)
@@ -9435,6 +9436,14 @@ std::vector<wallet2::pending_tx> wallet2::create_gateway_register_tx(const crypt
   op.address_id           = gateway_id;
   op.descriptor.owner_key = owner_key;
   op.descriptor.meta_info = meta_info;
+  if (bridge_reserve)
+  {
+    // Descriptor v1 carries `flags`; the BRIDGE_RESERVE bit makes consensus require a
+    // release ref on every withdrawal from this gateway (HF23 §3.6) and is STICKY —
+    // no later update can clear it. Only set it on an actual bridge reserve gateway.
+    op.descriptor.version = 1;
+    op.descriptor.flags |= cryptonote::GATEWAY_FLAG_BRIDGE_RESERVE;
+  }
 
   std::vector<uint8_t> extra;
   cryptonote::add_gateway_descriptor_operation_to_tx_extra(extra, op);

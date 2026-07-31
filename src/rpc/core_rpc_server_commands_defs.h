@@ -2774,6 +2774,83 @@ namespace cryptonote::rpc {
       std::vector<std::string> destinations;
       std::vector<uint64_t> amounts;
       uint64_t fee = 0;
+      // Optional release replay-guard binding (HF23, GATEWAY_RELEASE_REPLAY_GUARD.md):
+      // when `ref_evm_txid` is set, a tx_extra_gateway_release_ref naming the source
+      // burn is attached inside the signed prefix, so consensus dedupes the burn.
+      // A bridge release MUST set these; a plain gateway withdrawal omits them.
+      uint64_t    ref_chain_id = 0;
+      std::string ref_evm_txid;    // 64-char hex; empty = no ref
+      uint32_t    ref_log_index = 0;
+    } request;
+  };
+
+  /// RPC: gateway/gateway_decode_withdrawal
+  ///
+  /// Decode an unsigned gateway withdrawal blob into a **verifier-checkable view**
+  /// (the R1–R6 inspection surface for the bridge committee: each member calls
+  /// this on its OWN daemon to judge a session leader's proposed release —
+  /// AUTONOMY_SESSION_COORDINATION.md §5). Always returns the signer summary
+  /// (source, total debit, declared fee, recomputed hash_to_sign) plus any
+  /// carried release ref. When `tx_key` + `address` are supplied (the builder
+  /// discloses the tx secret key for exactly this purpose), the stealth outputs
+  /// are opened: each output is checked to pay `address` and its ECDH amount is
+  /// decoded + commitment-verified, so the caller learns whether ALL outputs pay
+  /// the expected recipient and the exact paid amount.
+  ///
+  /// Inputs:
+  /// - `tx_blob` -- hex of the unsigned tx from `gateway_create_transfer`.
+  /// - `tx_key` -- optional 64-char hex tx secret key (from the builder).
+  /// - `address` -- optional expected recipient wallet address.
+  ///
+  /// Output:
+  /// - `source_gateway_id`, `total_debit`, `fee`, `hash_to_sign`, `to_wallet`.
+  /// - `release_ref` -- {chain_id, evm_txid, log_index} if carried.
+  /// - `dest_all_outputs_match` -- every stealth output pays `address` (iff tx_key+address given).
+  /// - `dest_amount` -- Σ decoded amounts paid to `address`.
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GATEWAY_DECODE_WITHDRAWAL : PUBLIC
+  {
+    static constexpr auto names() { return NAMES("gateway_decode_withdrawal"); }
+    struct request_parameters
+    {
+      std::string tx_blob;
+      std::string tx_key;
+      std::string address;
+    } request;
+  };
+
+  /// RPC: gateway/gateway_release_ref_status
+  ///
+  /// Whether a source EVM burn has already been discharged by a release from
+  /// `gateway_id` (the HF23 replay guard's recorded set —
+  /// GATEWAY_RELEASE_REPLAY_GUARD.md). Lets a restarting bridge signer reconcile
+  /// settled release duties against consensus instead of re-opening sessions for
+  /// work already on-chain.
+  ///
+  /// NOTE the retention horizon: refs are pruned below the previous release
+  /// window, so `discharged=false` for a very old burn means "not in the retained
+  /// set", not "provably never released". `retained_from_window` is returned so
+  /// the caller can tell the two apart.
+  ///
+  /// Inputs (three parallel arrays, one entry per burn to check):
+  /// - `gateway_id` -- gwB… address or 64-char hex id of the bridge gateway.
+  /// - `chain_ids` -- source EVM chain id of each burn.
+  /// - `evm_txids` -- 64-char hex burn tx id of each burn.
+  /// - `log_indices` -- (optional) burn log index of each; defaults to all-zero.
+  ///
+  /// Output:
+  /// - `discharged` -- parallel to the inputs: true iff recorded as released.
+  /// - `retained_from_window` -- lowest release window still retained (0 if none).
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GATEWAY_RELEASE_REF_STATUS : PUBLIC
+  {
+    static constexpr auto names() { return NAMES("gateway_release_ref_status"); }
+    struct request_parameters
+    {
+      std::string gateway_id;
+      std::vector<uint64_t> chain_ids;
+      std::vector<std::string> evm_txids;
+      std::vector<uint32_t> log_indices;
     } request;
   };
 
@@ -2993,6 +3070,8 @@ namespace cryptonote::rpc {
     GET_GATEWAY_HISTORY,
     GATEWAY_CREATE_TRANSFER,
     GATEWAY_SUBMIT_TRANSFER,
+    GATEWAY_DECODE_WITHDRAWAL,
+    GATEWAY_RELEASE_REF_STATUS,
     BRIDGE_GET_RESERVES,
     GATEWAY_GET_HISTORY,
     BRIDGE_GET_COMMITTEE,

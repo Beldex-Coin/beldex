@@ -75,12 +75,18 @@ namespace
   }
 
   // Register a gateway directly in the DB with a native-Schnorr owner key.
-  crypto::public_key seed_gateway(MemGatewayDB& db, uint64_t balance = 0)
+  // `bridge_reserve` sets the HF23 sticky flag that makes release refs mandatory.
+  crypto::public_key seed_gateway(MemGatewayDB& db, uint64_t balance = 0, bool bridge_reserve = false)
   {
     const crypto::public_key id = rand_pubkey();
     gateway_account_data acct{};
     gateway_descriptor_base d{};
     d.owner_key = rand_pubkey(); // Schnorr owner (identity only for these tests)
+    if (bridge_reserve)
+    {
+      d.version = 1;
+      d.flags |= GATEWAY_FLAG_BRIDGE_RESERVE;
+    }
     acct.descriptor_history.push_back(d);
     if (balance)
       acct.balances.push_back(gateway_balance_entry{crypto::null_aid, balance});
@@ -1134,6 +1140,209 @@ TEST(GatewayBridgeCap, rewind_is_byte_exact)
 
   ASSERT_TRUE(rewind_gateways_from_transactions(db, {tx}, h, true, &reason)) << reason;
   EXPECT_EQ(blob_of(gw, db), before) << "rewind must restore a byte-identical blob (S9)";
+}
+
+// --------------------------------------------------------------------------
+// Release replay guard (GATEWAY_RELEASE_REPLAY_GUARD.md): a withdrawal carrying
+// a tx_extra_gateway_release_ref records the discharged burn; a second release
+// for the same burn is block-invalid; rewind is an exact inverse; refs are
+// window-bucketed and lazily pruned like the release-cap windows.
+// --------------------------------------------------------------------------
+namespace
+{
+  transaction make_withdrawal_with_ref(const crypto::public_key& src, uint64_t amount,
+                                       uint64_t chain_id, const crypto::hash& evm_txid,
+                                       uint32_t log_index = 0)
+  {
+    transaction tx = make_withdrawal(src, amount);
+    tx_extra_gateway_release_ref rf{};
+    rf.chain_id  = chain_id;
+    rf.evm_txid  = evm_txid;
+    rf.log_index = log_index;
+    add_gateway_release_ref_to_tx_extra(tx.extra, rf);
+    return tx;
+  }
+
+  crypto::hash burn_txid(uint8_t b)
+  {
+    crypto::hash h{};
+    memset(h.data, b, sizeof(h.data));
+    return h;
+  }
+}
+
+TEST(GatewayBridgeReleaseRef, ref_hash_is_input_sensitive)
+{
+  const crypto::hash a = gateway_release_ref_hash(1, burn_txid(0x11), 0);
+  EXPECT_EQ(a, gateway_release_ref_hash(1, burn_txid(0x11), 0));
+  EXPECT_NE(a, gateway_release_ref_hash(2, burn_txid(0x11), 0)) << "chain-sensitive";
+  EXPECT_NE(a, gateway_release_ref_hash(1, burn_txid(0x12), 0)) << "txid-sensitive";
+  EXPECT_NE(a, gateway_release_ref_hash(1, burn_txid(0x11), 1)) << "log-index-sensitive";
+}
+
+TEST(GatewayBridgeReleaseRef, first_release_records_and_replay_is_rejected)
+{
+  MemGatewayDB db;
+  const crypto::public_key gw = seed_gateway(db, 1'000'000);
+  const uint64_t h0 = 10 * GATEWAY_RELEASE_WINDOW_BLOCKS + 5;
+  std::string reason;
+
+  // First release for burn 0x11: accepted + recorded (version bumps to 2).
+  {
+    auto tx = make_withdrawal_with_ref(gw, 1000, /*chain*/1, burn_txid(0x11));
+    ASSERT_TRUE(append_gateways_from_transactions(db, {tx}, h0, /*bridge_active=*/true, &reason)) << reason;
+    gateway_account_data a; ASSERT_TRUE(load_gateway_account(db, gw, a));
+    EXPECT_EQ(a.version, 2);
+    EXPECT_TRUE(a.release_ref_recorded(gateway_release_ref_hash(1, burn_txid(0x11), 0)));
+  }
+
+  // A DIFFERENT tx (different amount → different txid) replaying the same burn
+  // in a later block is rejected — the double-pay this guard exists to stop.
+  {
+    auto tx = make_withdrawal_with_ref(gw, 999, 1, burn_txid(0x11));
+    EXPECT_FALSE(append_gateways_from_transactions(db, {tx}, h0 + 1, true, &reason));
+    EXPECT_NE(reason.find("replays"), std::string::npos) << reason;
+  }
+
+  // A release for a different burn is fine.
+  {
+    auto tx = make_withdrawal_with_ref(gw, 999, 1, burn_txid(0x22));
+    ASSERT_TRUE(append_gateways_from_transactions(db, {tx}, h0 + 1, true, &reason)) << reason;
+  }
+
+  // Same txid on a different chain is a different burn — fine.
+  {
+    auto tx = make_withdrawal_with_ref(gw, 998, 2, burn_txid(0x11));
+    ASSERT_TRUE(append_gateways_from_transactions(db, {tx}, h0 + 2, true, &reason)) << reason;
+  }
+}
+
+TEST(GatewayBridgeReleaseRef, same_block_double_discharge_is_rejected_atomically)
+{
+  MemGatewayDB db;
+  const crypto::public_key gw = seed_gateway(db, 1'000'000);
+  const std::string before = blob_of(gw, db);
+  const uint64_t h = 10 * GATEWAY_RELEASE_WINDOW_BLOCKS + 5;
+  std::string reason;
+
+  auto tx1 = make_withdrawal_with_ref(gw, 1000, 1, burn_txid(0x33));
+  auto tx2 = make_withdrawal_with_ref(gw, 999, 1, burn_txid(0x33)); // same burn!
+  EXPECT_FALSE(append_gateways_from_transactions(db, {tx1, tx2}, h, true, &reason));
+  EXPECT_EQ(blob_of(gw, db), before) << "failed append must write nothing (atomic)";
+}
+
+TEST(GatewayBridgeReleaseRef, rewind_is_byte_exact_and_reallows_the_burn)
+{
+  MemGatewayDB db;
+  const crypto::public_key gw = seed_gateway(db, 1'000'000);
+  const std::string before = blob_of(gw, db);
+  const uint64_t h = 10 * GATEWAY_RELEASE_WINDOW_BLOCKS + 5;
+  std::string reason;
+
+  auto tx = make_withdrawal_with_ref(gw, 1000, 1, burn_txid(0x44));
+  ASSERT_TRUE(append_gateways_from_transactions(db, {tx}, h, true, &reason)) << reason;
+  EXPECT_NE(blob_of(gw, db), before);
+
+  // Reorg the block out: the blob is byte-identical (S9) — so the same burn is
+  // releasable again (nothing was permanently consumed by an orphaned block).
+  ASSERT_TRUE(rewind_gateways_from_transactions(db, {tx}, h, true, &reason)) << reason;
+  EXPECT_EQ(blob_of(gw, db), before) << "rewind must restore a byte-identical blob";
+  ASSERT_TRUE(append_gateways_from_transactions(db, {tx}, h, true, &reason)) << reason;
+}
+
+TEST(GatewayBridgeReleaseRef, refless_withdrawal_still_valid_and_untouched_by_guard)
+{
+  MemGatewayDB db;
+  const crypto::public_key gw = seed_gateway(db, 1'000'000);
+  const uint64_t h = 10 * GATEWAY_RELEASE_WINDOW_BLOCKS + 5;
+  std::string reason;
+
+  // The ref is optional (hardened mandatory-ref mode is a follow-up): a plain
+  // withdrawal applies as before and never creates v2 state.
+  auto tx = make_withdrawal(gw, 1000);
+  ASSERT_TRUE(append_gateways_from_transactions(db, {tx}, h, true, &reason)) << reason;
+  gateway_account_data a; ASSERT_TRUE(load_gateway_account(db, gw, a));
+  EXPECT_EQ(a.version, 1);
+  EXPECT_TRUE(a.release_ref_windows.empty());
+}
+
+// §3.6 mandatory-ref rule: a gateway flagged BRIDGE_RESERVE may not be withdrawn
+// from without a release ref — closing the "omit the ref to skip the dedup" bypass.
+TEST(GatewayBridgeReleaseRef, bridge_reserve_gateway_requires_a_ref)
+{
+  MemGatewayDB db;
+  const crypto::public_key flagged = seed_gateway(db, 1'000'000, /*bridge_reserve=*/true);
+  const crypto::public_key plain   = seed_gateway(db, 1'000'000, /*bridge_reserve=*/false);
+  const uint64_t h = 10 * GATEWAY_RELEASE_WINDOW_BLOCKS + 5;
+  std::string reason;
+
+  // Flagged + no ref → the block is invalid (authoritative apply-time check).
+  {
+    auto tx = make_withdrawal(flagged, 1000);
+    EXPECT_FALSE(append_gateways_from_transactions(db, {tx}, h, /*bridge_active=*/true, &reason));
+    EXPECT_NE(reason.find("no release ref"), std::string::npos) << reason;
+  }
+  // Flagged + ref → accepted.
+  {
+    auto tx = make_withdrawal_with_ref(flagged, 1000, 1, burn_txid(0x81));
+    ASSERT_TRUE(append_gateways_from_transactions(db, {tx}, h, true, &reason)) << reason;
+  }
+  // Unflagged + no ref → still fine (the rule is opt-in per gateway).
+  {
+    auto tx = make_withdrawal(plain, 1000);
+    ASSERT_TRUE(append_gateways_from_transactions(db, {tx}, h, true, &reason)) << reason;
+  }
+  // Pre-HF23 (bridge inactive) the rule does not apply at all.
+  {
+    auto tx = make_withdrawal(flagged, 1000);
+    ASSERT_TRUE(append_gateways_from_transactions(db, {tx}, h, /*bridge_active=*/false, &reason))
+        << reason;
+  }
+}
+
+TEST(GatewayBridgeReleaseRef, bridge_reserve_flag_serializes_and_is_version_gated)
+{
+  // A v1 descriptor round-trips its flags; a v0 one has no flags field at all, so an
+  // old blob stays byte-identical (backward compatibility).
+  gateway_descriptor_base v1{};
+  v1.version = 1;
+  v1.owner_key = rand_pubkey();
+  v1.flags = GATEWAY_FLAG_BRIDGE_RESERVE;
+  EXPECT_TRUE(v1.is_bridge_reserve());
+  auto blob = serialization::dump_binary(v1);
+  gateway_descriptor_base back{};
+  // `parse_binary` returns void and throws on malformed input (see binary_utils.h).
+  ASSERT_NO_THROW(serialization::parse_binary(blob, back));
+  EXPECT_EQ(back.version, 1);
+  EXPECT_TRUE(back.is_bridge_reserve());
+
+  gateway_descriptor_base v0{};
+  v0.owner_key = v1.owner_key;
+  EXPECT_FALSE(v0.is_bridge_reserve());
+  auto blob0 = serialization::dump_binary(v0);
+  EXPECT_LT(blob0.size(), blob.size()) << "v0 carries no flags byte";
+}
+
+TEST(GatewayBridgeReleaseRef, ref_windows_prune_like_cap_windows)
+{
+  MemGatewayDB db;
+  const crypto::public_key gw = seed_gateway(db, 10'000'000);
+  const uint64_t W = GATEWAY_RELEASE_WINDOW_BLOCKS;
+  std::string reason;
+
+  // Record in window 10, then in window 12: the window-10 bucket (older than
+  // the immediately-previous window) is pruned — the retention horizon.
+  auto tx10 = make_withdrawal_with_ref(gw, 1000, 1, burn_txid(0x55));
+  ASSERT_TRUE(append_gateways_from_transactions(db, {tx10}, 10 * W + 1, true, &reason)) << reason;
+  auto tx12 = make_withdrawal_with_ref(gw, 1000, 1, burn_txid(0x66));
+  ASSERT_TRUE(append_gateways_from_transactions(db, {tx12}, 12 * W + 1, true, &reason)) << reason;
+
+  gateway_account_data a; ASSERT_TRUE(load_gateway_account(db, gw, a));
+  EXPECT_FALSE(a.release_ref_recorded(gateway_release_ref_hash(1, burn_txid(0x55), 0)))
+      << "window-10 refs pruned once window 12 is recorded";
+  EXPECT_TRUE(a.release_ref_recorded(gateway_release_ref_hash(1, burn_txid(0x66), 0)));
+  ASSERT_EQ(a.release_ref_windows.size(), 1u);
+  EXPECT_EQ(a.release_ref_windows[0].window_id, 12u);
 }
 
 // --------------------------------------------------------------------------
