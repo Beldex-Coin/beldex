@@ -292,13 +292,21 @@ namespace cryptonote
   // gateway_balance_proof pinning the output-mask residual to G. Sign the
   // returned hash_to_sign with the gateway owner key, then attach it via
   // finalize_gateway_withdraw_tx (same nettype).
+  //
+  // `release_ref` (optional): attach a tx_extra_gateway_release_ref naming the
+  // source EVM burn inside the signed prefix (HF23 replay guard — the committee's
+  // owner signature then covers the binding). `tx_secret_key_out` (optional):
+  // receive the tx secret key so the builder can disclose it to release verifiers
+  // (gateway_decode_withdrawal opens the stealth outputs with it, R2/R3).
   bool construct_gateway_withdraw_to_wallet_tx(hf hf_version,
                                                network_type nettype,
                                                const crypto::public_key& source_gateway_id,
                                                const std::vector<gateway_wallet_destination>& destinations,
                                                uint64_t fee,
                                                transaction& tx,
-                                               crypto::hash& hash_to_sign);
+                                               crypto::hash& hash_to_sign,
+                                               const tx_extra_gateway_release_ref* release_ref = nullptr,
+                                               crypto::secret_key* tx_secret_key_out = nullptr);
 
   //---------------------------------------------------------------
   crypto::public_key get_destination_view_key_pub(const std::vector<tx_destination_entry> &destinations, const std::optional<cryptonote::tx_destination_entry>& change_addr);

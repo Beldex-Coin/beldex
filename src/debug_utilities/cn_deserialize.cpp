@@ -125,6 +125,10 @@ struct extra_printer {
     std::cout << "Bridge rotation ack: chain " << x.chain_id << " -> key epoch " << x.key_epoch
               << " (" << x.observers.size() << " observers)";
   }
+  void operator()(const tx_extra_gateway_release_ref& x) {
+    std::cout << "Gateway release ref: chain " << x.chain_id << " burn " << x.evm_txid
+              << " log " << x.log_index;
+  }
   template <typename T> void operator()(const T&) { std::cout << "unknown"; }
 };
 

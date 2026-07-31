@@ -100,6 +100,33 @@ namespace
       v.push_back(m);
     return v;
   }
+}
+
+std::vector<tx_extra_gateway_release_ref> extract_gateway_release_refs(const transaction& tx)
+{
+  std::vector<tx_extra_gateway_release_ref> v;
+  size_t skip = 0;
+  tx_extra_gateway_release_ref r{};
+  while (get_field_from_tx_extra(tx.extra, r, skip++))
+    v.push_back(r);
+  return v;
+}
+
+crypto::hash gateway_release_ref_hash(uint64_t chain_id, const crypto::hash& evm_txid, uint32_t log_index)
+{
+  std::string buf;
+  buf.reserve(hashkey::GW_RELEASE_REF.size() + 8 + sizeof(evm_txid) + 4);
+  buf.append(hashkey::GW_RELEASE_REF);
+  for (int i = 0; i < 8; ++i)
+    buf.push_back(static_cast<char>((chain_id >> (8 * i)) & 0xff)); // u64 LE
+  buf.append(reinterpret_cast<const char*>(&evm_txid), sizeof(evm_txid));
+  for (int i = 0; i < 4; ++i)
+    buf.push_back(static_cast<char>((log_index >> (8 * i)) & 0xff)); // u32 LE
+  return crypto::cn_fast_hash(buf.data(), buf.size());
+}
+
+namespace
+{
 
   bool same_descriptor(const gateway_descriptor_base& a, const gateway_descriptor_base& b)
   {
@@ -734,7 +761,7 @@ crypto::hash gateway_ownership_message(network_type nettype, const transaction& 
 
 bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettype, const transaction& tx,
                                            const tx_extra_gateway_descriptor_operation& op,
-                                           std::string& reason)
+                                           hf hf_version, std::string& reason)
 {
   if (!is_valid_gateway_owner_key(op.descriptor.owner_key))
   {
@@ -749,11 +776,23 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
              std::to_string(GATEWAY_DESCRIPTOR_MAX_META_INFO_SIZE) + " bytes";
     return false;
   }
-  // Reject unknown descriptor versions (only v0 exists at HF22); future formats
-  // must be gated by a future hard fork, not silently accepted.
-  if (op.descriptor.version != 0)
+  // Reject unknown descriptor versions: v0 at HF22, v1 (adds `flags`) from HF23.
+  // Future formats must be gated by a future hard fork, not silently accepted.
+  if (op.descriptor.version > (hf_version >= feature::BRIDGE ? 1 : 0))
   {
     reason = "unsupported gateway descriptor version";
+    return false;
+  }
+  // A v0 descriptor has no flags field; a v1 one must only set known bits, so an
+  // unknown bit can never be interpreted as meaning-carrying by a future release.
+  if (op.descriptor.version == 0 && op.descriptor.flags != 0)
+  {
+    reason = "gateway descriptor v0 must not carry flags";
+    return false;
+  }
+  if (op.descriptor.flags & ~static_cast<uint8_t>(GATEWAY_FLAG_BRIDGE_RESERVE))
+  {
+    reason = "gateway descriptor sets unknown flag bits";
     return false;
   }
 
@@ -888,6 +927,15 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
       if (!verify_gateway_owner_signature(acct.latest_descriptor().owner_key, proof->sig, msg))
       {
         reason = "gateway ownership proof verification failed";
+        return false;
+      }
+
+      // The BRIDGE_RESERVE flag is STICKY (HF23): an update may set it but never
+      // clear it. Otherwise the mandatory-release-ref rule (§3.6) would be trivially
+      // bypassable — clear the flag, withdraw without a ref, set it back.
+      if (acct.latest_descriptor().is_bridge_reserve() && !op.descriptor.is_bridge_reserve())
+      {
+        reason = "gateway bridge-reserve flag cannot be cleared by an update";
         return false;
       }
       return true;
@@ -1199,18 +1247,19 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
                                                std::string& reason)
 {
   // ---- HF23 Sovereign Bridge governance & routing fields -------------------
-  const auto freezes  = extract_gateway_freezes(tx);
-  const auto repoints = extract_gateway_repoints(tx);
-  const auto memos    = extract_gateway_memos(tx);
+  const auto freezes      = extract_gateway_freezes(tx);
+  const auto repoints     = extract_gateway_repoints(tx);
+  const auto memos        = extract_gateway_memos(tx);
+  const auto release_refs = extract_gateway_release_refs(tx);
 
   const bool has_governance = !freezes.empty() || !repoints.empty();
 
   if (hf_version < feature::BRIDGE)
   {
     // Pre-HF23: none of the bridge fields may appear.
-    if (has_governance || !memos.empty())
+    if (has_governance || !memos.empty() || !release_refs.empty())
     {
-      reason = "gateway governance / deposit-memo field before HF23";
+      reason = "gateway governance / deposit-memo / release-ref field before HF23";
       return false;
     }
   }
@@ -1235,7 +1284,7 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
           tx_has_gateway_constructs(tx) ||
           std::any_of(tx.vout.begin(), tx.vout.end(),
                       [](const tx_out& o){ return std::holds_alternative<tx_out_gateway>(o.target); }) ||
-          !memos.empty();
+          !memos.empty() || !release_refs.empty();
       if (has_gw_construct)
       {
         reason = "gateway governance op must not ride alongside other gateway constructs";
@@ -1271,6 +1320,69 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
       {
         reason = "gateway deposit memo targets an unregistered gateway";
         return false;
+      }
+    }
+
+    // Mandatory release ref for a bridge-reserve gateway (HF23, §3.6): a withdrawal
+    // from a flagged gateway MUST name the burn it discharges, so the replay guard
+    // cannot be sidestepped by simply omitting the ref. Authoritative enforcement is
+    // at block apply; this is the early (relay-time) reject.
+    if (release_refs.empty())
+    {
+      for (const auto& in : tx.vin)
+      {
+        const auto* g = std::get_if<txin_gateway>(&in);
+        if (!g)
+          continue;
+        gateway_account_data acct;
+        if (load_gateway_account(db, g->gateway_addr, acct) && !acct.descriptor_history.empty() &&
+            acct.latest_descriptor().is_bridge_reserve())
+        {
+          reason = "withdrawal from a bridge-reserve gateway must carry a release ref";
+          return false;
+        }
+      }
+    }
+
+    // Release replay guard (HF23, GATEWAY_RELEASE_REPLAY_GUARD.md): structural
+    // rules + an early dedup against stored state. The authoritative dedup
+    // (which also sees same-block earlier txs) runs at block apply.
+    if (!release_refs.empty())
+    {
+      if (release_refs.size() > 1)
+      {
+        reason = "tx carries more than one gateway release ref";
+        return false;
+      }
+      const auto& rf = release_refs.front();
+      if (rf.version != 0)
+      {
+        reason = "unsupported gateway release ref version";
+        return false;
+      }
+      // A ref names the burn a *withdrawal* discharges — it may only ride a tx
+      // that actually spends a gateway.
+      const bool has_withdrawal = std::any_of(tx.vin.begin(), tx.vin.end(),
+          [](const auto& in){ return std::holds_alternative<txin_gateway>(in); });
+      if (!has_withdrawal)
+      {
+        reason = "gateway release ref on a tx with no gateway withdrawal";
+        return false;
+      }
+      // Early reject a replay of a ref already discharged on-chain (per source
+      // gateway; the ref is recorded against every gateway the tx spends from).
+      const crypto::hash ref = gateway_release_ref_hash(rf.chain_id, rf.evm_txid, rf.log_index);
+      for (const auto& in : tx.vin)
+      {
+        const auto* g = std::get_if<txin_gateway>(&in);
+        if (!g)
+          continue;
+        gateway_account_data acct;
+        if (load_gateway_account(db, g->gateway_addr, acct) && acct.release_ref_recorded(ref))
+        {
+          reason = "gateway release replays an already-discharged burn ref";
+          return false;
+        }
       }
     }
 
@@ -1320,7 +1432,7 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
       reason = "gateway descriptor operation in a non-gateway tx type";
       return false;
     }
-    if (!validate_gateway_descriptor_operation(db, nettype, tx, ops.front(), reason))
+    if (!validate_gateway_descriptor_operation(db, nettype, tx, ops.front(), hf_version, reason))
       return false;
   }
 
@@ -1424,11 +1536,72 @@ namespace
     return false;
   }
 
+  // Record a discharged release ref (HF23 replay guard). Duplicate within the
+  // retained (current + previous) windows => the block is invalid. Same window
+  // bucketing + lazy pruning discipline as add_release.
+  bool add_release_ref(gateway_account_data& acct, uint64_t height, const crypto::hash& ref, std::string* reason)
+  {
+    if (acct.release_ref_recorded(ref))
+    {
+      set_reason(reason, "gateway release replays an already-discharged burn ref");
+      return false;
+    }
+    const uint64_t w = height / GATEWAY_RELEASE_WINDOW_BLOCKS;
+    gateway_release_ref_window* entry = nullptr;
+    for (auto& e : acct.release_ref_windows)
+      if (e.window_id == w) { entry = &e; break; }
+    if (!entry)
+    {
+      acct.release_ref_windows.push_back(gateway_release_ref_window{});
+      entry = &acct.release_ref_windows.back();
+      entry->window_id = w;
+    }
+    entry->refs.push_back(ref);
+    if (acct.version < 2) acct.version = 2;
+
+    // Prune windows strictly older than the immediately-preceding one (safely
+    // outside any legal reorg — see gateway_release_ref_window).
+    if (w >= 2)
+    {
+      auto& v = acct.release_ref_windows;
+      v.erase(std::remove_if(v.begin(), v.end(),
+              [&](const gateway_release_ref_window& e){ return e.window_id + 1 < w; }), v.end());
+    }
+    return true;
+  }
+
+  // Exact inverse of add_release_ref for rewind: remove the ref from the
+  // block-height's window entry (erasing an emptied entry so the blob is
+  // byte-identical to the pre-append state, S9).
+  bool sub_release_ref(gateway_account_data& acct, uint64_t height, const crypto::hash& ref, std::string* reason)
+  {
+    const uint64_t w = height / GATEWAY_RELEASE_WINDOW_BLOCKS;
+    for (auto it = acct.release_ref_windows.begin(); it != acct.release_ref_windows.end(); ++it)
+    {
+      if (it->window_id != w) continue;
+      for (auto rit = it->refs.rbegin(); rit != it->refs.rend(); ++rit)
+      {
+        if (*rit != ref) continue;
+        it->refs.erase(std::next(rit).base());
+        if (it->refs.empty())
+          acct.release_ref_windows.erase(it);
+        return true;
+      }
+      set_reason(reason, "gateway release ref missing from its window while rewinding");
+      return false;
+    }
+    set_reason(reason, "gateway release-ref window missing while rewinding");
+    return false;
+  }
+
   // Restore byte-exact HF22 (version 0) shape for an account with no remaining
   // bridge state, so a full reorg of bridge activity leaves an identical blob.
   void normalize_bridge_state(gateway_account_data& acct)
   {
-    if (acct.frozen == 0 && acct.governance_seq == 0 && acct.release_windows.empty())
+    if (acct.release_ref_windows.empty() && acct.version >= 2)
+      acct.version = 1;
+    if (acct.frozen == 0 && acct.governance_seq == 0 && acct.release_windows.empty() &&
+        acct.version <= 1)
       acct.version = 0;
   }
 
@@ -1443,6 +1616,16 @@ namespace
     for (const auto& o : tx.vout)
       if (const auto* g = std::get_if<tx_out_gateway>(&o.target))
         gws.insert(g->gateway_addr);
+    for (const auto& in : tx.vin)
+      if (const auto* g = std::get_if<txin_gateway>(&in))
+        gws.insert(g->gateway_addr);
+    return gws;
+  }
+
+  // The distinct source gateways a tx withdraws from (release-ref recording targets).
+  std::set<crypto::public_key> gateways_touched_by_withdrawals(const transaction& tx)
+  {
+    std::set<crypto::public_key> gws;
     for (const auto& in : tx.vin)
       if (const auto* g = std::get_if<txin_gateway>(&in))
         gws.insert(g->gateway_addr);
@@ -1554,6 +1737,45 @@ namespace
             return false;
         }
       }
+
+      // 4) release replay guard (HF23): a withdrawal carrying a release ref
+      // records the discharged burn against every source gateway it spends
+      // from; a ref already recorded (this block or a prior one — the cache
+      // holds the in-flight block state, S9) invalidates the block. Structural
+      // rules (HF23-only, at most one, must ride a withdrawal) are enforced at
+      // tx validation; this is the authoritative consensus dedup.
+      if (bridge_active)
+      {
+        const auto refs_here = extract_gateway_release_refs(tx);
+        // §3.6: a withdrawal from a bridge-reserve gateway must name its burn.
+        // Authoritative counterpart of the tx-level check — a block carrying a
+        // ref-less withdrawal from a flagged gateway is invalid.
+        if (refs_here.empty())
+        {
+          for (const auto& in : tx.vin)
+          {
+            const auto* g = std::get_if<txin_gateway>(&in);
+            if (!g)
+              continue;
+            const gateway_account_data& acct = get(g->gateway_addr);
+            if (!acct.descriptor_history.empty() && acct.latest_descriptor().is_bridge_reserve())
+            {
+              set_reason(reason, "withdrawal from a bridge-reserve gateway carries no release ref");
+              return false;
+            }
+          }
+        }
+        for (const auto& rf : refs_here)
+        {
+          const crypto::hash ref = gateway_release_ref_hash(rf.chain_id, rf.evm_txid, rf.log_index);
+          for (const auto& gw_addr : gateways_touched_by_withdrawals(tx))
+          {
+            gateway_account_data& acct = get(gw_addr);
+            if (!add_release_ref(acct, block_height, ref, reason))
+              return false;
+          }
+        }
+      }
     }
 
     return true;
@@ -1619,6 +1841,22 @@ bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
     const crypto::hash tx_hash = get_transaction_hash(tx);
     for (const auto& gw : gateways_touched_by_tx(tx))
       db.remove_gateway_tx(gw, block_height, tx_hash);
+
+    // undo the release-ref records (applied last within the tx, so undone first)
+    if (bridge_active)
+    {
+      for (const auto& rf : extract_gateway_release_refs(tx))
+      {
+        const crypto::hash ref = gateway_release_ref_hash(rf.chain_id, rf.evm_txid, rf.log_index);
+        for (const auto& gw_addr : gateways_touched_by_withdrawals(tx))
+        {
+          bool ok = false;
+          gateway_account_data& acct = get(gw_addr, ok);
+          if (!ok || !sub_release_ref(acct, block_height, ref, reason))
+            return false;
+        }
+      }
+    }
 
     // undo withdrawals: re-add the spent amount and un-account the release
     for (const auto& in : tx.vin)

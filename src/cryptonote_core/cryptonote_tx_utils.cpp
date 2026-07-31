@@ -816,7 +816,9 @@ namespace cryptonote
                                                const std::vector<gateway_wallet_destination>& destinations,
                                                uint64_t fee,
                                                transaction& tx,
-                                               crypto::hash& hash_to_sign)
+                                               crypto::hash& hash_to_sign,
+                                               const tx_extra_gateway_release_ref* release_ref,
+                                               crypto::secret_key* tx_secret_key_out)
   {
     tx.set_null();
     tx.version     = transaction::get_max_version_for_hf(hf_version);
@@ -861,6 +863,17 @@ namespace cryptonote
     hw::device& hwdev = hw::get_device("default");
     keypair const txkey{hwdev};
     add_tx_extra<tx_extra_pub_key>(tx, txkey.pub);
+    if (tx_secret_key_out)
+      *tx_secret_key_out = txkey.sec;
+
+    // Release replay-guard ref (HF23): attached before any prefix hashing so
+    // rv.message, hash_to_sign, and the balance proof all bind it — the Pgw
+    // owner signature therefore covers exactly which burn this tx discharges.
+    if (release_ref && !add_gateway_release_ref_to_tx_extra(tx.extra, *release_ref))
+    {
+      LOG_ERROR("gateway wallet-withdraw: failed to attach release ref");
+      return false;
+    }
 
     // Stealth outputs + per-output amount keys Hs(8·r·V, i).
     rct::keyV amount_keys;

@@ -71,6 +71,7 @@ constexpr uint8_t
   TX_EXTRA_TAG_BRIDGE_UNBOND                = 0x81, // HF23 (bonded bridge set)
   TX_EXTRA_TAG_BRIDGE_SLASH                 = 0x82, // HF23 (Phase F accountability)
   TX_EXTRA_TAG_BRIDGE_ROTATION_ACK          = 0x83, // HF23 (H.6.3 rotation observation)
+  TX_EXTRA_TAG_GATEWAY_RELEASE_REF          = 0x84, // HF23 (release replay guard, §6a)
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
@@ -672,6 +673,32 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Gateway release reference (HF23, GATEWAY_RELEASE_REPLAY_GUARD.md). Names the
+  // source EVM burn `(chain_id, evm_txid, log_index)` that a bridge gateway
+  // withdrawal (release) discharges. Because it lives in the tx prefix it is
+  // covered by the committee's Pgw owner signature (gateway_input_message hashes
+  // the prefix), so the binding is authenticated as part of what the committee
+  // agreed to sign. Consensus derives `gateway_release_ref_hash` from these raw
+  // fields (never trusts a stored hash) and rejects a withdrawal whose ref was
+  // already discharged — the release-side sibling of the wBDX contract's
+  // `processedDeposits` mint replay guard. Without it, two *distinct* valid
+  // release txs (e.g. built by successive session leaders during autonomy
+  // failover) could each pay the recipient for the same burn.
+  struct tx_extra_gateway_release_ref
+  {
+    uint8_t      version = 0;
+    uint64_t     chain_id = 0;   // source EVM chain (E.3 registry id)
+    crypto::hash evm_txid{};     // the burn tx id on that chain
+    uint32_t     log_index = 0;  // burn log index (multi-burn-per-tx safe)
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      VARINT_FIELD(chain_id)
+      FIELD(evm_txid)
+      VARINT_FIELD(log_index)
+    END_SERIALIZE()
+  };
+
   // Bridge seat registration (HF23, plan §6.1 B.1). Opts an existing, funded
   // masternode into the bonded bridge set by locking a *separate, additional*
   // BRIDGE_BOND (100k BDX) via the ordinary key-image locked-contribution
@@ -912,6 +939,7 @@ namespace cryptonote
       tx_extra_gateway_freeze,
       tx_extra_gateway_repoint,
       tx_extra_gateway_deposit_memo,
+      tx_extra_gateway_release_ref,
       tx_extra_bridge_registration,
       tx_extra_bridge_unbond,
       tx_extra_bridge_slash,
@@ -946,6 +974,7 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_descriptor_operation, cryptonote
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_freeze,               cryptonote::TX_EXTRA_TAG_GATEWAY_FREEZE);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_repoint,              cryptonote::TX_EXTRA_TAG_GATEWAY_REPOINT);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_deposit_memo,         cryptonote::TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_release_ref,          cryptonote::TX_EXTRA_TAG_GATEWAY_RELEASE_REF);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_registration,          cryptonote::TX_EXTRA_TAG_BRIDGE_REGISTRATION);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_unbond,                cryptonote::TX_EXTRA_TAG_BRIDGE_UNBOND);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_slash,                 cryptonote::TX_EXTRA_TAG_BRIDGE_SLASH);

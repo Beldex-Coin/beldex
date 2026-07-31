@@ -59,9 +59,11 @@ crypto::hash gateway_ownership_message(network_type nettype, const transaction& 
 //            well-formed; tx burns >= GATEWAY_ADDRESS_REGISTRATION_FEE.
 //  update:   tx type matches; gateway exists and is NOT frozen (HF23); exactly
 //            one ownership proof that verifies against the LATEST owner key.
+// `hf_version` gates the descriptor format: v0 only until HF23, v1 (which adds the
+// `flags` byte — see gateway_descriptor_flags) from HF23 onward.
 bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettype, const transaction& tx,
                                            const tx_extra_gateway_descriptor_operation& op,
-                                           std::string& reason);
+                                           hf hf_version, std::string& reason);
 
 // ---- Sovereign Bridge governance (HF23) ------------------------------------
 
@@ -151,6 +153,15 @@ bool decrypt_gateway_deposit_memo(const std::vector<uint8_t>& ciphertext, const 
 //   bytes 10..30 evm_addr (20 bytes)
 //   bytes 30..32 reserved (0)
 std::vector<uint8_t> build_bridge_deposit_memo(uint64_t chain_id, const std::array<uint8_t, 20>& evm_addr);
+
+// Release replay guard (HF23, GATEWAY_RELEASE_REPLAY_GUARD.md).
+// The canonical per-burn ref a bridge release discharges:
+//   H(GW_RELEASE_REF ‖ chain_id (u64 LE) ‖ evm_txid (32) ‖ log_index (u32 LE))
+// Always derived from the carried raw fields — a stored hash is never trusted.
+crypto::hash gateway_release_ref_hash(uint64_t chain_id, const crypto::hash& evm_txid, uint32_t log_index);
+
+// All tx_extra_gateway_release_ref fields on a tx (validation enforces at most one).
+std::vector<tx_extra_gateway_release_ref> extract_gateway_release_refs(const transaction& tx);
 
 // Validate a freeze / re-point op against current DB state + governance
 // evidence. Gated on HF23 by the caller. Freeze: gateway exists; op.governance_seq

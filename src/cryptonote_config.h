@@ -212,6 +212,11 @@ namespace hashkey {
   // off-chain signer's `slash::SLASH_REPORT_DOMAIN` byte-for-byte.
   inline constexpr std::string_view BRIDGE_SLASH    = "bridge_slash_report_v1"sv; // bridge accountability slash report
   inline constexpr std::string_view BRIDGE_ROTATION_ACK = "bridge_rotation_ack_v1"sv; // H.6.3 rotation observation (MUST match rotation_ack.rs)
+  // Release replay guard (HF23, GATEWAY_RELEASE_REPLAY_GUARD.md): the per-burn ref
+  // recorded on a bridge release. ref = H(tag || chain_id_le || evm_txid || log_index_le).
+  // Consensus-internal (the tx carries the raw tuple; signers compare raw fields, R6),
+  // so no cross-language byte-mirroring is required — but versioned all the same.
+  inline constexpr std::string_view GW_RELEASE_REF  = "gateway_release_ref_v1"sv;
 }
 
 // Maximum allowed stake contribution, as a fraction of the available contribution room.  This

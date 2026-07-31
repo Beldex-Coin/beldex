@@ -216,6 +216,21 @@ namespace cryptonote
                                            crypto::eth_signature,
                                            crypto::eddsa_signature>;
 
+  // Descriptor flags (HF23, descriptor version >= 1).
+  //
+  // BRIDGE_RESERVE marks a gateway as a Sovereign Bridge reserve: consensus then
+  // REQUIRES every withdrawal from it to carry a tx_extra_gateway_release_ref
+  // naming the EVM burn it discharges (GATEWAY_RELEASE_REPLAY_GUARD.md §3.6).
+  // Without the flag the replay guard still dedupes refs that ARE present, but a
+  // committee could omit the ref to sidestep the check; the flag closes that.
+  //
+  // The flag is **sticky**: once a gateway's latest descriptor sets it, no update
+  // may clear it (enforced in validate_gateway_update_operation). Otherwise the
+  // bypass would just move to "update the descriptor, then withdraw".
+  enum gateway_descriptor_flags : uint8_t {
+    GATEWAY_FLAG_BRIDGE_RESERVE = 1 << 0,
+  };
+
   // Append-only descriptor record for a gateway account. Stored in tx_extra on
   // register/update and mirrored into the consensus DB (latest entry is
   // authoritative for spend/update validation).
@@ -224,11 +239,17 @@ namespace cryptonote
     uint8_t version = 0;
     gateway_owner_key_v owner_key;
     std::string meta_info;
+    // HF23 (version >= 1). Absent on v0 descriptors, which deserialize unchanged.
+    uint8_t flags = 0;
+
+    bool is_bridge_reserve() const { return (flags & GATEWAY_FLAG_BRIDGE_RESERVE) != 0; }
 
     BEGIN_SERIALIZE_OBJECT()
       FIELD(version)
       FIELD(owner_key)
       FIELD(meta_info)
+      if (version >= 1)
+        FIELD(flags)
     END_SERIALIZE()
   };
 
@@ -320,6 +341,29 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Discharged release refs recorded in one release window (HF23, the release
+  // replay guard — GATEWAY_RELEASE_REPLAY_GUARD.md). Same shape and lifecycle
+  // discipline as gateway_release_window: append records into the block's
+  // window entry and lazily prunes entries older than the immediately-previous
+  // window (windows ≫ the checkpoint reorg buffer, so pruning is safely
+  // outside any legal reorg); rewind removes from the matching entry — an
+  // EXACT inverse (S9). The dedup check reads the current + previous windows,
+  // so the replay-protection horizon is at least one full window; a duplicate
+  // beyond that horizon is not a replay of an old tx (txid uniqueness blocks
+  // that) but a fresh t+1 committee signature — a committee action governed by
+  // the honest-majority assumption + Phase F accountability, with this trail
+  // as the evidence.
+  struct gateway_release_ref_window
+  {
+    uint64_t                  window_id = 0;
+    std::vector<crypto::hash> refs;  // gateway_release_ref_hash of each discharged burn
+
+    BEGIN_SERIALIZE_OBJECT()
+      VARINT_FIELD(window_id)
+      FIELD(refs)
+    END_SERIALIZE()
+  };
+
   // Consensus state for one gateway account, stored in the DB keyed by the
   // gateway address id. descriptor_history is append-only (latest entry is
   // authoritative for spend/update validation); balances is materialized with
@@ -338,6 +382,12 @@ namespace cryptonote
     uint64_t governance_seq = 0;                           // monotonic per-gateway governance nonce (anti-replay; reorg-exact)
     std::vector<gateway_release_window> release_windows;   // bounded recent per-window release accounting (reorg-exact)
 
+    // ---- Release replay guard (HF23, version >= 2) -------------------------
+    // Written only once a withdrawal carrying a tx_extra_gateway_release_ref is
+    // applied; absent (version <= 1) means "no ref ever recorded", so existing
+    // v0/v1 blobs deserialize unchanged (same discipline as the v1 fields).
+    std::vector<gateway_release_ref_window> release_ref_windows;
+
     BEGIN_SERIALIZE_OBJECT()
       FIELD(version)
       FIELD(descriptor_history)
@@ -348,7 +398,21 @@ namespace cryptonote
         VARINT_FIELD(governance_seq)
         FIELD(release_windows)
       }
+      if (version >= 2)
+      {
+        FIELD(release_ref_windows)
+      }
     END_SERIALIZE()
+
+    // Whether `ref` is recorded as discharged in any retained window (the
+    // current + previous windows; older entries are pruned — see
+    // gateway_release_ref_window).
+    bool release_ref_recorded(const crypto::hash& ref) const {
+      for (const auto& w : release_ref_windows)
+        for (const auto& r : w.refs)
+          if (r == ref) return true;
+      return false;
+    }
 
     // Cumulative native BDX already released in `window_id` (0 if none recorded).
     uint64_t released_in_window(uint64_t window_id) const {
