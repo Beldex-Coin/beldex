@@ -3,12 +3,12 @@
 //! carries an already-signed [`PreparedCall`]. The trait keeps the courier logic testable
 //! (a [`MockSubmitter`] records calls) and lets the real broadcast backend be swapped in.
 //!
-//! The real backend (build an EIP-1559 tx around the `PreparedCall`, sign it with the gas
-//! key, `eth_sendRawTransaction`) is intentionally **not** implemented here: it needs an EVM
-//! transaction library and a funded key, which are deployment concerns and add heavy deps.
-//! Until then the [`crate`]'s value is delivered by [`RelayPayload::to_prepared`] — the
-//! `{chain_id, to, data}` a user can broadcast with `cast send` or any wallet, so the bridge
-//! is **never liveness-blocked on a relayer**.
+//! The real backend now lives in [`crate::http_submit`] (feature `submit-http`): it builds the
+//! EIP-1559 envelope ([`crate::eip1559`]) around the `PreparedCall`, signs it with a funded
+//! gas key, and `eth_sendRawTransaction`s it. That key carries **no bridge authority** — the
+//! committee signature is inside the calldata — so running the service is optional and
+//! untrusted: [`RelayPayload::to_prepared`] still yields the `{chain_id, to, data}` any user
+//! can broadcast with `cast send`, so the bridge is **never liveness-blocked on a relayer**.
 
 use crate::payload::PreparedCall;
 

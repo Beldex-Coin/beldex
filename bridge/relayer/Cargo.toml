@@ -18,7 +18,17 @@ sha3 = "0.10"   # keccak256 for the 4-byte function selectors
 hex  = "0.4"
 # JSON payload codec for the "submit-your-own" interface (default on so the CLI works).
 serde_json = { version = "1", optional = true }
+# The reference gas-paying submitter (feature `submit-http`): secp256k1 signing for the
+# outer EIP-1559 envelope + a blocking HTTP client for the JSON-RPC calls. `rustls` avoids
+# a system OpenSSL build dependency.
+k256 = { version = "0.13", features = ["ecdsa"], optional = true }
+ureq = { version = "2", default-features = false, features = ["tls", "json"], optional = true }
 
 [features]
 default = ["json"]
 json = ["dep:serde_json"]
+
+# The unattended relayer service: sign + broadcast the outer tx with a funded gas key.
+# The keyless "prepare + cast send" path stays available with or without this, so the
+# bridge is never liveness-blocked on a relayer (Phase I).
+submit-http = ["json", "dep:k256", "dep:ureq"]

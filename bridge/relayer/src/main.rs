@@ -38,14 +38,30 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some("relay") => {
+            let src = args.get(2).map(String::as_str).unwrap_or("-");
+            match run_relay(src) {
+                Ok(out) => print!("{out}"),
+                Err(e) => {
+                    eprintln!("relay: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             eprintln!(
                 "beldex-bridge-relayer {}\n\nusage:\n  \
                  beldex-bridge-relayer prepare <payload.json | ->\n  \
+                 beldex-bridge-relayer relay   <payload.json | ->\n  \
                  beldex-bridge-relayer mint-digest --chain-id <n> --contract <20hex> --to <20hex> --amount <dec> --txid <32hex>\n\n\
                  `prepare`     reads a signed relay payload and prints the {{chain_id, to, data}} to broadcast.\n\
+                 `relay`       signs + broadcasts it, paying gas (build with --features submit-http).\n\
                  `mint-digest` prints the 32-byte digest the Pevm committee signs for a mint\n\
-                 (feed it to the signer as BRIDGE_SIGNER_SIGN_DIGEST).",
+                 (feed it to the signer as BRIDGE_SIGNER_SIGN_DIGEST).\n\n\
+                 relay environment:\n  \
+                 RELAYER_GAS_KEY   32-byte hex secp256k1 gas key (NOT a bridge key)\n  \
+                 RELAYER_CHAINS    JSON: [{{\"chain_id\":31337,\"rpc_url\":\"http://127.0.0.1:8545\"}}]\n\
+                 \t\t    optional per chain: max_fee_cap_wei, priority_fee_wei, gas_limit_pct",
                 env!("CARGO_PKG_VERSION")
             );
             std::process::exit(2);
@@ -121,6 +137,62 @@ fn run_prepare(src: &str) -> Result<String, String> {
 #[cfg(not(feature = "json"))]
 fn run_prepare(_src: &str) -> Result<String, String> {
     Err("built without the `json` feature; rebuild with --features json".into())
+}
+
+/// `relay <payload>` — sign the outer EIP-1559 envelope with the configured gas key and
+/// broadcast. Reverts (already minted, over cap, bad signature) are caught by the gas
+/// estimation dry-run and reported without spending anything.
+#[cfg(feature = "submit-http")]
+fn run_relay(src: &str) -> Result<String, String> {
+    use beldex_bridge_relayer::{ChainEndpoint, HttpSubmitter, RelayPayload, TxSubmitter};
+
+    let json = read_source(src)?;
+    let payload =
+        RelayPayload::from_json(&json).map_err(|e| format!("invalid payload: {e:?}"))?;
+
+    let key_hex = std::env::var("RELAYER_GAS_KEY")
+        .map_err(|_| "set RELAYER_GAS_KEY (32-byte hex secp256k1 gas key)".to_string())?;
+    let key = hex32(key_hex.trim(), "RELAYER_GAS_KEY")?;
+
+    let chains_json = std::env::var("RELAYER_CHAINS")
+        .map_err(|_| "set RELAYER_CHAINS (JSON array of {chain_id, rpc_url, …})".to_string())?;
+    let v: serde_json::Value =
+        serde_json::from_str(&chains_json).map_err(|e| format!("RELAYER_CHAINS: {e}"))?;
+    let arr = v.as_array().ok_or("RELAYER_CHAINS must be a JSON array")?;
+    let mut chains = Vec::new();
+    for c in arr {
+        let chain_id = c.get("chain_id").and_then(|x| x.as_u64()).ok_or("chain entry needs chain_id")?;
+        let rpc_url = c.get("rpc_url").and_then(|x| x.as_str()).ok_or("chain entry needs rpc_url")?;
+        let mut ep = ChainEndpoint::new(chain_id, rpc_url);
+        if let Some(x) = c.get("max_fee_cap_wei").and_then(|x| x.as_u64()) {
+            ep.max_fee_cap_wei = x as u128;
+        }
+        if let Some(x) = c.get("priority_fee_wei").and_then(|x| x.as_u64()) {
+            ep.priority_fee_wei = x as u128;
+        }
+        if let Some(x) = c.get("gas_limit_pct").and_then(|x| x.as_u64()) {
+            ep.gas_limit_pct = x;
+        }
+        chains.push(ep);
+    }
+
+    let submitter = HttpSubmitter::new(&key, chains).map_err(|e| format!("gas key: {e}"))?;
+    let call = payload.to_prepared();
+    let tx_hash = submitter.submit(&call).map_err(|e| format!("{e:?}"))?;
+    Ok(format!(
+        "relayed: chain_id {} → {}\n  gas wallet: 0x{}\n  tx: {}\n",
+        call.chain_id,
+        format_args!("0x{}", hex::encode(call.to)),
+        hex::encode(submitter.address),
+        tx_hash,
+    ))
+}
+
+#[cfg(not(feature = "submit-http"))]
+fn run_relay(_src: &str) -> Result<String, String> {
+    Err("built without the `submit-http` feature; rebuild with --features submit-http \
+         (or use `prepare` + `cast send`, which needs no service)"
+        .into())
 }
 
 fn read_source(src: &str) -> Result<String, String> {
