@@ -97,6 +97,32 @@ pub mod service;
 /// release. The mesh session + daemon RPC are injected seams, so the composition is unit-tested.
 pub mod live_backend;
 
+/// **Autonomy session coordination** (design: `bridge/docs/AUTONOMY_SESSION_COORDINATION.md`) —
+/// converges N nodes on one session, leader, and message per duty with no operator: the
+/// deterministic [`coordinator::session_key`] (duty → session id → leader, no election
+/// messages), the [`coordinator::ProposalPolicy`] verify-before-ACK seam (C.5; mint =
+/// byte-rebuild equality, release = the R1–R6 predicate), and the [`coordinator::Coordinator`]
+/// driving one [`session::Session`] per in-flight duty over a [`wire::SessionTransport`].
+/// std-only; tested multi-node on an in-process bus.
+pub mod coordinator;
+
+/// **Release proposal policy (R1–R6)** — the release-leg [`coordinator::ProposalPolicy`]: the
+/// deterministic leader builds the withdrawal (`gateway_create_transfer` + the replay-guard
+/// ref); every member admits it *semantically* against its own observed burn + its own
+/// daemon's reading of the blob (provenance, destination, amount+fee, source+caps,
+/// hash-binds-blob, replay-ref binding) — C.5 with a predicate instead of byte-equality.
+/// Inspection outages abstain (never NACK an honest leader). [`release_policy::DualPolicy`]
+/// composes mint + release for `serve --live`. std-only; multi-node tested.
+pub mod release_policy;
+
+/// **On-chain reconciliation** — a restarted signer must not re-work duties consensus already
+/// settled. [`reconcile::observe_reconciled`] checks each *newly* observed duty once against
+/// chain state (mints: `processedDeposits` via `eth_call`; releases: the daemon's
+/// `gateway_release_ref_status`), recording settled ones `Done` without a session, and
+/// deliberately **not** registering a duty whose status is undeterminable so a later poll
+/// retries. Fails closed; layered on top of the consensus replay guards, never instead of them.
+pub mod reconcile;
+
 /// libsodium consensus-verifier alignment for `Pgw` (C.1 gate (b)). Only built
 /// under the `tss-integration` feature (needs libsodium at link time).
 #[cfg(feature = "tss-integration")]

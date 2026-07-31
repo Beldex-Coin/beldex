@@ -94,6 +94,15 @@ beldex-watcher-http = ["beldex-watcher", "dep:ureq"]
 # HTTP RPCs, plus tss-integration for the A.5 memo decrypt in the mint EventSource.
 autonomy = ["beldex-watcher-http", "evm-watcher-http", "tss-integration"]
 
+# Live autonomy: `serve` with the real signing/submission backend instead of the dry-run
+# logger. Adds both live mesh signers (FROST Pgw via `live-dkg`, cggmp21 Pevm via
+# `live-pevm-dkg`) on top of the watcher pipeline. Gated behind `BRIDGE_SIGNER_SERVE_LIVE=1`
+# at runtime. NOTE: this wires the per-duty signers, but autonomous multi-node *session
+# coordination* (deterministic session-id, release-tx coordinator, join handshake) is a
+# separate, still-open task — see HANDOFF.md. Until that lands, live mode works only under a
+# single-coordinator / manual-trigger convention.
+serve-live = ["autonomy", "live-dkg", "live-pevm-dkg"]
+
 [dependencies]
 # All optional; pulled in only by the features above (verified 2026-07).
 k256                 = { version = "0.13", features = ["ecdsa", "arithmetic"], optional = true }

@@ -59,6 +59,24 @@ fn hexs(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// The exact JSON `beldex-bridge-relayer` (`RelayPayload::from_json`) parses for a signed
+/// mint. Shared by [`LiveBackend::handle_mint`] and the coordinator-driven `serve --live`
+/// completion path.
+pub fn mint_relay_payload_json(ev: &MintEvent, contract: [u8; 20], sig: &[u8]) -> String {
+    format!(
+        concat!(
+            r#"{{"kind":"mint","contract":"{}","chain_id":{},"to":"{}","#,
+            r#""amount":"{}","beldex_txid":"{}","sig":"{}"}}"#
+        ),
+        hexs(&contract),
+        ev.dst_chain.0,
+        hexs(&ev.to),
+        ev.amount,
+        hexs(&ev.beldex_txid),
+        hexs(sig),
+    )
+}
+
 /// The real [`GatewayRpc`] over the member's own beldexd JSON-RPC (`/json_rpc`), mirroring the
 /// beldex-watcher's client convention. The daemon builds/finalizes/relays the withdrawal; this
 /// only carries the committee's `Pgw` signature to it.
@@ -92,11 +110,106 @@ impl HttpGatewayRpc {
     }
 }
 
+// `hex` is a DEV-dependency, and this is not test code -- so `--features autonomy`
+// failed to link it (E0433). The crate already owns a std-only decoder for exactly
+// this shape: `config::parse_hex32` strips the same `0x` prefix, enforces the same
+// 64-nibble length, and is unit-tested. Reusing it fixes the build without making
+// `autonomy` drag in a runtime dependency for one call site.
 #[cfg(feature = "autonomy")]
 fn hex32(s: &str) -> Result<[u8; 32], String> {
+    crate::config::parse_hex32(s).ok_or_else(|| "expected 32-byte hex".to_string())
+}
+
+#[cfg(feature = "autonomy")]
+impl HttpGatewayRpc {
+    /// Build a bridge **release** withdrawal: `gateway_create_transfer` with the HF23
+    /// replay-guard burn binding attached and the tx secret key disclosed (so verifiers
+    /// can open the stealth outputs — `ReleaseProposal::tx_key`).
+    pub fn create_release(
+        &mut self,
+        source_gateway: &str,
+        dest_addr: &str,
+        amount: u128,
+        fee: u64,
+        ref_chain_id: u64,
+        ref_evm_txid: &[u8; 32],
+        ref_log_index: u32,
+    ) -> Result<crate::release_policy::BuiltRelease, String> {
+        let params = serde_json::json!({
+            "source": source_gateway,
+            "destinations": [dest_addr],
+            "amounts": [amount as u64],
+            "fee": fee,
+            "ref_chain_id": ref_chain_id,
+            "ref_evm_txid": hexs(ref_evm_txid),
+            "ref_log_index": ref_log_index,
+        });
+        let r = self.call("gateway_create_transfer", params)?;
+        let blob_hex = r
+            .get("unsigned_tx_blob")
+            .and_then(|v| v.as_str())
+            .ok_or("gateway_create_transfer: missing unsigned_tx_blob")?;
+        let unsigned_tx_blob = hex_bytes(blob_hex)?;
+        let hash_to_sign = hex32(
+            r.get("hash_to_sign").and_then(|v| v.as_str()).ok_or("gateway_create_transfer: missing hash_to_sign")?,
+        )?;
+        let tx_key = hex32(
+            r.get("tx_secret_key")
+                .and_then(|v| v.as_str())
+                .ok_or("gateway_create_transfer: missing tx_secret_key (daemon too old for release builds?)")?,
+        )?;
+        Ok(crate::release_policy::BuiltRelease { unsigned_tx_blob, hash_to_sign, fee, tx_key })
+    }
+
+    /// This member's own reading of a proposed release (`gateway_decode_withdrawal` on its
+    /// own daemon): opens the stealth outputs with the disclosed tx key against the expected
+    /// recipient and recomputes the hash from the blob — the R2/R3/R5 ground truth.
+    /// `configured_gateway` is the operator's release-gateway setting (gwB… address or hex
+    /// id); the returned view echoes it as `source_gateway` only when the decoded source
+    /// matches it (either form), so the policy's R4 equality works regardless of format.
+    pub fn decode_withdrawal(
+        &mut self,
+        proposal: &crate::release_policy::ReleaseProposal,
+        expected_recipient: &str,
+        configured_gateway: &str,
+    ) -> Result<crate::release_policy::ReleaseTxView, String> {
+        let params = serde_json::json!({
+            "tx_blob": hexs(&proposal.unsigned_tx_blob),
+            "tx_key": hexs(&proposal.tx_key),
+            "address": expected_recipient,
+        });
+        let r = self.call("gateway_decode_withdrawal", params)?;
+        let get_str = |k: &str| r.get(k).and_then(|v| v.as_str()).map(String::from);
+        let get_u64 = |k: &str| r.get(k).and_then(|v| v.as_u64());
+
+        let src_id = get_str("source_gateway_id").ok_or("decode: missing source_gateway_id")?;
+        let src_addr = get_str("source_gateway_address").unwrap_or_default();
+        let source_gateway = if configured_gateway.eq_ignore_ascii_case(&src_id) || configured_gateway == src_addr {
+            configured_gateway.to_string()
+        } else {
+            src_addr // will fail the policy's R4 equality, as it must
+        };
+        let all_match = r.get("dest_all_outputs_match").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dest = if all_match { expected_recipient.as_bytes().to_vec() } else { Vec::new() };
+        let amount = u128::from(get_u64("dest_amount").unwrap_or(0));
+        let fee = get_u64("fee").ok_or("decode: missing fee")?;
+        let hash_to_sign =
+            hex32(&get_str("hash_to_sign").ok_or("decode: missing hash_to_sign")?)?;
+        Ok(crate::release_policy::ReleaseTxView { source_gateway, dest, amount, fee, hash_to_sign })
+    }
+}
+
+/// Decode an even-length hex string (with or without `0x`).
+#[cfg(feature = "autonomy")]
+fn hex_bytes(s: &str) -> Result<Vec<u8>, String> {
     let s = s.strip_prefix("0x").unwrap_or(s);
-    let b = hex::decode(s).map_err(|_| "bad hex".to_string())?;
-    b.try_into().map_err(|_| "expected 32 bytes".to_string())
+    if s.len() % 2 != 0 {
+        return Err("odd-length hex".into());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect()
 }
 
 #[cfg(feature = "autonomy")]
@@ -152,20 +265,7 @@ where
             Ok(s) => s,
             Err(_) => return ExecOutcome::Retry, // session stalled / below threshold this tick
         };
-        // The exact JSON `beldex-bridge-relayer` (RelayPayload::from_json) parses.
-        let payload = format!(
-            concat!(
-                r#"{{"kind":"mint","contract":"{}","chain_id":{},"to":"{}","#,
-                r#""amount":"{}","beldex_txid":"{}","sig":"{}"}}"#
-            ),
-            hexs(&contract),
-            ev.dst_chain.0,
-            hexs(&ev.to),
-            ev.amount,
-            hexs(&ev.beldex_txid),
-            hexs(&sig),
-        );
-        (self.emit_mint)(&payload);
+        (self.emit_mint)(&mint_relay_payload_json(ev, contract, &sig));
         ExecOutcome::Submitted
     }
 

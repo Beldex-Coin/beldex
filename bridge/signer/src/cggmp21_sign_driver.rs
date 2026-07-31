@@ -54,7 +54,7 @@ fn sign_tag(digest32: &[u8; 32]) -> [u8; 32] {
     *digest32
 }
 
-fn wire(epoch: u64, tag: [u8; 32], from: u16, kind: u8, msg_bytes: &[u8]) -> WireMsg {
+fn wire(epoch: u64, tag: [u8; 32], attempt: u32, from: u16, kind: u8, msg_bytes: &[u8]) -> WireMsg {
     let mut payload = Vec::with_capacity(1 + msg_bytes.len());
     payload.push(kind);
     payload.extend_from_slice(msg_bytes);
@@ -62,7 +62,7 @@ fn wire(epoch: u64, tag: [u8; 32], from: u16, kind: u8, msg_bytes: &[u8]) -> Wir
         leg: Leg::Pevm,
         epoch,
         payload_hash: tag,
-        attempt: 0,
+        attempt,
         from,
         body: SessionMsg::Round(payload),
     }
@@ -76,12 +76,18 @@ fn wire(epoch: u64, tag: [u8; 32], from: u16, kind: u8, msg_bytes: &[u8]) -> Wir
 /// order; sorted internally); `self_index` must be one of them. `key_share_blob` is
 /// this node's serialized **complete** `KeyShare`. `preimage` is hashed with keccak
 /// (as the contract does) to form the signed digest.
+/// `attempt` namespaces the mesh frames for this signing round (the coordinator's session
+/// attempt). A retried round MUST pass a fresh attempt: for a mint the message — and hence
+/// `tag` — is deterministic, so without it a retry would reuse the failed attempt's namespace
+/// and could ingest its stale round messages.
+#[allow(clippy::too_many_arguments)]
 pub fn run_cggmp21_sign_over_transport<T: SessionTransport>(
     committee: &CommitteeView,
     self_index: u16,
     signers: &[u16],
     key_share_blob: &[u8],
     preimage: &[u8],
+    attempt: u32,
     transport: &mut T,
     timeout: Duration,
 ) -> Result<([u8; 64], [u8; 33]), DriverError> {
@@ -117,7 +123,7 @@ pub fn run_cggmp21_sign_over_transport<T: SessionTransport>(
     };
 
     // --- connection barrier (signer peers only) -------------------------------
-    let hello = wire(epoch, tag, self_index, CGGMP_HELLO, &[]);
+    let hello = wire(epoch, tag, attempt, self_index, CGGMP_HELLO, &[]);
     let mut seen: BTreeSet<u16> = BTreeSet::new();
     let mut early: Vec<(u16, u8, Vec<u8>)> = Vec::new();
     let need_peers = parties.len() as u16 - 1;
@@ -125,7 +131,7 @@ pub fn run_cggmp21_sign_over_transport<T: SessionTransport>(
     loop {
         let _ = transport.broadcast(&hello);
         while let Ok(Some(w)) = transport.poll() {
-            if w.leg != Leg::Pevm || w.epoch != epoch || w.payload_hash != tag {
+            if w.leg != Leg::Pevm || w.epoch != epoch || w.payload_hash != tag || w.attempt != attempt {
                 continue;
             }
             if !signer_set.contains(&w.from) {
@@ -155,6 +161,7 @@ pub fn run_cggmp21_sign_over_transport<T: SessionTransport>(
             if w.leg == Leg::Pevm
                 && w.epoch == epoch
                 && w.payload_hash == tag
+                && w.attempt == attempt
                 && signer_set.contains(&w.from)
             {
                 if let SessionMsg::Round(payload) = &w.body {
@@ -223,11 +230,12 @@ pub fn run_cggmp21_sign_over_transport<T: SessionTransport>(
             .map_err(|e| DriverError::Protocol(format!("serialize outgoing: {e}")))?;
         match out.recipient {
             MessageDestination::AllParties => {
-                let _ = transport.broadcast(&wire(epoch, tag, self_index, CGGMP_BCAST, &bytes));
+                let _ = transport.broadcast(&wire(epoch, tag, attempt, self_index, CGGMP_BCAST, &bytes));
             }
             MessageDestination::OneParty(pos) => {
                 if let Some(&peer_idx) = parties.get(pos as usize) {
-                    let _ = transport.send_to(peer_idx, &wire(epoch, tag, self_index, CGGMP_P2P, &bytes));
+                    let _ = transport
+                        .send_to(peer_idx, &wire(epoch, tag, attempt, self_index, CGGMP_P2P, &bytes));
                 }
             }
         }
@@ -256,7 +264,7 @@ pub fn run_cggmp21_sign_over_transport<T: SessionTransport>(
                 Ok(None) => break,
                 Err(_) => break,
             };
-            if w.leg != Leg::Pevm || w.epoch != epoch || w.payload_hash != tag {
+            if w.leg != Leg::Pevm || w.epoch != epoch || w.payload_hash != tag || w.attempt != attempt {
                 continue;
             }
             let Some(sender_pos) = parties.iter().position(|&x| x == w.from) else {
@@ -314,6 +322,7 @@ pub mod live {
         signers: &[u16],
         key_share_blob: &[u8],
         preimage: &[u8],
+        attempt: u32,
         identity: &MeshIdentity,
         peers: &[PeerTransportAddr],
         use_curve: bool,
@@ -326,6 +335,7 @@ pub mod live {
             signers,
             key_share_blob,
             preimage,
+            attempt,
             &mut transport,
             timeout,
         )
@@ -431,7 +441,7 @@ mod tests {
             let pre = preimage.to_vec();
             handles.push(std::thread::spawn(move || {
                 run_cggmp21_sign_over_transport(
-                    &c, idx, &signers, &blob, &pre, &mut ep, Duration::from_secs(120),
+                    &c, idx, &signers, &blob, &pre, 0, &mut ep, Duration::from_secs(120),
                 )
             }));
         }

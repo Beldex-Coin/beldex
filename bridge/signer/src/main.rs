@@ -603,7 +603,8 @@ fn sign_pevm(
 
     println!("running Pevm cggmp21 signing over the mesh…");
     let (rs, x33) = run_live_pevm_sign(
-        committee, self_index, signers, &key_share, &preimage, identity, peers, use_curve, timeout,
+        committee, self_index, signers, &key_share, &preimage, /*attempt=*/ 0, identity, peers,
+        use_curve, timeout,
     )
     .map_err(|e| format!("Pevm sign failed: {e:?}"))?;
 
@@ -803,6 +804,9 @@ fn run_serve(cfg: &Config) -> Result<(), String> {
         })?,
     )
     .ok_or("BRIDGE_SIGNER_GATEWAY_VIEW_SECRET must be 32-byte hex")?;
+    // Cloned before the watcher consumes them — the live backend reuses both.
+    let beldexd_rpc_for_live = beldexd_rpc.clone();
+    let gateway_id_for_live = gateway_id.clone();
     let beldex = BeldexWatcher::new(HttpBeldexRpc::new(beldexd_rpc), gateway_id, start_height);
 
     let mut src = WatcherEventSource { beldex, evm, view_secret, registry };
@@ -814,6 +818,23 @@ fn run_serve(cfg: &Config) -> Result<(), String> {
         .unwrap_or(12);
     let max_ticks: Option<u64> = std::env::var("BRIDGE_SIGNER_WATCH_ITERS").ok().and_then(|s| s.parse().ok());
     let opts = ServeOptions { interval: Duration::from_secs(poll_secs), max_ticks };
+
+    // Live backend path (build with `--features serve-live`, enable with BRIDGE_SIGNER_SERVE_LIVE=1):
+    // signs each duty over the mesh, emits mint payloads, self-submits releases.
+    #[cfg(feature = "serve-live")]
+    if std::env::var("BRIDGE_SIGNER_SERVE_LIVE").map(|v| v == "1" || v == "true").unwrap_or(false) {
+        return run_serve_live(
+            cfg,
+            &mut src,
+            &mut orch,
+            &opts,
+            &configs,
+            &beldexd_rpc_for_live,
+            &gateway_id_for_live,
+            poll_secs,
+        );
+    }
+    let _ = (&beldexd_rpc_for_live, &gateway_id_for_live); // consumed only by the live path
 
     println!(
         "serve: autonomous watcher pipeline — DRY-RUN backend (detects + dedups duties, does NOT sign/submit)"
@@ -849,6 +870,500 @@ fn run_serve(cfg: &Config) -> Result<(), String> {
 #[cfg(not(feature = "autonomy"))]
 fn run_serve(_cfg: &Config) -> Result<(), String> {
     Err("the `serve` subcommand requires a build with `--features autonomy`".into())
+}
+
+/// Loaded, reusable signing context for the live `serve` backend: the committee view, this
+/// node's index + signer set, both legs' key material, and the mesh identity parameters. A
+/// duty's sign closure ([`LiveSigners::pevm_sign`] / [`LiveSigners::pgw_sign`]) rebuilds the
+/// per-leg mesh and runs one session — mirroring the `sign` subcommand, but driven by the
+/// autonomy loop instead of an operator-supplied digest.
+#[cfg(feature = "serve-live")]
+struct LiveSigners {
+    committee: beldex_bridge_signer::committee::CommitteeView,
+    self_index: u16,
+    signers: Vec<u16>,
+    pgw_key_package: frost_ed25519::keys::KeyPackage,
+    pgw_pubkey_package: frost_ed25519::keys::PublicKeyPackage,
+    pgw_group_vk: [u8; 32],
+    pevm_key_share: Vec<u8>,
+    curve_secret: [u8; 32],
+    curve_public: [u8; 32],
+    ed25519_secret: [u8; 64],
+    port_base: u16,
+    pevm_offset: u16,
+    use_curve: bool,
+    timeout: std::time::Duration,
+}
+
+#[cfg(feature = "serve-live")]
+impl LiveSigners {
+    fn build_mesh(
+        &self,
+        base: u16,
+    ) -> (
+        beldex_bridge_signer::dkg_driver::live::MeshIdentity,
+        Vec<beldex_bridge_signer::dkg_driver::live::PeerTransportAddr>,
+    ) {
+        use beldex_bridge_signer::dkg_driver::live::{MeshIdentity, PeerTransportAddr};
+        let identity = MeshIdentity {
+            listen_endpoint: format!("tcp://0.0.0.0:{}", base + self.self_index),
+            curve_secret: self.curve_secret,
+            curve_public: self.curve_public,
+            ed25519_secret: self.ed25519_secret,
+        };
+        let peers = self
+            .committee
+            .peer_transport_indexed(self.self_index as usize, base)
+            .into_iter()
+            .map(|(index, endpoint, curve_pubkey)| PeerTransportAddr { index, endpoint, curve_pubkey })
+            .collect();
+        (identity, peers)
+    }
+
+    /// `Pgw`: FROST-sign a 32-byte digest over the mesh, verify the aggregate under libsodium
+    /// (the L1 consensus check), and return the 64-byte ed25519 signature.
+    ///
+    /// `signers` is the round's participant set — under coordinated autonomy this is the
+    /// session's canonical ACK set (only members that independently verified the payload,
+    /// C.5), not a static roster. `attempt` namespaces the round's mesh frames so a retry
+    /// never ingests the failed attempt's messages.
+    fn pgw_sign(&self, message: &[u8; 32], signers: &[u16], attempt: u32) -> Result<[u8; 64], String> {
+        use beldex_bridge_signer::ffi;
+        use beldex_bridge_signer::frost_sign_driver::live::run_live_sign;
+        let (identity, peers) = self.build_mesh(self.port_base);
+        let mut rng = rand::rngs::OsRng;
+        let sig = run_live_sign(
+            &self.committee,
+            self.self_index,
+            signers,
+            self.pgw_key_package.clone(),
+            self.pgw_pubkey_package.clone(),
+            *message,
+            attempt,
+            &identity,
+            &peers,
+            self.use_curve,
+            &mut rng,
+            self.timeout,
+        )
+        .map_err(|e| format!("Pgw sign failed: {e:?}"))?;
+        if !ffi::ed25519_verify_consensus(&sig, message, &self.pgw_group_vk) {
+            return Err("Pgw aggregate failed libsodium verification".into());
+        }
+        Ok(sig)
+    }
+
+    /// `Pevm`: cggmp21-sign a mint preimage over the mesh, then `ecrecover` to find the
+    /// recovery id and return the 65-byte `r‖s‖v` the wBDX contract verifies.
+    /// `signers`/`attempt` as in [`LiveSigners::pgw_sign`].
+    fn pevm_sign(&self, preimage: &[u8], signers: &[u16], attempt: u32) -> Result<[u8; 65], String> {
+        use beldex_bridge_signer::cggmp21_sign_driver::live::run_live_pevm_sign;
+        use k256::ecdsa::{RecoveryId, Signature as K256Sig, VerifyingKey};
+        use sha3::{Digest, Keccak256};
+        let (identity, peers) = self.build_mesh(self.port_base + self.pevm_offset);
+        let (rs, x33) = run_live_pevm_sign(
+            &self.committee,
+            self.self_index,
+            signers,
+            &self.pevm_key_share,
+            preimage,
+            attempt,
+            &identity,
+            &peers,
+            self.use_curve,
+            self.timeout,
+        )
+        .map_err(|e| format!("Pevm sign failed: {e:?}"))?;
+
+        let expected = VerifyingKey::from_sec1_bytes(&x33)
+            .map(|vk| {
+                let enc = vk.to_encoded_point(false);
+                let h = Keccak256::digest(&enc.as_bytes()[1..]);
+                let mut a = [0u8; 20];
+                a.copy_from_slice(&h[12..]);
+                a
+            })
+            .map_err(|e| format!("Pevm group key invalid: {e}"))?;
+        let digest32: [u8; 32] = Keccak256::digest(preimage).into();
+        let k_sig = K256Sig::from_slice(&rs).map_err(|e| format!("bad signature bytes: {e}"))?;
+        let k_sig = k_sig.normalize_s().unwrap_or(k_sig);
+        for rec in [0u8, 1u8] {
+            if let Ok(vk) =
+                VerifyingKey::recover_from_prehash(&digest32, &k_sig, RecoveryId::from_byte(rec).unwrap())
+            {
+                let enc = vk.to_encoded_point(false);
+                let h = Keccak256::digest(&enc.as_bytes()[1..]);
+                if h[12..] == expected {
+                    let mut out = [0u8; 65];
+                    out[..64].copy_from_slice(&rs[..]);
+                    out[64] = 27 + rec;
+                    return Ok(out);
+                }
+            }
+        }
+        Err("Pevm aggregate did not ecrecover to the wBDX signer".into())
+    }
+}
+
+/// Build the [`LiveSigners`] context: fetch the committee, resolve this node's index + signer
+/// set, load both legs' key material (`dkg` output under `BRIDGE_SIGNER_SHARE_DIR`), and derive
+/// the mesh identity from the MN key. Mirrors the `sign` subcommand's setup.
+#[cfg(feature = "serve-live")]
+fn build_live_signers(cfg: &Config) -> Result<LiveSigners, String> {
+    use beldex_bridge_signer::ffi;
+    use beldex_bridge_signer::omq_client::OmqCommitteeClient;
+    use frost_ed25519 as frost;
+    use std::time::Duration;
+
+    let client = OmqCommitteeClient::new(cfg.oxenmq_endpoint.clone());
+    let committee = client.fetch_committee(None).map_err(|e| e.to_string())?;
+    let self_index = committee
+        .daemon_self_index
+        .or_else(|| committee.self_index(&cfg.self_mn_pubkey))
+        .ok_or("this node is not on the current bridge committee")? as u16;
+    if !committee.has_signer_keys() {
+        return Err("bridge.committee returned no signer_keys — update beldexd".into());
+    }
+    let signers: Vec<u16> = match std::env::var("BRIDGE_SIGNER_SIGN_SIGNERS") {
+        Ok(s) => s.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
+        Err(_) => (0..committee.threshold as u16).collect(),
+    };
+    if !signers.contains(&self_index) {
+        return Err(format!("this node ({self_index}) is not in the signer set {signers:?}"));
+    }
+
+    let dir = std::env::var("BRIDGE_SIGNER_SHARE_DIR")
+        .map_err(|_| "set BRIDGE_SIGNER_SHARE_DIR (where `dkg` wrote the shares)".to_string())?;
+    let port_base: u16 = std::env::var("BRIDGE_SIGNER_MESH_PORT_BASE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .ok_or("set BRIDGE_SIGNER_MESH_PORT_BASE (single-host devnet)")?;
+    let pevm_offset: u16 = std::env::var("BRIDGE_SIGNER_MESH_PEVM_OFFSET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100);
+    let key_path =
+        std::env::var("BRIDGE_SIGNER_MN_KEY_FILE").map_err(|_| "set BRIDGE_SIGNER_MN_KEY_FILE".to_string())?;
+    let sk_bytes = std::fs::read(&key_path).map_err(|e| format!("read MN key {key_path}: {e}"))?;
+    if sk_bytes.len() != 64 {
+        return Err(format!("MN key {key_path} is {} bytes, expected 64", sk_bytes.len()));
+    }
+    let mut ed25519_secret = [0u8; 64];
+    ed25519_secret.copy_from_slice(&sk_bytes);
+    let mut ed_pub = [0u8; 32];
+    ed_pub.copy_from_slice(&ed25519_secret[32..64]);
+    let curve_secret = ffi::ed25519_sk_to_x25519(&ed25519_secret)?;
+    let curve_public = ffi::ed25519_pk_to_x25519(&ed_pub)?;
+    if let Some(expected) = committee.member_x25519.get(self_index as usize) {
+        if !expected.iter().all(|&b| b == 0) && curve_public != *expected {
+            return Err("derived x25519 does not match this node's bridge.committee entry".into());
+        }
+    }
+    let use_curve = std::env::var("BRIDGE_SIGNER_MESH_USE_CURVE")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true);
+    let timeout = Duration::from_secs(
+        std::env::var("BRIDGE_SIGNER_SIGN_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120),
+    );
+
+    // Pgw FROST material.
+    let read = |suffix: &str| {
+        std::fs::read(format!("{dir}/pgw-{self_index}.{suffix}"))
+            .map_err(|e| format!("read pgw {suffix}: {e} (run `dkg` first with BRIDGE_SIGNER_SHARE_DIR set)"))
+    };
+    let pgw_key_package = frost::keys::KeyPackage::deserialize(&read("keypackage")?)
+        .map_err(|e| format!("bad pgw keypackage: {e}"))?;
+    let pgw_pubkey_package = frost::keys::PublicKeyPackage::deserialize(&read("pubkeypackage")?)
+        .map_err(|e| format!("bad pgw pubkeypackage: {e}"))?;
+    let pgw_group_vk: [u8; 32] = pgw_pubkey_package
+        .verifying_key()
+        .serialize()
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or("cannot serialize pgw group verifying key")?;
+
+    // Pevm cggmp21 keyshare (raw bytes; the driver deserializes).
+    let pevm_key_share = std::fs::read(format!("{dir}/pevm-{self_index}.keyshare"))
+        .map_err(|e| format!("read pevm keyshare: {e} (run `dkg` first with BRIDGE_SIGNER_SHARE_DIR set)"))?;
+
+    Ok(LiveSigners {
+        committee,
+        self_index,
+        signers,
+        pgw_key_package,
+        pgw_pubkey_package,
+        pgw_group_vk,
+        pevm_key_share,
+        curve_secret,
+        curve_public,
+        ed25519_secret,
+        port_base,
+        pevm_offset,
+        use_curve,
+        timeout,
+    })
+}
+
+/// The live `serve` path: the **coordinated autonomy loop**. Composes the
+/// [`Coordinator`](beldex_bridge_signer::coordinator::Coordinator) (deterministic per-duty
+/// sessions + leader over the S4-authenticated OMQ mesh) with
+/// [`DualPolicy`](beldex_bridge_signer::release_policy::DualPolicy) (mint C.5 byte-rebuild +
+/// release R1–R6 via the member's own daemon), [`LiveSigners`] (per-duty Pevm/Pgw mesh
+/// sessions), and [`HttpGatewayRpc`] (release build with the replay-guard ref + verify +
+/// submit). Enabled by `--features serve-live` + `BRIDGE_SIGNER_SERVE_LIVE=1`.
+#[cfg(feature = "serve-live")]
+#[allow(clippy::too_many_arguments)]
+fn run_serve_live<B, C>(
+    cfg: &Config,
+    src: &mut beldex_bridge_signer::service::WatcherEventSource<B, C>,
+    orch: &mut beldex_bridge_signer::orchestrator::Orchestrator,
+    opts: &beldex_bridge_signer::service::ServeOptions,
+    configs: &[beldex_bridge_signer::evm_watcher::EvmChainConfig],
+    beldexd_rpc: &str,
+    gateway_id: &str,
+    poll_secs: u64,
+) -> Result<(), String>
+where
+    B: beldex_bridge_signer::beldex_watcher::BeldexRpc,
+    C: beldex_bridge_signer::evm_watcher::JsonRpcClient,
+{
+    use beldex_bridge_signer::coordinator::{BuildError, Coordinator, MintPolicy};
+    use beldex_bridge_signer::live_backend::{mint_relay_payload_json, GatewayRpc, HttpGatewayRpc};
+    use beldex_bridge_signer::omq_mesh::{MeshAuth, OmqMeshConfig, OmqPeerTransport, PeerAddr};
+    use beldex_bridge_signer::evm_watcher::HttpJsonRpc;
+    use beldex_bridge_signer::orchestrator::{Duty, EventSource, ExecOutcome};
+    use beldex_bridge_signer::reconcile::{
+        observe_reconciled, DualReconciler, EvmMintReconciler, GatewayReleaseReconciler,
+        ObserveOutcome,
+    };
+    use beldex_bridge_signer::release_policy::{DualPolicy, ReleasePolicy, ReleaseProposal};
+    use beldex_bridge_signer::transport::Leg;
+    use beldex_bridge_signer::watch::ReleaseEvent;
+    use beldex_bridge_signer::wire_auth::{LibsodiumEd25519, LibsodiumSigner};
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::rc::Rc;
+
+    let ls = Rc::new(build_live_signers(cfg)?);
+    let committee = ls.committee.clone();
+    let self_index = ls.self_index;
+
+    // --- Coordinator mesh: its own port range (the per-session sign meshes bind
+    // port_base / port_base+pevm_offset per session; the coordinator's transport is
+    // long-lived, so it gets a dedicated offset), CURVE + S4 auth from the committee.
+    let coord_offset: u16 = std::env::var("BRIDGE_SIGNER_MESH_COORD_OFFSET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+    let base = ls.port_base + coord_offset;
+    let peers: Vec<PeerAddr> = committee
+        .peer_transport_indexed(self_index as usize, base)
+        .into_iter()
+        .map(|(index, endpoint, curve_pubkey)| PeerAddr {
+            index,
+            endpoint,
+            curve_pubkey,
+            signer_ed25519: committee
+                .signer_keys
+                .get(index as usize)
+                .copied()
+                .unwrap_or([0u8; 32]),
+        })
+        .collect();
+    let mesh_cfg = OmqMeshConfig {
+        self_index,
+        listen_endpoint: format!("tcp://0.0.0.0:{}", base + self_index),
+        use_curve: ls.use_curve,
+        self_curve_secret: ls.curve_secret,
+        self_curve_public: ls.curve_public,
+        peers,
+    };
+    let auth = MeshAuth::from_committee(
+        Box::new(LibsodiumSigner { sk64: ls.ed25519_secret }),
+        Box::new(LibsodiumEd25519),
+        &committee,
+    )
+    .ok_or("bridge.committee returned no signer_keys — cannot authenticate the coordinator mesh")?;
+    let mut net = OmqPeerTransport::bind(&mesh_cfg)
+        .map_err(|e| format!("coordinator mesh bind: {e:?}"))?
+        .with_auth(auth);
+
+    // --- Policies. One shared daemon RPC client for build / inspect / submit (the loop is
+    // single-threaded; the closures never call each other, so RefCell borrows never nest).
+    let rpc = Rc::new(RefCell::new(HttpGatewayRpc::new(beldexd_rpc.to_string())));
+    let contracts: BTreeMap<u64, [u8; 20]> = configs.iter().map(|c| (c.chain_id, c.contract)).collect();
+    let release_gateway =
+        std::env::var("BRIDGE_SIGNER_RELEASE_GATEWAY").unwrap_or_else(|_| gateway_id.to_string());
+    let release_fee: u64 =
+        std::env::var("BRIDGE_SIGNER_RELEASE_FEE").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let max_fee: u64 = std::env::var("BRIDGE_SIGNER_RELEASE_MAX_FEE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(release_fee);
+    let per_tx_cap: u128 = std::env::var("BRIDGE_SIGNER_RELEASE_PER_TX_CAP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(u128::MAX);
+
+    // Leader-side release build: gateway_create_transfer + the HF23 replay-guard ref +
+    // the disclosed tx key (verifiers open the stealth outputs with it).
+    let build_rpc = rpc.clone();
+    let build_gw = release_gateway.clone();
+    let build_tx = move |ev: &ReleaseEvent| {
+        let recipient = String::from_utf8(ev.beldex_recipient.clone())
+            .map_err(|_| BuildError::Unactionable("burn recipient is not a utf-8 address".into()))?;
+        let amount = ev
+            .amount
+            .checked_sub(u128::from(release_fee))
+            .ok_or_else(|| BuildError::Unactionable("burn amount does not cover the fee".into()))?;
+        build_rpc
+            .borrow_mut()
+            .create_release(&build_gw, &recipient, amount, release_fee, ev.chain.0, &ev.evm_txid, 0)
+            .map_err(BuildError::Transient)
+    };
+
+    // Member-side inspection: this node's OWN daemon reads the proposed withdrawal.
+    let insp_rpc = rpc.clone();
+    let insp_gw = release_gateway.clone();
+    let inspect = move |p: &ReleaseProposal, expected: &[u8]| {
+        let addr = std::str::from_utf8(expected).map_err(|_| "recipient not utf-8".to_string())?;
+        insp_rpc.borrow_mut().decode_withdrawal(p, addr, &insp_gw)
+    };
+
+    let policy = DualPolicy {
+        mint: MintPolicy { contracts: contracts.clone() },
+        release: ReleasePolicy {
+            build_tx,
+            inspect,
+            release_gateway: release_gateway.clone(),
+            max_fee,
+            per_tx_cap,
+        },
+    };
+
+    // --- The per-duty threshold signers: one mesh round per duty among the session's
+    // canonical ACK set (only members that independently verified the payload — C.5),
+    // namespaced by the session attempt so a retry never ingests stale frames.
+    let sign_ls = ls.clone();
+    let sign = move |leg: Leg, message: &[u8], signers: &[u16], attempt: u32| -> Result<Vec<u8>, String> {
+        println!("  signing {leg:?} round: participants {signers:?} attempt {attempt}");
+        match leg {
+            Leg::Pevm => sign_ls.pevm_sign(message, signers, attempt).map(|s| s.to_vec()),
+            Leg::Pgw => {
+                let m: [u8; 32] =
+                    message.try_into().map_err(|_| "Pgw signing message must be 32 bytes".to_string())?;
+                sign_ls.pgw_sign(&m, signers, attempt).map(|s| s.to_vec())
+            }
+        }
+    };
+
+    // --- Completion: emit the mint relayer payload / self-submit the release.
+    let done_rpc = rpc.clone();
+    let done_contracts = contracts;
+    let complete = move |d: &Duty, proposal: &[u8], sig: &[u8]| -> ExecOutcome {
+        match d {
+            Duty::Mint(ev) => {
+                let Some(&contract) = done_contracts.get(&ev.dst_chain.0) else {
+                    return ExecOutcome::Abandon;
+                };
+                println!("MINT-PAYLOAD {}", mint_relay_payload_json(ev, contract, sig));
+                ExecOutcome::Submitted
+            }
+            Duty::Release(_) => {
+                let Some(p) = ReleaseProposal::decode(proposal) else {
+                    return ExecOutcome::Abandon; // cannot happen for an accepted proposal
+                };
+                if sig.len() != 64 {
+                    return ExecOutcome::Retry;
+                }
+                let mut s64 = [0u8; 64];
+                s64.copy_from_slice(sig);
+                let blob_hex: String = p.unsigned_tx_blob.iter().map(|b| format!("{b:02x}")).collect();
+                match done_rpc.borrow_mut().submit_transfer(&blob_hex, &s64) {
+                    Ok(txid) => {
+                        println!("RELEASE submitted: {txid}");
+                        ExecOutcome::Submitted
+                    }
+                    Err(e) => {
+                        eprintln!("release submit failed (will retry): {e}");
+                        ExecOutcome::Retry
+                    }
+                }
+            }
+        }
+    };
+
+    let mut coord = Coordinator::new(committee, self_index, policy, sign, complete);
+    if let Some(t) = std::env::var("BRIDGE_SIGNER_STAGE_TIMEOUT_TICKS").ok().and_then(|s| s.parse().ok()) {
+        coord.stage_timeout_ticks = t;
+    }
+
+    println!("serve: LIVE COORDINATED mode — per-duty sessions over the authenticated mesh");
+    println!("  committee epoch {} size {} threshold {}; self_index {self_index}", coord.committee.epoch, coord.committee.size(), coord.committee.threshold);
+    println!("  coordinator mesh on port base {base}; polling every {poll_secs}s across {} EVM chain(s)", configs.len());
+
+    // On-chain reconciliation: a restarted signer must not re-work settled duties. Each
+    // newly observed duty is checked once (mints: processedDeposits; releases: the daemon's
+    // release-ref set); an undeterminable answer leaves it unregistered so a later poll
+    // retries. Disable with BRIDGE_SIGNER_RECONCILE=0 (then every duty is worked).
+    let reconcile_on =
+        std::env::var("BRIDGE_SIGNER_RECONCILE").map(|v| v != "0" && v != "false").unwrap_or(true);
+    let mut reconciler = DualReconciler {
+        // Per-chain client + contract, so a multi-chain deployment queries the right chain.
+        mint: EvmMintReconciler {
+            chains: configs
+                .iter()
+                .map(|c| (c.chain_id, (HttpJsonRpc::new(c.rpc_url.clone()), c.contract)))
+                .collect(),
+        },
+        release: GatewayReleaseReconciler::new(beldexd_rpc.to_string(), release_gateway.clone()),
+    };
+    if !reconcile_on {
+        println!("  reconciliation DISABLED (BRIDGE_SIGNER_RECONCILE=0)");
+    }
+
+    let mut ticks = 0u64;
+    loop {
+        // Ingest the watchers (re-emission is safe — the orchestrator dedups, and a duty is
+        // reconciled against chain state at most once per process).
+        let mut ingest = |orch: &mut beldex_bridge_signer::orchestrator::Orchestrator, d: Duty| {
+            if reconcile_on {
+                if observe_reconciled(orch, &mut reconciler, d) == ObserveOutcome::AlreadySettled {
+                    println!("reconciled: duty already settled on-chain — not re-worked");
+                }
+            } else {
+                orch.observe(d);
+            }
+        };
+        for m in src.poll_mints() {
+            ingest(orch, Duty::Mint(m));
+        }
+        for r in src.poll_releases() {
+            ingest(orch, Duty::Release(r));
+        }
+        let rep = coord.step(orch, &mut net);
+        if rep != Default::default() {
+            let (pending, in_flight, done) = orch.counts();
+            println!(
+                "tick {ticks}: opened={} acked={} nacked={} signed={} completed={} requeued={} abandoned={} resolved={} | duties p={pending} f={in_flight} d={done}",
+                rep.opened, rep.acked, rep.nacked, rep.signed, rep.completed, rep.requeued, rep.abandoned, rep.resolved
+            );
+        }
+        ticks += 1;
+        if opts.max_ticks.is_some_and(|max| ticks >= max) {
+            break;
+        }
+        if !opts.interval.is_zero() {
+            std::thread::sleep(opts.interval);
+        }
+    }
+
+    let (pending, in_flight, done) = orch.counts();
+    println!("serve: finished after {ticks} tick(s); duties pending={pending} in_flight={in_flight} done={done}");
+    Ok(())
 }
 
 fn main() -> ExitCode {

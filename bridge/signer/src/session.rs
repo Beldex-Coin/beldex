@@ -272,6 +272,26 @@ impl Session {
         self.acks.len()
     }
 
+    /// The members that ACKed this attempt, in ascending committee-index order.
+    /// These are the only members that independently justified the payload (C.5), so they
+    /// are the candidate participant set for the threshold signing round.
+    pub fn ack_set(&self) -> Vec<u16> {
+        self.acks.iter().map(|&i| i as u16).collect()
+    }
+
+    /// The **canonical** signing participant set: the lowest `threshold` ACKers in committee
+    /// order. Every honest node must feed the *same* set to the scheme driver (its mesh
+    /// barrier waits on exactly those peers), so the rule is a deterministic function of the
+    /// ACK set — and callers must let ACKs settle before reading it (ACKs are broadcast, so
+    /// one full step after reaching `Sign` every live node holds the same set).
+    /// `None` if fewer than `threshold` ACKs are in.
+    pub fn canonical_signers(&self) -> Option<Vec<u16>> {
+        if self.acks.len() < self.threshold {
+            return None;
+        }
+        Some(self.ack_set().into_iter().take(self.threshold).collect())
+    }
+
     fn check_member(&self, m: usize) -> Result<(), SessionError> {
         if m >= self.members.len() {
             Err(SessionError::UnknownMember)
@@ -290,9 +310,19 @@ impl Session {
 
     /// A member ACKs the proposal. When `>= t+1` ACKs are in (including honest
     /// members), the session advances to Sign.
+    ///
+    /// ACKs are still **collected** in `Sign` (they just no longer drive a stage
+    /// transition). That is what makes [`Self::canonical_signers`] canonical: ACKs are
+    /// broadcast, and every node reaches `Sign` the moment *its own* `threshold`-th ACK
+    /// lands — which is a different subset on every node, since a node counts its own ACK
+    /// before its peers' queued ones. Freezing the set at that instant would make each
+    /// node derive a different participant set and deadlock the round on the mesh barrier
+    /// (each node waiting on peers that are not running the round). Because the set keeps
+    /// growing, one settle step after `Sign` every live node holds the same ACK set and
+    /// therefore the same lowest-`threshold` prefix.
     pub fn on_ack(&mut self, member: usize) -> Result<(), SessionError> {
         self.ensure_live()?;
-        if self.stage != Stage::Consensus {
+        if self.stage != Stage::Consensus && self.stage != Stage::Sign {
             return Err(SessionError::WrongStage(self.stage));
         }
         self.check_member(member)?;
@@ -302,7 +332,7 @@ impl Session {
         if self.acks.insert(member) {
             self.transcript.push(TranscriptEntry::Ack { member });
         }
-        if self.acks.len() >= self.threshold {
+        if self.stage == Stage::Consensus && self.acks.len() >= self.threshold {
             self.stage = Stage::Sign;
         }
         Ok(())
@@ -616,8 +646,13 @@ mod tests {
         for m in 0..4 {
             s.on_ack(m).unwrap();
         }
-        // ack after we've moved to Sign
-        assert_eq!(s.on_ack(4), Err(SessionError::WrongStage(Stage::Sign)));
+        // A late ACK in `Sign` is still counted (it does not re-transition the stage) --
+        // the participant set must keep converging after the stage advances, or nodes
+        // disagree on it. Only a *terminal* or post-Sign stage rejects an ACK.
+        assert_eq!(s.stage(), Stage::Sign);
+        s.on_ack(4).unwrap();
+        assert_eq!(s.ack_count(), 5);
+        assert_eq!(s.stage(), Stage::Sign, "a late ACK does not re-transition the stage");
     }
 
     #[test]
