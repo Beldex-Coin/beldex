@@ -130,3 +130,4 @@ contrib/brew/Brewfile.lock.json
 /runlog.sh
 /.debug/
 /utils/local-devnet/.ceremony/
+/utils/local-devnet/gateway.env
