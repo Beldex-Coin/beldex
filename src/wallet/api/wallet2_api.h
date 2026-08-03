@@ -920,6 +920,27 @@ struct Wallet
                                                   uint32_t subaddr_account           = 0,
                                                   std::set<uint32_t> subaddr_indices = {}) = 0;
     /*!
+     * \brief createGatewayRegisterTransaction creates an HF22 gateway-address
+     *        registration transaction.
+     * \param gateway_secret      64-character hex secret key for the gateway id.
+     * \param owner_key_type      "schnorr", "eth", or "eddsa".
+     * \param owner_key           Hex public key for the selected owner key type.
+     * \param meta_info           Optional on-chain descriptor metadata.
+     * \param priority            Transaction priority.
+     * \param subaddr_account     Account that pays the burn and transaction fee.
+     * \param subaddr_indices     Subaddresses from which funds may be selected.
+     * \return                    Pending transaction; check status() and call
+     *                            commit() to relay it.
+     */
+    virtual PendingTransaction *createGatewayRegisterTransaction(
+                                                  const std::string& gateway_secret,
+                                                  const std::string& owner_key_type,
+                                                  const std::string& owner_key,
+                                                  const std::string& meta_info = {},
+                                                  uint32_t priority = 0,
+                                                  uint32_t subaddr_account = 0,
+                                                  std::set<uint32_t> subaddr_indices = {}) = 0;
+    /*!
      * \brief bnsUpdateTransaction  creates bns update transaction
      * \param owner                 owner
      * \param backup_owner          backup_owner

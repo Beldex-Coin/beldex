@@ -195,6 +195,14 @@ public:
                                         uint32_t priority = 0,
                                         uint32_t subaddr_account = 0,
                                         std::set<uint32_t> subaddr_indices = {}) override;
+    PendingTransaction* createGatewayRegisterTransaction(
+                                        const std::string& gateway_secret,
+                                        const std::string& owner_key_type,
+                                        const std::string& owner_key,
+                                        const std::string& meta_info = {},
+                                        uint32_t priority = 0,
+                                        uint32_t subaddr_account = 0,
+                                        std::set<uint32_t> subaddr_indices = {}) override;
     PendingTransaction* bnsUpdateTransaction(std::string& owner,
                                         std::string& backup_owner,
                                         std::string &value_bchat,
