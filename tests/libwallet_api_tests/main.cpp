@@ -73,7 +73,6 @@ std::string TESTNET_WALLET3_NAME;
 std::string TESTNET_WALLET4_NAME;
 std::string TESTNET_WALLET5_NAME;
 std::string TESTNET_WALLET6_NAME;
-
 const char * TESTNET_WALLET_PASS = "";
 
 std::string CURRENT_SRC_WALLET;
@@ -382,7 +381,14 @@ TEST_F(WalletTest1, GatewayRegisterTransaction)
         ASSERT_TRUE(transaction->good()) << transaction->status().second;
         ASSERT_GT(transaction->txCount(), 0);
 
+        const uint64_t total_fee = transaction->fee();
+        const uint64_t burned_fee =
+            cryptonote::GATEWAY_ADDRESS_REGISTRATION_FEE;
+        const uint64_t miner_fee =
+            total_fee >= burned_fee ? total_fee - burned_fee : total_fee;
+
         std::cout << "\nGateway registration transaction\n"
+                  << "Funding wallet: " << CURRENT_SRC_WALLET << '\n'
                   << "Gateway addr : " << gateway_address << '\n'
                   << "Gateway id   : " << tools::type_to_hex(gateway_id) << '\n'
                   << "Owner type   : " << owner_key_type << '\n'
@@ -390,11 +396,13 @@ TEST_F(WalletTest1, GatewayRegisterTransaction)
                   << "Meta         : "
                   << (meta_info.empty() ? "(none)" : meta_info) << '\n'
                   << "Fee burned   : "
-                  << Wallet::Wallet::displayAmount(
-                         cryptonote::GATEWAY_ADDRESS_REGISTRATION_FEE)
+                  << Wallet::Wallet::displayAmount(burned_fee)
                   << " BDX\n"
                   << "Miner fee    : "
-                  << Wallet::Wallet::displayAmount(transaction->fee())
+                  << Wallet::Wallet::displayAmount(miner_fee)
+                  << " BDX\n"
+                  << "Total charge : "
+                  << Wallet::Wallet::displayAmount(total_fee)
                   << " BDX\n";
 
         const char *commit_env = std::getenv("GATEWAY_COMMIT");
@@ -1796,6 +1804,11 @@ int main(int argc, char** argv)
     TESTNET_WALLET4_NAME = WALLETS_ROOT_DIR + "/wallet_04.bin";
     TESTNET_WALLET5_NAME = WALLETS_ROOT_DIR + "/wallet";
     TESTNET_WALLET6_NAME = WALLETS_ROOT_DIR + "/wallet_06.bin";
+
+    const char *testnet_wallet_file = std::getenv("TESTNET_WALLET_FILE");
+    if (testnet_wallet_file) {
+        TESTNET_WALLET5_NAME = testnet_wallet_file;
+    }
 
     CURRENT_SRC_WALLET = TESTNET_WALLET5_NAME;
     CURRENT_DST_WALLET = TESTNET_WALLET1_NAME;
