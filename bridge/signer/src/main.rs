@@ -807,7 +807,28 @@ fn run_serve(cfg: &Config) -> Result<(), String> {
     // Cloned before the watcher consumes them — the live backend reuses both.
     let beldexd_rpc_for_live = beldexd_rpc.clone();
     let gateway_id_for_live = gateway_id.clone();
-    let beldex = BeldexWatcher::new(HttpBeldexRpc::new(beldexd_rpc), gateway_id, start_height);
+    // Finality posture. Strict by default: a deposit is only actionable at or below
+    // `get_info.immutable_height`. beldexd omits that field entirely on a chain that has
+    // never checkpointed — and it never will below CHECKPOINT_QUORUM_SIZE (20) active
+    // masternodes, so every local devnet is in that bucket: deposits confirm and no mint
+    // duty is ever created, silently, because a poll error is treated as transient.
+    // Setting this to N falls back to `top_height - N` in exactly that case; a daemon that
+    // does report a checkpoint ignores it outright.
+    // An empty value counts as unset (strict), so a launcher can pass the variable
+    // through unconditionally — `FOO=${X:+...}` does not work as an assignment prefix,
+    // because a word produced by expansion is parsed as the command name, not a prefix.
+    let beldex_confirmations: Option<u64> = match std::env::var("BRIDGE_SIGNER_BELDEX_CONFIRMATIONS") {
+        Ok(s) if s.trim().is_empty() => None,
+        Ok(s) => Some(s.trim().parse::<u64>().map_err(|_| {
+            "BRIDGE_SIGNER_BELDEX_CONFIRMATIONS must be a non-negative integer".to_string()
+        })?),
+        Err(_) => None,
+    };
+    let mut beldex = BeldexWatcher::new(HttpBeldexRpc::new(beldexd_rpc), gateway_id, start_height);
+    if let Some(n) = beldex_confirmations {
+        println!("  beldex finality: RELAXED — a chain with no checkpoint falls back to top_height - {n}");
+        beldex = beldex.with_fallback_confirmations(n);
+    }
 
     let mut src = WatcherEventSource { beldex, evm, view_secret, registry };
     let mut orch = Orchestrator::new();

@@ -271,6 +271,10 @@ pub struct BeldexWatcher<C: BeldexRpc> {
     finalized_up_to: u64,
     /// Finalized deposit txids (dedupe across polls).
     seen: BTreeSet<[u8; 32]>,
+    /// Escape hatch for chains that produce no master-node checkpoints — see
+    /// [`BeldexWatcher::with_fallback_confirmations`]. `None` (the default) means
+    /// strict checkpoint finality: no checkpoint, no finalized deposits, ever.
+    fallback_confirmations: Option<u64>,
 }
 
 impl<C: BeldexRpc> BeldexWatcher<C> {
@@ -280,16 +284,51 @@ impl<C: BeldexRpc> BeldexWatcher<C> {
             gateway_id: gateway_id.into(),
             finalized_up_to: start_height.saturating_sub(1),
             seen: BTreeSet::new(),
+            fallback_confirmations: None,
         }
     }
 
-    /// The immutable-checkpoint height (`get_info.immutable_height`) — the finality
-    /// frontier below which the chain cannot reorg.
-    fn immutable_height(&self) -> Result<u64, RpcError> {
+    /// Relax finality to `top_height - n` **only on a chain that reports no checkpoint
+    /// at all**. Opt-in, and off by default.
+    ///
+    /// `beldexd` sets `get_info.immutable_height` only when `get_immutable_checkpoint`
+    /// succeeds (`core_rpc_server.cpp`), and a checkpointing quorum is only generated
+    /// when the network has at least `CHECKPOINT_QUORUM_SIZE` active masternodes — 20 in
+    /// a normal build (`master_node_rules.h`). A local devnet runs a handful, so it never
+    /// checkpoints, the field is absent from every `get_info`, and the finality gate below
+    /// never opens: deposits confirm on chain and no mint duty is ever created. Confirmed
+    /// by thousands of `get_info` calls against zero `gateway_get_history` calls in a
+    /// devnet daemon log.
+    ///
+    /// The fallback is deliberately *not* a max/min against the checkpoint: the moment the
+    /// daemon reports one, that value wins outright and this setting is ignored. It can
+    /// therefore only ever apply to a chain with no finality frontier of its own, and
+    /// cannot widen the frontier on a network that has one.
+    pub fn with_fallback_confirmations(mut self, n: u64) -> Self {
+        self.fallback_confirmations = Some(n);
+        self
+    }
+
+    /// The finality frontier: deposits at or below this height are safe to act on.
+    ///
+    /// Normally the immutable-checkpoint height (`get_info.immutable_height`), below which
+    /// the chain cannot reorg. If the daemon omits it — no checkpoint exists — this is a
+    /// hard error unless [`BeldexWatcher::with_fallback_confirmations`] was set, in which
+    /// case the frontier is `top_height - n`. Note `get_info.height` is the *chain* height
+    /// (top block height + 1), hence the extra `- 1`.
+    fn finality_frontier(&self) -> Result<u64, RpcError> {
         let v = self.client.call("get_info", json!({}))?;
-        v.get("immutable_height")
+        if let Some(checkpoint) = v.get("immutable_height").and_then(Value::as_u64) {
+            return Ok(checkpoint);
+        }
+        let Some(n) = self.fallback_confirmations else {
+            return Err(RpcError::BadResponse("get_info.immutable_height".into()));
+        };
+        let chain_height = v
+            .get("height")
             .and_then(Value::as_u64)
-            .ok_or_else(|| RpcError::BadResponse("get_info.immutable_height".into()))
+            .ok_or_else(|| RpcError::BadResponse("get_info.height".into()))?;
+        Ok(chain_height.saturating_sub(1).saturating_sub(n))
     }
 
     fn history_page(&self, from_height: u64) -> Result<Value, RpcError> {
@@ -304,7 +343,7 @@ impl<C: BeldexRpc> BeldexWatcher<C> {
     /// finalized) and deduped by txid. Returns the raw records; the caller resolves
     /// each to a [`MintEvent`] via [`resolve_mint`].
     pub fn advance(&mut self) -> Result<Vec<DepositRecord>, RpcError> {
-        let immutable = self.immutable_height()?;
+        let immutable = self.finality_frontier()?;
         if immutable <= self.finalized_up_to {
             return Ok(Vec::new()); // no new checkpoint-final range
         }
@@ -528,6 +567,87 @@ mod tests {
         // And it resolves to a full MintEvent via the registry.
         let reg = registry(1, 1000);
         assert!(matches!(resolve_mint(&finals[0], &reg), Resolution::Mint(_)));
+    }
+
+    /// A `beldexd` on a chain that has never checkpointed: `get_info` omits
+    /// `immutable_height` altogether, which is what every small devnet looks like.
+    struct NoCheckpointDaemon {
+        /// Chain height, i.e. top block height + 1 (matches `get_info.height`).
+        height: Cell<u64>,
+        events: Vec<Value>,
+    }
+    impl BeldexRpc for NoCheckpointDaemon {
+        fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+            match method {
+                "get_info" => Ok(json!({ "height": self.height.get() })),
+                "gateway_get_history" => {
+                    let from = params.get("from_height").and_then(Value::as_u64).unwrap_or(0);
+                    let hits: Vec<Value> = self
+                        .events
+                        .iter()
+                        .filter(|e| e["height"].as_u64().unwrap() >= from)
+                        .cloned()
+                        .collect();
+                    let top = self.height.get() - 1;
+                    Ok(json!({ "events": hits, "next_height": top + 1, "top_height": top }))
+                }
+                other => Err(RpcError::Transport(format!("unmocked {other}"))),
+            }
+        }
+    }
+
+    #[test]
+    fn no_checkpoint_chain_is_strict_by_default_and_relaxes_only_on_request() {
+        let memo = BridgeMemo { chain_id: 1, evm_addr: [0x11; 20] }.encode();
+        let events = vec![
+            deposit_event(100, [0x01; 32], 500, Some(memo)),
+            deposit_event(118, [0x02; 32], 700, Some(memo)),
+        ];
+
+        // Default: a missing checkpoint is an error, not an implicit `top - 0`. Nothing
+        // finalizes and the caller can see why.
+        let mut strict = BeldexWatcher::new(
+            NoCheckpointDaemon { height: Cell::new(121), events: events.clone() },
+            "gwTestGateway",
+            1,
+        );
+        assert!(strict.advance().is_err());
+        assert_eq!(strict.finalized_up_to(), 0);
+
+        // Relaxed: frontier = top(120) - 10 = 110, so only the height-100 deposit.
+        let mut relaxed = BeldexWatcher::new(
+            NoCheckpointDaemon { height: Cell::new(121), events: events.clone() },
+            "gwTestGateway",
+            1,
+        )
+        .with_fallback_confirmations(10);
+        let finals = relaxed.advance().unwrap();
+        assert_eq!(finals.len(), 1);
+        assert_eq!(finals[0].beldex_txid, [0x01; 32]);
+        assert_eq!(relaxed.finalized_up_to(), 110);
+
+        // Chain advances 10 blocks → frontier 120 → the second deposit finalizes, once.
+        relaxed.client.height.set(131);
+        let finals = relaxed.advance().unwrap();
+        assert_eq!(finals.len(), 1);
+        assert_eq!(finals[0].beldex_txid, [0x02; 32]);
+        assert!(relaxed.advance().unwrap().is_empty());
+    }
+
+    #[test]
+    fn checkpoint_wins_over_the_fallback() {
+        // The daemon reports a checkpoint at 120. Even with the most permissive fallback
+        // possible, a deposit above the checkpoint must not finalize — the fallback may
+        // only ever apply where there is no frontier at all.
+        let memo = BridgeMemo { chain_id: 1, evm_addr: [0x11; 20] }.encode();
+        let daemon = MockDaemon {
+            immutable: Cell::new(120),
+            events: vec![deposit_event(150, [0x02; 32], 700, Some(memo))],
+            top: 400,
+        };
+        let mut w = BeldexWatcher::new(daemon, "gwTestGateway", 1).with_fallback_confirmations(0);
+        assert!(w.advance().unwrap().is_empty());
+        assert_eq!(w.finalized_up_to(), 120);
     }
 
     /// End-to-end (signer-decrypt path): a real encrypted memo bundle → `decrypt_memo`
