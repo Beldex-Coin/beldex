@@ -156,7 +156,7 @@ namespace cryptonote
     }
 
 
-    if (context.m_need_flash_sync)
+    if (context.m_need_flash_sync && context.m_requested_flash_heights.empty())
     {
       NOTIFY_REQUEST_BLOCK_FLASHES::request r{};
       auto curr_height = m_core.get_current_blockchain_height();
