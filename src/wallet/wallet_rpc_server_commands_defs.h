@@ -1365,7 +1365,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Export transfers to csv
-  struct EXPORT_TRANSFERS : RPC_COMMAND
+  struct EXPORT_TRANSFERS : RESTRICTED
   {
     static constexpr auto names() { return NAMES("export_transfers"); }
 
@@ -1419,7 +1419,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Export a signed set of key images.
-  struct EXPORT_KEY_IMAGES : RPC_COMMAND
+  struct EXPORT_KEY_IMAGES : RESTRICTED
   {
     static constexpr auto names() { return NAMES("export_key_images"); }
 
@@ -1753,7 +1753,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Close the currently opened wallet, after trying to save it.
-  struct CLOSE_WALLET : RPC_COMMAND
+  struct CLOSE_WALLET : RESTRICTED
   {
     static constexpr auto names() { return NAMES("close_wallet"); }
 
