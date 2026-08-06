@@ -301,6 +301,9 @@ namespace master_nodes
     if (!cryptonote::get_master_node_pubkey_from_tx_extra(tx.extra, master_node_key))
       return false;
 
+    if (registration.m_public_spend_keys.size() != registration.m_public_view_keys.size()
+        || registration.m_public_spend_keys.size() != registration.m_portions.size())
+      return false;
     contributor_args.addresses.clear();
     contributor_args.addresses.reserve(registration.m_public_spend_keys.size());
     for (size_t i = 0; i < registration.m_public_spend_keys.size(); i++) {
@@ -876,6 +879,8 @@ namespace master_nodes
   master_node_info master_node_list::state_t::get_master_node_details(crypto::public_key mnode_key)
   {
     auto it = master_nodes_infos.find(mnode_key);
+    if (it == master_nodes_infos.end())
+      throw std::invalid_argument("get_master_node_details: master node not found");
     return *it->second;
   }
 

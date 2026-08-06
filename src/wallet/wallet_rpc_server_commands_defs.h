@@ -85,7 +85,6 @@ namespace tools::wallet_rpc {
     }
   }
 
-
   BELDEX_RPC_DOC_INTROSPECT
   // Return the wallet's balance.
   struct GET_BALANCE : RPC_COMMAND
@@ -2586,6 +2585,62 @@ This command is only required if the open wallet is one of the owners of a BNS r
     };
   };
   
+  BELDEX_RPC_DOC_INTROSPECT
+  struct SETUP_BACKGROUND_SYNC : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("setup_background_sync"); }
+
+    struct request
+    {
+      std::string background_sync_type;
+      std::string wallet_password;
+      std::string background_cache_password;
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
+  BELDEX_RPC_DOC_INTROSPECT
+  struct START_BACKGROUND_SYNC : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("start_background_sync"); }
+
+    struct request
+    {
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
+  BELDEX_RPC_DOC_INTROSPECT
+  struct STOP_BACKGROUND_SYNC : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("stop_background_sync"); }
+
+    struct request
+    {
+      std::string wallet_password;
+      std::string seed;
+      std::string seed_offset;
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
   /// List of all supported rpc command structs to allow compile-time enumeration of all supported
   /// RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   /// a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2681,6 +2736,9 @@ This command is only required if the open wallet is one of the owners of a BNS r
     SET_DAEMON,
     SET_LOG_LEVEL,
     SET_LOG_CATEGORIES,
+    SETUP_BACKGROUND_SYNC,
+    START_BACKGROUND_SYNC,
+    STOP_BACKGROUND_SYNC,
     BNS_BUY_MAPPING,
     BNS_UPDATE_MAPPING,
     BNS_RENEW_MAPPING,

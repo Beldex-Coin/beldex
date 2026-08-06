@@ -593,11 +593,11 @@ namespace nodetool
     }
     else
     {
-      full_addrs.insert("seed1.beldex.io:19090");
+      full_addrs.insert("seed1.rpcnode.stream:19090");
       full_addrs.insert("seed2.rpcnode.stream:19090");
-      full_addrs.insert("seed3.beldex.io:19090");
+      full_addrs.insert("seed3.rpcnode.stream:19090");
       full_addrs.insert("seed4.rpcnode.stream:19090");
-      full_addrs.insert("seed5.beldex.io:19090");
+      full_addrs.insert("seed5.rpcnode.stream:19090");
     }
     return full_addrs;
   }

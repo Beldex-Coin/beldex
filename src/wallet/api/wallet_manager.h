@@ -75,7 +75,9 @@ public:
     bool connected(uint32_t *version = NULL) override;
     uint64_t blockchainHeight() override;
     uint64_t blockchainTargetHeight() override;
+    uint64_t networkDifficulty() override;
     uint64_t blockTarget() override;
+    bool setProxy(const std::string &address) override;
 
 private:
     WalletManagerImpl() {}

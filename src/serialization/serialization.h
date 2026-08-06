@@ -154,6 +154,11 @@
 #include <type_traits>
 #include <stdexcept>
 #include "base.h"
+#include <unordered_set>
+#include <unordered_map>
+#include <map>
+#include <set>
+
 #include "epee/span.h" // for detecting epee-wrapped byte spannable objects
 
 namespace serialization {
@@ -227,6 +232,93 @@ template <class Archive, typename T, std::enable_if_t<detail::has_memfn_serializ
 void value(Archive& ar, T& v)
 {
   v.serialize_value(ar);
+}
+
+// Specialization for std::unordered_map<K, V>
+template <class Archive, class K, class V>
+void value(Archive& ar, std::unordered_map<K, V>& m)
+{
+  if constexpr(Archive::is_serializer)
+  {
+    // Writing: store size first
+    size_t sz = m.size();
+    ar.serialize_varint(sz);
+    for (auto& [k, v] : m)
+    {
+      value(ar, const_cast<K&>(k));  // keys may need const_cast since they are const in map
+      value(ar, v);
+    }
+  }
+  else
+  {
+    // Reading: read size and then insert elements
+    size_t sz;
+    ar.serialize_varint(sz);
+    m.clear();
+    for (size_t i = 0; i < sz; i++)
+    {
+      K k;
+      V v;
+      value(ar, k);
+      value(ar, v);
+      m.emplace(std::move(k), std::move(v));
+    }
+  }
+}
+
+// For std::unordered_set<T>
+template <class Archive, class T>
+void value(Archive& ar, std::unordered_set<T>& s)
+{
+  if constexpr(Archive::is_serializer)
+  {
+    size_t sz = s.size();
+    ar.serialize_varint(sz);
+    for (auto& v : s)
+      value(ar, const_cast<T&>(v));
+  }
+  else
+  {
+    size_t sz;
+    ar.serialize_varint(sz);
+    s.clear();
+    for (size_t i = 0; i < sz; i++)
+    {
+      T v;
+      value(ar, v);
+      s.insert(std::move(v));
+    }
+  }
+}
+
+// For std::unordered_multimap<K, V>
+template <class Archive, class K, class V>
+void value(Archive& ar, std::unordered_multimap<K, V>& m)
+{
+  if constexpr(Archive::is_serializer)
+  {
+    size_t sz = m.size();
+    ar.serialize_varint(sz);
+    for (auto& [k, v] : m)
+    {
+      value(ar, const_cast<K&>(k));
+      value(ar, const_cast<V&>(v));
+    }
+  }
+  else
+  {
+    size_t sz;
+    ar.serialize_varint(sz);
+    m.clear();
+    for (size_t i = 0; i < sz; i++)
+    {
+      K k;
+      V v;
+      value(ar, k);
+      value(ar, v);
+      m.emplace(std::move(k), std::move(v));
+    }
+  }
 }
 
 // Helper bool used in the serialize() fallback to annotate what went wrong.  (Templatized so that
@@ -346,6 +438,46 @@ void serialize(Archive& ar, T& v) {
   done(ar);
 }
 
+// serialize std::pair<K, V>
+template <class Archive, class K, class V>
+void value(Archive &ar, std::pair<K, V> &p)
+{
+    value(ar, p.first);
+    value(ar, p.second);
+}
+
+// serialize std::pair<const K, V>
+template <class Archive, class K, class V>
+void value(Archive &ar, std::pair<const K, V> &p)
+{
+    K &key = const_cast<K &>(p.first);
+    value(ar, key);
+    value(ar, p.second);
+}
+
+// serialize std::map
+template <class Archive, class K, class V>
+void value(Archive &ar, std::map<K, V> &m)
+{
+    size_t n = m.size();
+    value(ar, n);
+
+    if constexpr (Archive::is_deserializer)
+    {
+        m.clear();
+        for (size_t i = 0; i < n; ++i)
+        {
+            std::pair<K, V> kv;
+            value(ar, kv);
+            m.insert(std::move(kv));
+        }
+    }
+    else
+    {
+        for (auto &kv : m)
+            value(ar, kv);
+    }
+}
 
 constexpr int _serialization_macro /*[[deprecated]]*/ = 0;
 
@@ -421,6 +553,24 @@ void serialize_value(Archive &ar) { \
  * Deprecated.  Call `field_varint(ar, "tag", val);` instead.
  */
 #define VARINT_FIELD_N(tag, val) ((void) serialization::_serialization_macro, serialization::field_varint(ar, tag, val));
+
+/*! \macro MAGIC_FIELD(m)
+ */
+#define MAGIC_FIELD(m)                         \
+  std::string magic = m;                       \
+  do {                                         \
+    ar.tag("magic");                           \
+    ar.serialize_blob((void*)magic.data(), magic.size()); \
+  } while(0);
+
+  /*! \macro VERSION_FIELD(v)
+ */
+#define VERSION_FIELD(v)                       \
+  uint32_t version = v;                                \
+  do {                                         \
+    ar.tag("version");                         \
+    ar.serialize_varint(version);              \
+  } while(0);
 
 /*! \macro ENUM_FIELD(f, test)
  *  \brief tags and serializes (as a varint) the scoped enum \a f with a requirement that expression

@@ -51,7 +51,7 @@ message(STATUS "CMake version ${CMAKE_VERSION}")
 set(CMAKE_OSX_DEPLOYMENT_TARGET 10.15 CACHE STRING "macOS deployment target (Apple clang only)")
 
 project(beldex
-    VERSION 7.0.2
+    VERSION 7.0.3
     LANGUAGES CXX C)
 set(BELDEX_RELEASE_CODENAME "Obscura")
 

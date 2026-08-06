@@ -274,6 +274,8 @@ namespace cryptonote
           return false;
       
         uint64_t block_height = m_blockchain.get_current_blockchain_height();
+        if (!m_blockchain.get_master_node_list().is_master_node(mnode_key))
+          return false;
         const master_nodes::master_node_info &node_info = m_blockchain.get_master_node_list().get_master_node_details(mnode_key);
 
         for (const auto &contributor : node_info.contributors)

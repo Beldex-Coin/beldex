@@ -45,6 +45,7 @@ public:
     TransactionInfo* transaction(std::string_view id) const override;
     std::vector<TransactionInfo*> getAll() const override;
     void refresh() override;
+    void setTxNote(const std::string &txid, const std::string &note) override;
 
 private:
 

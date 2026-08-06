@@ -106,7 +106,7 @@ void serialize_container(Archive& ar, C& v)
     else {
       T e{};
       detail::serialize_container_element(ar, e);
-      e.insert(std::move(e));
+      v.insert(std::move(e));
     }
   }
 }
