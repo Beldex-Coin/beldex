@@ -1668,7 +1668,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Start mining in the beldex daemon.
-  struct START_MINING : RPC_COMMAND
+  struct START_MINING : RESTRICTED
   {
     static constexpr auto names() { return NAMES("start_mining"); }
 
@@ -1684,7 +1684,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Stop mining in the beldex daemon.
-  struct STOP_MINING : RPC_COMMAND
+  struct STOP_MINING : RESTRICTED
   {
     static constexpr auto names() { return NAMES("stop_mining"); }
 
