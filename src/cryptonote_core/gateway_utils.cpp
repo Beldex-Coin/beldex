@@ -4,6 +4,8 @@
 
 #include "gateway_utils.h"
 
+#include <cstring>
+#include <oxenc/endian.h>
 #include <limits>
 #include <mutex>
 #include <set>
@@ -228,7 +230,10 @@ bool tx_has_gateway_constructs(const transaction& tx)
     if (std::holds_alternative<tx_out_gateway>(o.target))
       return true;
   tx_extra_gateway_descriptor_operation op{};
-  return get_field_from_tx_extra(tx.extra, op, 0);
+  if (get_field_from_tx_extra(tx.extra, op, 0))
+    return true;
+  tx_extra_gateway_bridge_memo memo{};
+  return get_field_from_tx_extra(tx.extra, memo, 0);
 }
 
 crypto::hash gateway_balance_message(network_type nettype, const transaction& tx)
@@ -823,6 +828,101 @@ namespace
   }
 }
 
+bool validate_gateway_bridge_memos(const transaction& tx, std::string& reason)
+{
+  // Deliberately does NOT inspect the memo's chain_id/evm_addr -- it
+  // structurally can't. Those only exist inside `m.ciphertext`, encrypted; this
+  // function only ever sees the plaintext fields (version, output_index) below.
+  // Decoding them requires the gateway's view secret key
+  // (decrypt_gateway_bridge_memo, below), which no consensus path ever has for
+  // an arbitrary gateway. That is also why chain_id is stored as the raw EIP-155
+  // id rather than an agreed-upon index: nodes never need to agree on a value
+  // they cannot see. If a future change moves any of it into a plaintext,
+  // validator-visible field, this reasoning stops applying and a real consensus
+  // check has to be added here.
+  std::set<uint32_t> seen;
+  size_t skip = 0;
+  tx_extra_gateway_bridge_memo m{};
+  while (get_field_from_tx_extra(tx.extra, m, skip++))
+  {
+    if (m.version != 0)
+    {
+      reason = "unsupported gateway bridge memo version";
+      return false;
+    }
+    if (!seen.insert(m.output_index).second)
+    {
+      reason = "duplicate gateway bridge memo output_index";
+      return false;
+    }
+    if (m.output_index >= tx.vout.size() || !std::holds_alternative<tx_out_gateway>(tx.vout[m.output_index].target))
+    {
+      reason = "gateway bridge memo output_index does not reference a gateway output";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool decrypt_gateway_bridge_memo(const transaction& tx, const tx_extra_gateway_bridge_memo& memo,
+                                 const crypto::secret_key& gateway_view_secret_key,
+                                 gateway_bridge_memo_plaintext& out)
+{
+  if (memo.output_index >= tx.vout.size() || !std::holds_alternative<tx_out_gateway>(tx.vout[memo.output_index].target))
+    return false;
+
+  // Only decrypt memos addressed to *this* gateway. A tx may carry gateway
+  // outputs (and memos) for several different gateways; without this we would
+  // attempt a wrong-key decrypt on someone else's memo and rely solely on the
+  // 4-byte zero padding to notice, which it does only with probability
+  // 1 - 2^-32. Matching the output's gateway_addr against the pubkey of the
+  // supplied view secret removes those attempts structurally.
+  {
+    crypto::public_key gw_pub{};
+    if (!crypto::secret_key_to_public_key(gateway_view_secret_key, gw_pub))
+      return false;
+    if (std::get<tx_out_gateway>(tx.vout[memo.output_index].target).gateway_addr != gw_pub)
+      return false;
+  }
+
+  const crypto::public_key tx_pub_key = get_tx_pub_key_from_extra(tx.extra);
+  if (tx_pub_key == crypto::null_pkey)
+    return false;
+
+  crypto::key_derivation derivation;
+  if (!crypto::generate_key_derivation(tx_pub_key, gateway_view_secret_key, derivation))
+    return false;
+  crypto::ec_scalar h;
+  crypto::derivation_to_scalar(derivation, memo.output_index, h);
+  std::string buf;
+  buf.reserve(hashkey::GW_BRIDGE_MEMO_MASK.size() + sizeof(h));
+  buf.append(hashkey::GW_BRIDGE_MEMO_MASK);
+  buf.append(reinterpret_cast<const char*>(&h), sizeof(h));
+  const crypto::hash mask = crypto::cn_fast_hash(buf.data(), buf.size());
+
+  unsigned char plain[32];
+  for (size_t i = 0; i < sizeof(plain); ++i)
+    plain[i] = static_cast<unsigned char>(memo.ciphertext.data[i]) ^ static_cast<unsigned char>(mask.data[i]);
+
+  // Integrity check: the 4 trailing plaintext bytes must be zero (see
+  // encrypt_gateway_bridge_memo). A wrong key produces garbage there instead.
+  for (size_t i = 28; i < sizeof(plain); ++i)
+    if (plain[i] != 0)
+      return false;
+
+  // chain_id is stored explicitly little-endian on the wire (see
+  // encrypt_gateway_bridge_memo); convert back to host order here.
+  uint64_t chain_id;
+  std::memcpy(&chain_id, plain, sizeof(chain_id));
+  oxenc::little_to_host_inplace(chain_id);
+  crypto::eth_address evm_addr;
+  std::memcpy(&evm_addr, plain + sizeof(chain_id), sizeof(evm_addr));
+
+  out.chain_id = chain_id;
+  out.evm_addr = evm_addr;
+  return true;
+}
+
 bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type nettype, const transaction& tx,
                                                hf hf_version, std::string& reason)
 {
@@ -893,6 +993,8 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
 
   // ---- deposits & withdrawals ----
   if (!validate_gateway_deposits(db, tx, hf_version, reason))
+    return false;
+  if (!validate_gateway_bridge_memos(tx, reason))
     return false;
   if (!validate_gateway_withdrawals(db, nettype, tx, hf_version, reason))
     return false;

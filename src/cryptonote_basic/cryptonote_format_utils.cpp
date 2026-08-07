@@ -1002,6 +1002,14 @@ namespace cryptonote
     return result;
   }
   //---------------------------------------------------------------
+  bool add_gateway_bridge_memo_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_gateway_bridge_memo& memo)
+  {
+    tx_extra_field field = memo;
+    bool result = add_tx_extra_field_to_tx_extra(tx_extra, field);
+    CHECK_AND_NO_ASSERT_MES_L1(result, false, "failed to serialize gateway bridge memo");
+    return result;
+  }
+  //---------------------------------------------------------------
   bool get_inputs_money_amount(const transaction& tx, uint64_t& money)
   {
     money = 0;

@@ -140,6 +140,7 @@ namespace hashkey {
   inline constexpr std::string_view GW_OWNERSHIP    = "gateway_ownership"sv;    // descriptor-update ownership proof message
   inline constexpr std::string_view GW_OUT_PID_MASK = "gateway_out_pid_mask"sv; // integrated-address payment-id encryption mask
   inline constexpr std::string_view GW_BALANCE      = "gateway_balance"sv;      // gw→wallet withdrawal balance-proof message
+  inline constexpr std::string_view GW_BRIDGE_MEMO_MASK = "gateway_bridge_memo_mask"sv; // bridge-memo (chain+evm_addr) encryption mask
 }
 
 // Maximum allowed stake contribution, as a fraction of the available contribution room.  This
@@ -271,6 +272,77 @@ enum network_type : uint8_t
   FAKECHAIN,
   UNDEFINED = 255
 };
+
+// Destination chains accepted for gateway bridge memos (HF22+).
+//
+// This is an INPUT-SIDE allow-list only, never consensus: the memo itself
+// carries the raw EIP-155 chain id (see tx_extra_gateway_bridge_memo), which
+// only exists once decrypted, so no node ever validates it. The list exists so
+// a wallet/daemon rejects a typo'd or unsupported chain at the point the user
+// submits it, rather than silently encrypting a routing hint the bridge
+// operator cannot honour.
+//
+// Consequences of it being input-side only:
+//  - Decoding is unaffected: an operator whose build predates a chain being
+//    added still reads the id out of the memo correctly, it just won't have a
+//    friendly name for it. Nothing breaks, nothing forks.
+//  - Adding a chain is a plain code change here; no wire format changes.
+//
+// `nettype` is the Beldex network the chain may be used from, so a mainnet
+// chain id typed into a testnet wallet is rejected as the mistake it is.
+struct BridgeChain
+{
+  uint64_t         chain_id;   // real EIP-155 chain id
+  network_type     nettype;    // Beldex network this chain is accepted on
+  std::string_view name;
+};
+
+inline constexpr std::array SUPPORTED_BRIDGE_CHAINS = {
+  BridgeChain{1,        MAINNET, "ethereum"},
+  BridgeChain{10,       MAINNET, "optimism"},
+  BridgeChain{56,       MAINNET, "bsc"},
+  BridgeChain{137,      MAINNET, "polygon"},
+  BridgeChain{250,      MAINNET, "fantom"},
+  BridgeChain{8453,     MAINNET, "base"},
+  BridgeChain{42161,    MAINNET, "arbitrum"},
+  BridgeChain{43114,    MAINNET, "avalanche"},
+
+  BridgeChain{97,       TESTNET, "bsc-testnet"},
+  BridgeChain{4002,     TESTNET, "fantom-testnet"},
+  BridgeChain{17000,    TESTNET, "holesky"},
+  BridgeChain{43113,    TESTNET, "avalanche-fuji"},
+  BridgeChain{80002,    TESTNET, "polygon-amoy"},
+  BridgeChain{84532,    TESTNET, "base-sepolia"},
+  BridgeChain{421614,   TESTNET, "arbitrum-sepolia"},
+  BridgeChain{11155111, TESTNET, "sepolia"},
+  BridgeChain{11155420, TESTNET, "optimism-sepolia"},
+};
+
+// Looks up a chain id in the allow-list, ignoring which network it belongs to.
+// Returns nullptr if the chain is not supported at all. Callers that need the
+// network check should compare the returned entry's `nettype` with their own,
+// so they can tell "unknown chain" apart from "wrong network for this chain".
+inline constexpr const BridgeChain* find_bridge_chain(uint64_t chain_id)
+{
+  for (const auto& c : SUPPORTED_BRIDGE_CHAINS)
+    if (c.chain_id == chain_id)
+      return &c;
+  return nullptr;
+}
+
+// Comma-separated "name(id)" list of the chains usable on `nettype`, for error
+// messages that tell the user what they *can* pick.
+inline std::string supported_bridge_chains_str(network_type nettype)
+{
+  std::string out;
+  for (const auto& c : SUPPORTED_BRIDGE_CHAINS)
+  {
+    if (c.nettype != nettype) continue;
+    if (!out.empty()) out += ", ";
+    out += std::string(c.name) + "(" + std::to_string(c.chain_id) + ")";
+  }
+  return out;
+}
 
 // Constants for older hard-forks that are mostly irrelevant now, but are still needed to sync the
 // older parts of the blockchain:
