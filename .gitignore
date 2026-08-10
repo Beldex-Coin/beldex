@@ -132,3 +132,4 @@ contrib/brew/Brewfile.lock.json
 /utils/local-devnet/.ceremony/
 /utils/local-devnet/gateway.env
 /utils/local-devnet/devnet-bridge.env
+scripts/.venv/

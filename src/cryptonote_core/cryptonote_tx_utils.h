@@ -178,11 +178,11 @@ namespace cryptonote
     crypto::public_key gateway_id{};
     uint64_t gateway_payment_id = 0;
 
-    // Bridge deposit-routing memo (HF23, plan §A.5): the plaintext destination
-    // {version, chain_id, evm_addr} to encrypt to the gateway view key and attach as
-    // a tx_extra_gateway_deposit_memo. Empty for a non-bridge deposit. Bounded by
-    // GATEWAY_DEPOSIT_MEMO_MAX_BYTES.
-    std::vector<uint8_t> gateway_bridge_memo;
+    // Gateway bridge memo (HF22+): OPTIONAL destination-chain routing hint,
+    // encrypted into a paired tx_extra entry. chain_id is the destination
+    // chain's real EIP-155 id; 0 means "no memo" (0 is not a valid chain id).
+    uint64_t gateway_bridge_chain_id = 0;
+    crypto::eth_address gateway_bridge_evm_addr{};
 
     tx_destination_entry() : amount(0), addr{}, is_subaddress(false), is_integrated(false) { }
     tx_destination_entry(uint64_t a, const account_public_address &ad, bool is_subaddress) : amount(a), addr(ad), is_subaddress(is_subaddress), is_integrated(false) { }
@@ -217,7 +217,8 @@ namespace cryptonote
       FIELD(is_gateway)
       FIELD(gateway_id)
       VARINT_FIELD(gateway_payment_id)
-      FIELD(gateway_bridge_memo)
+      VARINT_FIELD(gateway_bridge_chain_id)
+      FIELD(gateway_bridge_evm_addr)
     END_SERIALIZE()
   };
 
@@ -247,6 +248,11 @@ namespace cryptonote
     crypto::public_key gateway_id;
     uint64_t amount = 0;
     uint64_t payment_id = 0; // 0 = none (plain gwB destination)
+
+    // Gateway bridge memo (HF22+), same semantics as
+    // tx_destination_entry::gateway_bridge_chain_id/evm_addr.
+    uint64_t gateway_bridge_chain_id = 0;
+    crypto::eth_address gateway_bridge_evm_addr{};
   };
 
   // Build an unsigned pure-gateway withdrawal (gateway→gateway). On success `tx`

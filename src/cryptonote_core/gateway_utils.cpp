@@ -5,6 +5,8 @@
 #include "gateway_utils.h"
 
 #include <algorithm>
+#include <cstring>
+#include <oxenc/endian.h>
 #include <limits>
 #include <mutex>
 #include <set>
@@ -50,11 +52,16 @@ namespace
     auto it = cache.find(static_cast<uint8_t>(nettype));
     if (it == cache.end())
     {
-      crypto::hash h = crypto::null_hash;
       block genesis{};
-      if (generate_genesis_block(genesis, nettype))
-        h = get_block_hash(genesis);
-      it = cache.emplace(static_cast<uint8_t>(nettype), h).first;
+      // Hard-fail rather than fall back to null_hash. The genesis hash is the
+      // SOLE anti-cross-chain-replay binding for keyless gateway signatures; an
+      // all-zero fallback would make every signature on this network share the
+      // same (zero) binding and become replayable across chains. A failure here
+      // means a misconfigured network and must not be silently papered over.
+      // See docs/GATEWAY_SECURITY_FIXES.md (F4).
+      CHECK_AND_ASSERT_THROW_MES(generate_genesis_block(genesis, nettype),
+          "gateway: failed to generate genesis block for chain binding");
+      it = cache.emplace(static_cast<uint8_t>(nettype), get_block_hash(genesis)).first;
     }
     return it->second;
   }
@@ -91,15 +98,6 @@ namespace
     return v;
   }
 
-  std::vector<tx_extra_gateway_deposit_memo> extract_gateway_memos(const transaction& tx)
-  {
-    std::vector<tx_extra_gateway_deposit_memo> v;
-    size_t skip = 0;
-    tx_extra_gateway_deposit_memo m{};
-    while (get_field_from_tx_extra(tx.extra, m, skip++))
-      v.push_back(m);
-    return v;
-  }
 }
 
 std::vector<tx_extra_gateway_release_ref> extract_gateway_release_refs(const transaction& tx)
@@ -551,7 +549,10 @@ bool tx_has_gateway_constructs(const transaction& tx)
     if (std::holds_alternative<tx_out_gateway>(o.target))
       return true;
   tx_extra_gateway_descriptor_operation op{};
-  return get_field_from_tx_extra(tx.extra, op, 0);
+  if (get_field_from_tx_extra(tx.extra, op, 0))
+    return true;
+  tx_extra_gateway_bridge_memo memo{};
+  return get_field_from_tx_extra(tx.extra, memo, 0);
 }
 
 crypto::hash gateway_balance_message(network_type nettype, const transaction& tx)
@@ -958,78 +959,6 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
   }
 }
 
-namespace
-{
-  // XOR keystream for the deposit memo: concatenated cn_fast_hash blocks keyed by
-  // the DH-derived scalar and a block counter, mirroring encrypt_gateway_payment_id.
-  std::vector<uint8_t> deposit_memo_keystream(const crypto::key_derivation& derivation,
-                                              size_t output_index, size_t len)
-  {
-    crypto::ec_scalar h;
-    crypto::derivation_to_scalar(derivation, output_index, h);
-    std::vector<uint8_t> ks;
-    ks.reserve(((len + 31) / 32) * 32);
-    for (uint32_t ctr = 0; ks.size() < len; ++ctr)
-    {
-      std::string buf;
-      buf.reserve(hashkey::GW_DEPOSIT_MEMO.size() + sizeof(h) + sizeof(ctr));
-      buf.append(hashkey::GW_DEPOSIT_MEMO);
-      buf.append(reinterpret_cast<const char*>(&h), sizeof(h));
-      buf.append(reinterpret_cast<const char*>(&ctr), sizeof(ctr));
-      const crypto::hash block = crypto::cn_fast_hash(buf.data(), buf.size());
-      ks.insert(ks.end(), block.data, block.data + sizeof(block.data));
-    }
-    ks.resize(len);
-    return ks;
-  }
-
-  bool xor_memo(const std::vector<uint8_t>& in, const crypto::key_derivation& derivation,
-                size_t output_index, std::vector<uint8_t>& out)
-  {
-    const auto ks = deposit_memo_keystream(derivation, output_index, in.size());
-    out.resize(in.size());
-    for (size_t i = 0; i < in.size(); ++i) out[i] = in[i] ^ ks[i];
-    return true;
-  }
-}
-
-bool encrypt_gateway_deposit_memo(const std::vector<uint8_t>& plaintext, const crypto::secret_key& tx_secret,
-                                  const crypto::public_key& gateway_view_pub, size_t output_index,
-                                  std::vector<uint8_t>& out_ciphertext)
-{
-  if (plaintext.size() > GATEWAY_DEPOSIT_MEMO_MAX_BYTES)
-    return false;
-  crypto::key_derivation derivation;
-  if (!crypto::generate_key_derivation(gateway_view_pub, tx_secret, derivation))
-    return false;
-  return xor_memo(plaintext, derivation, output_index, out_ciphertext);
-}
-
-bool decrypt_gateway_deposit_memo(const std::vector<uint8_t>& ciphertext, const crypto::public_key& tx_public,
-                                  const crypto::secret_key& gateway_view_secret, size_t output_index,
-                                  std::vector<uint8_t>& out_plaintext)
-{
-  if (ciphertext.size() > GATEWAY_DEPOSIT_MEMO_MAX_BYTES)
-    return false;
-  crypto::key_derivation derivation;
-  if (!crypto::generate_key_derivation(tx_public, gateway_view_secret, derivation))
-    return false;
-  return xor_memo(ciphertext, derivation, output_index, out_plaintext);
-}
-
-std::vector<uint8_t> build_bridge_deposit_memo(uint64_t chain_id, const std::array<uint8_t, 20>& evm_addr)
-{
-  // 32-byte layout, mirroring beldex_watcher::BridgeMemo::encode (signer side).
-  std::vector<uint8_t> m(32, 0);
-  m[0] = 1; // version
-  // m[1] flags = 0
-  for (int i = 0; i < 8; ++i)
-    m[2 + i] = static_cast<uint8_t>((chain_id >> (8 * (7 - i))) & 0xff); // big-endian
-  std::copy(evm_addr.begin(), evm_addr.end(), m.begin() + 10);
-  // m[30..32] reserved = 0
-  return m;
-}
-
 bool validate_gateway_freeze_operation(BlockchainDB& db, network_type nettype, const transaction& /*tx*/,
                                        const tx_extra_gateway_freeze& op,
                                        const checkpoint_quorum_resolver& resolve_quorum, std::string& reason)
@@ -1162,6 +1091,67 @@ namespace
       return false;
     }
 
+    // Canonical proof-container layout. The proof vector is covered by no
+    // signature (the owner signs the tx PREFIX, and gateway_proofs is not part
+    // of the prefix), so its encoding must be pinned exactly. Any spare degree
+    // of freedom here — a permuted order, or a surplus element that no rule
+    // counts — is a second, equally valid encoding of the same authorization,
+    // and therefore a second transaction with a different tx id. Since a
+    // txin_gateway has no key image, tx-id uniqueness is the ONLY replay guard,
+    // so such a variant is a replayable withdrawal that debits the gateway
+    // again; repeated with fresh padding it drains the account outright.
+    //
+    // Exact size + fixed position for every element, and reject anything else.
+    // Canonical order (matches construct_gateway_withdraw{,_to_wallet}_tx and
+    // finalize_gateway_withdraw_tx):
+    //   [ownership_proof]? [balance_proof]? [input_sig × gw_ins]
+    {
+      // Every gateway_input_sig signs the SAME tx-wide message
+      // (gateway_input_message carries no per-input index), so the positional
+      // check below pins each slot's TYPE but not its CONTENT. With two or more
+      // gateway inputs resolving to the same owner key, an external signer that
+      // emits byte-distinct signatures per slot (Schnorr nonces are random)
+      // would let a third party permute the slots: both still verify, but the
+      // tx id changes -- a replayable withdrawal. GATEWAY_TX_MAX_INPUTS == 1
+      // (enforced below in this file) makes that unreachable today.
+      static_assert(GATEWAY_TX_MAX_INPUTS == 1,
+          "raising GATEWAY_TX_MAX_INPUTS requires binding the input index into "
+          "gateway_input_message and verifying sigs[i] against input i, or the "
+          "input signatures become permutable between slots");
+
+      const bool is_descriptor_tx = tx.type == txtype::register_gateway_address
+                                 || tx.type == txtype::update_gateway_address;
+      const bool balance_required = gw_ins > 0 && non_gw_outs > 0;
+      const size_t expected = (is_descriptor_tx ? 1u : 0u) + (balance_required ? 1u : 0u) + gw_ins;
+
+      if (tx.gateway_proofs.size() != expected)
+      {
+        reason = "gateway proof count mismatch (expected " + std::to_string(expected) +
+                 ", got " + std::to_string(tx.gateway_proofs.size()) + ")";
+        return false;
+      }
+
+      size_t i = 0;
+      if (is_descriptor_tx && !std::holds_alternative<gateway_ownership_proof>(tx.gateway_proofs[i++]))
+      {
+        reason = "gateway proofs: expected the ownership proof at position 0";
+        return false;
+      }
+      if (balance_required && !std::holds_alternative<gateway_balance_proof>(tx.gateway_proofs[i++]))
+      {
+        reason = "gateway proofs: expected the balance proof at position " + std::to_string(i - 1);
+        return false;
+      }
+      for (; i < tx.gateway_proofs.size(); ++i)
+      {
+        if (!std::holds_alternative<gateway_input_sig>(tx.gateway_proofs[i]))
+        {
+          reason = "gateway proofs: expected an input signature at position " + std::to_string(i);
+          return false;
+        }
+      }
+    }
+
     // Balance proof presence: REQUIRED for gw→wallet withdrawals (gateway
     // inputs paying confidential stealth outputs — no pseudo-outs exist, so
     // the derived output masks leave a (Σmask)·G residual that must be proven
@@ -1253,6 +1243,101 @@ namespace
   }
 }
 
+bool validate_gateway_bridge_memos(const transaction& tx, std::string& reason)
+{
+  // Deliberately does NOT inspect the memo's chain_id/evm_addr -- it
+  // structurally can't. Those only exist inside `m.ciphertext`, encrypted; this
+  // function only ever sees the plaintext fields (version, output_index) below.
+  // Decoding them requires the gateway's view secret key
+  // (decrypt_gateway_bridge_memo, below), which no consensus path ever has for
+  // an arbitrary gateway. That is also why chain_id is stored as the raw EIP-155
+  // id rather than an agreed-upon index: nodes never need to agree on a value
+  // they cannot see. If a future change moves any of it into a plaintext,
+  // validator-visible field, this reasoning stops applying and a real consensus
+  // check has to be added here.
+  std::set<uint32_t> seen;
+  size_t skip = 0;
+  tx_extra_gateway_bridge_memo m{};
+  while (get_field_from_tx_extra(tx.extra, m, skip++))
+  {
+    if (m.version != 0)
+    {
+      reason = "unsupported gateway bridge memo version";
+      return false;
+    }
+    if (!seen.insert(m.output_index).second)
+    {
+      reason = "duplicate gateway bridge memo output_index";
+      return false;
+    }
+    if (m.output_index >= tx.vout.size() || !std::holds_alternative<tx_out_gateway>(tx.vout[m.output_index].target))
+    {
+      reason = "gateway bridge memo output_index does not reference a gateway output";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool decrypt_gateway_bridge_memo(const transaction& tx, const tx_extra_gateway_bridge_memo& memo,
+                                 const crypto::secret_key& gateway_view_secret_key,
+                                 gateway_bridge_memo_plaintext& out)
+{
+  if (memo.output_index >= tx.vout.size() || !std::holds_alternative<tx_out_gateway>(tx.vout[memo.output_index].target))
+    return false;
+
+  // Only decrypt memos addressed to *this* gateway. A tx may carry gateway
+  // outputs (and memos) for several different gateways; without this we would
+  // attempt a wrong-key decrypt on someone else's memo and rely solely on the
+  // 4-byte zero padding to notice, which it does only with probability
+  // 1 - 2^-32. Matching the output's gateway_addr against the pubkey of the
+  // supplied view secret removes those attempts structurally.
+  {
+    crypto::public_key gw_pub{};
+    if (!crypto::secret_key_to_public_key(gateway_view_secret_key, gw_pub))
+      return false;
+    if (std::get<tx_out_gateway>(tx.vout[memo.output_index].target).gateway_addr != gw_pub)
+      return false;
+  }
+
+  const crypto::public_key tx_pub_key = get_tx_pub_key_from_extra(tx.extra);
+  if (tx_pub_key == crypto::null_pkey)
+    return false;
+
+  crypto::key_derivation derivation;
+  if (!crypto::generate_key_derivation(tx_pub_key, gateway_view_secret_key, derivation))
+    return false;
+  crypto::ec_scalar h;
+  crypto::derivation_to_scalar(derivation, memo.output_index, h);
+  std::string buf;
+  buf.reserve(hashkey::GW_BRIDGE_MEMO_MASK.size() + sizeof(h));
+  buf.append(hashkey::GW_BRIDGE_MEMO_MASK);
+  buf.append(reinterpret_cast<const char*>(&h), sizeof(h));
+  const crypto::hash mask = crypto::cn_fast_hash(buf.data(), buf.size());
+
+  unsigned char plain[32];
+  for (size_t i = 0; i < sizeof(plain); ++i)
+    plain[i] = static_cast<unsigned char>(memo.ciphertext.data[i]) ^ static_cast<unsigned char>(mask.data[i]);
+
+  // Integrity check: the 4 trailing plaintext bytes must be zero (see
+  // encrypt_gateway_bridge_memo). A wrong key produces garbage there instead.
+  for (size_t i = 28; i < sizeof(plain); ++i)
+    if (plain[i] != 0)
+      return false;
+
+  // chain_id is stored explicitly little-endian on the wire (see
+  // encrypt_gateway_bridge_memo); convert back to host order here.
+  uint64_t chain_id;
+  std::memcpy(&chain_id, plain, sizeof(chain_id));
+  oxenc::little_to_host_inplace(chain_id);
+  crypto::eth_address evm_addr;
+  std::memcpy(&evm_addr, plain + sizeof(chain_id), sizeof(evm_addr));
+
+  out.chain_id = chain_id;
+  out.evm_addr = evm_addr;
+  return true;
+}
+
 bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type nettype, const transaction& tx,
                                                hf hf_version, const checkpoint_quorum_resolver& resolve_quorum,
                                                std::string& reason)
@@ -1260,17 +1345,25 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
   // ---- HF23 Sovereign Bridge governance & routing fields -------------------
   const auto freezes      = extract_gateway_freezes(tx);
   const auto repoints     = extract_gateway_repoints(tx);
-  const auto memos        = extract_gateway_memos(tx);
   const auto release_refs = extract_gateway_release_refs(tx);
 
   const bool has_governance = !freezes.empty() || !repoints.empty();
 
+  // Bridge deposit-routing memos are HF22, not HF23 — they are gated (and
+  // structurally validated) by validate_gateway_bridge_memos on the gateway path,
+  // not here. Their presence still matters for the governance clean-carrier rule
+  // below, so detect it.
+  const bool has_bridge_memo = [&] {
+    tx_extra_gateway_bridge_memo m{};
+    return get_field_from_tx_extra(tx.extra, m);
+  }();
+
   if (hf_version < feature::BRIDGE)
   {
-    // Pre-HF23: none of the bridge fields may appear.
-    if (has_governance || !memos.empty() || !release_refs.empty())
+    // Pre-HF23: none of the HF23 bridge fields may appear.
+    if (has_governance || !release_refs.empty())
     {
-      reason = "gateway governance / deposit-memo / release-ref field before HF23";
+      reason = "gateway governance / release-ref field before HF23";
       return false;
     }
   }
@@ -1288,14 +1381,14 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
     }
 
     // A governance tx is a clean carrier: no descriptor ops, no gateway in/out,
-    // no deposit memo may ride alongside a freeze/repoint.
+    // no bridge memo may ride alongside a freeze/repoint.
     if (has_governance)
     {
       const bool has_gw_construct =
           tx_has_gateway_constructs(tx) ||
           std::any_of(tx.vout.begin(), tx.vout.end(),
                       [](const tx_out& o){ return std::holds_alternative<tx_out_gateway>(o.target); }) ||
-          !memos.empty() || !release_refs.empty();
+          has_bridge_memo || !release_refs.empty();
       if (has_gw_construct)
       {
         reason = "gateway governance op must not ride alongside other gateway constructs";
@@ -1305,33 +1398,6 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
         return false;
       if (!repoints.empty() && !validate_gateway_repoint_operation(db, nettype, tx, repoints.front(), resolve_quorum, reason))
         return false;
-    }
-
-    // Deposit-routing memos (A.5): bounded size, target an existing gateway that
-    // this tx actually deposits to. Encryption/semantics are off-chain; consensus
-    // only bounds the blob and binds it to a real deposit.
-    for (const auto& m : memos)
-    {
-      if (m.enc_memo.size() > GATEWAY_DEPOSIT_MEMO_MAX_BYTES)
-      {
-        reason = "gateway deposit memo exceeds the maximum size";
-        return false;
-      }
-      const bool deposits_to_target = std::any_of(tx.vout.begin(), tx.vout.end(),
-          [&](const tx_out& o){
-            const auto* g = std::get_if<tx_out_gateway>(&o.target);
-            return g && g->gateway_addr == m.gateway_id;
-          });
-      if (!deposits_to_target)
-      {
-        reason = "gateway deposit memo does not correspond to a deposit output in this tx";
-        return false;
-      }
-      if (!db.gateway_exists(m.gateway_id))
-      {
-        reason = "gateway deposit memo targets an unregistered gateway";
-        return false;
-      }
     }
 
     // Mandatory release ref for a bridge-reserve gateway (HF23, §3.6): a withdrawal
@@ -1484,6 +1550,8 @@ bool validate_tx_gateway_operations_against_db(BlockchainDB& db, network_type ne
 
   // ---- deposits & withdrawals ----
   if (!validate_gateway_deposits(db, tx, hf_version, reason))
+    return false;
+  if (!validate_gateway_bridge_memos(tx, reason))
     return false;
   if (!validate_gateway_withdrawals(db, nettype, tx, hf_version, reason))
     return false;

@@ -127,33 +127,6 @@ bool verify_bridge_rotation_evidence(const tx_extra_bridge_rotation_ack& ack,
                                      const std::vector<crypto::ed25519_public_key>& signer_keys,
                                      size_t threshold, network_type nettype, std::string& reason);
 
-// ---- Bridge deposit-routing memo (HF23, plan §A.5) -------------------------
-// Encrypt / decrypt the bounded {dst_chain_id, dst_addr} memo attached to a
-// bridge deposit. A keystream Hs(GW_DEPOSIT_MEMO ‖ h ‖ counter) — derived from
-// the DH shared secret between the tx key and the gateway view key (the gateway
-// address id) at `output_index` — is XORed over the plaintext, exactly mirroring
-// the integrated-address payment-id mask. Only the gateway owner (view secret)
-// can recompute it. Sender calls encrypt with (tx_secret, gateway_view_pub);
-// the owner/watcher calls decrypt with (tx_public, gateway_view_secret) — DH
-// symmetry yields the same keystream. Ciphertext length == plaintext length,
-// bounded by GATEWAY_DEPOSIT_MEMO_MAX_BYTES (consensus rejects longer).
-bool encrypt_gateway_deposit_memo(const std::vector<uint8_t>& plaintext, const crypto::secret_key& tx_secret,
-                                  const crypto::public_key& gateway_view_pub, size_t output_index,
-                                  std::vector<uint8_t>& out_ciphertext);
-bool decrypt_gateway_deposit_memo(const std::vector<uint8_t>& ciphertext, const crypto::public_key& tx_public,
-                                  const crypto::secret_key& gateway_view_secret, size_t output_index,
-                                  std::vector<uint8_t>& out_plaintext);
-
-// Build the 32-byte bridge deposit-routing memo **plaintext** (before encryption),
-// mirroring the signer's `beldex_watcher::BridgeMemo::encode` byte-for-byte so the
-// committee decodes exactly what the wallet wrote:
-//   byte 0     version (=1)
-//   byte 1     flags   (reserved, 0)
-//   bytes 2..10  chain_id (u64, big-endian)
-//   bytes 10..30 evm_addr (20 bytes)
-//   bytes 30..32 reserved (0)
-std::vector<uint8_t> build_bridge_deposit_memo(uint64_t chain_id, const std::array<uint8_t, 20>& evm_addr);
-
 // Release replay guard (HF23, GATEWAY_RELEASE_REPLAY_GUARD.md).
 // The canonical per-burn ref a bridge release discharges:
 //   H(GW_RELEASE_REF ‖ chain_id (u64 LE) ‖ evm_txid (32) ‖ log_index (u32 LE))
@@ -290,5 +263,39 @@ bool append_gateways_from_transactions(BlockchainDB& db, const std::vector<trans
                                        uint64_t block_height, bool bridge_active, std::string* reason = nullptr);
 bool rewind_gateways_from_transactions(BlockchainDB& db, const std::vector<transaction>& txs,
                                        uint64_t block_height, bool bridge_active, std::string* reason = nullptr);
+
+// Decoded plaintext of a gateway bridge memo (see tx_extra_gateway_bridge_memo).
+struct gateway_bridge_memo_plaintext
+{
+  uint64_t chain_id = 0;   // destination chain's real EIP-155 id
+  crypto::eth_address evm_addr{};
+};
+
+// Mirror-image of encrypt_gateway_bridge_memo (cryptonote_tx_utils.cpp):
+// recomputes the same DH mask using the gateway's view secret key and the tx's
+// public key (pulled from tx_extra_pub_key), then XORs it against the memo's
+// ciphertext. gateway_view_secret_key is the secret key paired with the
+// gateway's identity (gateway_addr / tx_out_gateway.gateway_addr), NOT the
+// gateway_owner_key_v spend-authorization key -- these are separate keys.
+// Gateway outputs always use the tx's single main key (never
+// additional_tx_public_keys, see the construct_tx_with_tx_key guard in
+// cryptonote_tx_utils.cpp), so there is no per-output key ambiguity here.
+// Only memos addressed to this gateway are decrypted: the referenced output's
+// gateway_addr must equal the public key of gateway_view_secret_key. A tx can
+// carry outputs (and memos) for several gateways, and skipping that check would
+// mean wrong-key decrypt attempts on other gateways' memos, caught only by the
+// 4-byte zero padding (i.e. with probability 1 - 2^-32).
+// Returns false if memo.output_index doesn't name a tx_out_gateway in tx, if
+// that output belongs to a different gateway, or if the zero-padding integrity
+// check fails (wrong key / not a real memo).
+bool decrypt_gateway_bridge_memo(const transaction& tx, const tx_extra_gateway_bridge_memo& memo,
+                                 const crypto::secret_key& gateway_view_secret_key,
+                                 gateway_bridge_memo_plaintext& out);
+
+// Structural consensus check for every tx_extra_gateway_bridge_memo in tx:
+// version supported, output_index in range and names a tx_out_gateway, no
+// duplicate output_index across memos. Content (chain_id/evm_addr) is
+// never inspected -- it's inside the ciphertext, invisible to validators.
+bool validate_gateway_bridge_memos(const transaction& tx, std::string& reason);
 
 } // namespace cryptonote

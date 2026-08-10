@@ -2667,7 +2667,8 @@ namespace cryptonote::rpc {
   /// "instant sync" API — balances are read straight from the node, no scanning.
   ///
   /// Inputs:
-  /// - `gateway_address` -- the base58 gateway address (gwB…).
+  /// - `gateway_address` -- gwB… address or 64-char hex id (same as
+  ///   gateway_get_history / bridge_get_reserves accept).
   ///
   /// Output:
   /// - `registered` -- whether the gateway exists on-chain.
@@ -2675,8 +2676,15 @@ namespace cryptonote::rpc {
   /// - `owner_key_type` -- 0 = Schnorr/ed25519, 1 = eth secp256k1, 2 = eddsa.
   /// - `owner_key` -- hex of the latest owner key.
   /// - `meta_info` -- descriptor meta string.
+  /// - `frozen` -- governance-frozen (HF23): ALL withdrawals and descriptor ops
+  ///   are rejected while set, regardless of a valid owner signature.
+  /// - `bridge_reserve` -- sticky HF23 flag: every withdrawal from this gateway
+  ///   must name the EVM burn it discharges (§3.6).
   /// - `balances` -- list of {asset_id (hex), amount}.
   /// - `status` -- Generic RPC error code. "OK" is the success value.
+  ///
+  /// `frozen` / `bridge_reserve` are present only when `registered` is true.
+  /// For release headroom (window accounting / caps) use `bridge_get_reserves`.
   struct GET_GATEWAY_INFO : PUBLIC
   {
     static constexpr auto names() { return NAMES("get_gateway_info"); }
@@ -2774,6 +2782,19 @@ namespace cryptonote::rpc {
       std::vector<std::string> destinations;
       std::vector<uint64_t> amounts;
       uint64_t fee = 0;
+      // Gateway bridge memo (HF22+), OPTIONAL and parallel to `destinations`:
+      // bridge_chain_ids[i] (the destination chain's real EVM chain id, EIP-155 --
+      // e.g. 1 for Ethereum mainnet, 11155111 for Sepolia -- stored verbatim in the
+      // encrypted memo and NOT validated against any known-chain list, since only
+      // the bridge operator ever acts on it) and bridge_evm_addresses[i]
+      // (40-char hex, optional "0x") tag
+      // destinations[i] with a destination-chain routing hint, encrypted into a
+      // paired tx_extra entry. Leave both empty for no memos; if either is
+      // non-empty, both must be sized to match `destinations` (0/"" entries mean
+      // "no memo for this destination").
+      std::vector<uint64_t> bridge_chain_ids;
+      std::vector<std::string> bridge_evm_addresses;
+
       // Optional release replay-guard binding (HF23, GATEWAY_RELEASE_REPLAY_GUARD.md):
       // when `ref_evm_txid` is set, a tx_extra_gateway_release_ref naming the source
       // burn is attached inside the signed prefix, so consensus dedupes the burn.
@@ -2890,17 +2911,40 @@ namespace cryptonote::rpc {
   /// per-chain expected wBDX supply is sourced from the EVM chain registry +
   /// watchers (Phase E) and is returned empty until those land.
   ///
+  /// Despite the name, this is NOT reserve-only and does not require (or check)
+  /// the `bridge_reserve` flag. The release window accounting it reports —
+  /// `epoch_released` / `release_cap` / `per_tx_max` — is enforced on EVERY
+  /// gateway withdrawal once HF23 is active; `bridge_reserve` only makes a
+  /// release ref mandatory (§3.6), it does not gate the caps. So this endpoint
+  /// is meaningful for any gateway, and an ordinary (unflagged) gateway owner
+  /// should call it to check release headroom before building a withdrawal.
+  /// `bridge_reserve` is returned as a field so callers can decide for
+  /// themselves whether to treat the gateway as a bridge reserve — that policy
+  /// belongs in the caller, which is why this RPC reports state rather than
+  /// refusing to answer based on it.
+  ///
   /// Inputs:
   /// - `gateway_id` -- gwB… address or 64-char hex id of the bridge gateway.
-  /// - `height` -- optional height for the release-window calc (default: tip).
+  /// - `height` -- optional height selecting the release WINDOW to report
+  ///   (default: tip). NOTE this is not a historical snapshot: `height` affects
+  ///   only `window_id` and `epoch_released`. Every other field (`registered`,
+  ///   `frozen`, `bridge_reserve`, `gateway_balance`) is always read at the
+  ///   current tip.
   ///
   /// Output:
-  /// - `registered` -- whether the gateway exists.
-  /// - `frozen` -- whether the gateway is currently governance-frozen.
-  /// - `gateway_balance` -- native BDX locked in the gateway (atomic units).
-  /// - `window_id` -- current fixed release window (floor(height/window_blocks)).
+  /// - `registered` -- whether the gateway exists (at tip).
+  /// - `frozen` -- whether the gateway is currently governance-frozen (at tip).
+  /// - `bridge_reserve` -- sticky HF23 flag: every withdrawal must name the EVM
+  ///   burn it discharges (at tip).
+  /// - `gateway_balance` -- native BDX locked in the gateway, atomic units (at tip).
+  /// - `window_id` -- the fixed release window selected by `height`
+  ///   (floor(height/window_blocks)).
   /// - `window_blocks` -- release window length in blocks.
-  /// - `epoch_released` -- native BDX already released in the current window.
+  /// - `epoch_released` -- native BDX already released in `window_id`.
+  /// - `retained_from_window` -- lowest release window still retained (0 if none).
+  ///   Accounting is kept only for the current + immediately-previous window and
+  ///   pruned below that, so `epoch_released == 0` for a `window_id` under this
+  ///   floor means "no longer retained", NOT "nothing was released".
   /// - `release_cap` -- per-window release cap (atomic units).
   /// - `per_tx_max` -- per-withdrawal release maximum (atomic units).
   /// - `per_chain_wbdx` -- expected wBDX supply per EVM chain (empty until Phase E).

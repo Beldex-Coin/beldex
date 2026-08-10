@@ -147,6 +147,15 @@ namespace crypto {
     operator bool() const { auto z = null(); return memcmp(this, &z, sizeof(z)); }
   };
 
+  // Standard 20-byte Ethereum address (keccak256(pubkey)[12:32]), as used on-chain
+  // by ETH/EVM tooling -- distinct from `eth_public_key` (33-byte compressed
+  // secp256k1 pubkey), which is a gateway *owner* key, not a wallet address.
+  struct eth_address {
+    unsigned char data[20];
+    static constexpr eth_address null() { return {0}; }
+    operator bool() const { auto z = null(); return memcmp(this, &z, sizeof(z)); }
+  };
+
   // RFC-8032 Ed25519 public key.
   struct alignas(size_t) eddsa_public_key {
     unsigned char data[32];
@@ -176,6 +185,7 @@ namespace crypto {
     sizeof(key_derivation) == 32 && sizeof(key_image) == 32 &&
     sizeof(asset_id) == 32 &&
     sizeof(eth_public_key) == 33 && sizeof(eth_signature) == 64 &&
+    sizeof(eth_address) == 20 &&
     sizeof(eddsa_public_key) == 32 && sizeof(eddsa_signature) == 64 &&
     sizeof(signature) == 64, "Invalid structure size");
 
@@ -362,6 +372,9 @@ namespace crypto {
   inline std::ostream &operator <<(std::ostream &o, const crypto::eth_public_key &v) {
     return o << '<' << tools::type_to_hex(v) << '>';
   }
+  inline std::ostream &operator <<(std::ostream &o, const crypto::eth_address &v) {
+    return o << '<' << tools::type_to_hex(v) << '>';
+  }
   inline std::ostream &operator <<(std::ostream &o, const crypto::eddsa_public_key &v) {
     return o << '<' << tools::type_to_hex(v) << '>';
   }
@@ -382,6 +395,7 @@ CRYPTO_MAKE_HASHABLE(asset_id)
 // is 33 bytes / 1-byte aligned and can't satisfy the hash alignment requirement,
 // and none of these are used as map keys.
 CRYPTO_MAKE_COMPARABLE(eth_public_key)
+CRYPTO_MAKE_COMPARABLE(eth_address)
 CRYPTO_MAKE_COMPARABLE(eth_signature)
 CRYPTO_MAKE_COMPARABLE(eddsa_public_key)
 CRYPTO_MAKE_COMPARABLE(eddsa_signature)

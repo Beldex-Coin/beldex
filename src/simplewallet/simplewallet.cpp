@@ -157,7 +157,7 @@ namespace
   const char* USAGE_INCOMING_TRANSFERS("incoming_transfers [available|unavailable] [verbose] [uses] [index=<N1>[,<N2>[,...]]]");
   const char* USAGE_PAYMENTS("payments <PID_1> [<PID_2> ... <PID_N>]");
   const char* USAGE_PAYMENT_ID("payment_id");
-  const char* USAGE_TRANSFER("transfer [index=<N1>[,<N2>,...]] [flash|unimportant] (<URI> | <address> <amount>) [subtractfeefrom=<D0>[,<D1>,all,...]] [<payment_id>]");
+  const char* USAGE_TRANSFER("transfer [index=<N1>[,<N2>,...]] [flash|unimportant] (<URI> | <address> <amount> [<evm_chain_id>:0x<evm_address>]) [subtractfeefrom=<D0>[,<D1>,all,...]] [<payment_id>]");
   const char* USAGE_LOCKED_TRANSFER("locked_transfer [index=<N1>[,<N2>,...]] [<priority>] (<URI> | <addr> <amount>) <lockblocks> [<payment_id (obsolete)>]");
   const char* USAGE_LOCKED_SWEEP_ALL("locked_sweep_all [index=<N1>[,<N2>,...] | index=all] [<priority>] [<address>] <lockblocks> [<payment_id (obsolete)>]");
   const char* USAGE_SWEEP_ALL("sweep_all [index=<N1>[,<N2>,...] | index=all] [flash|unimportant] [outputs=<N>] [<address> [<payment_id (obsolete)>]]");
@@ -256,7 +256,6 @@ namespace
   const char* USAGE_BRIDGE_UNBOND("bridge_unbond [<priority>] <unbond_hex>");
   const char* USAGE_BRIDGE_SLASH("bridge_slash [<priority>] <slash_hex>");
   const char* USAGE_BRIDGE_ROTATION_ACK("bridge_rotation_ack [<priority>] <rotation_hex>");
-  const char* USAGE_BRIDGE_DEPOSIT("bridge_deposit [<priority>] <gateway_address> <amount> <chain_id> <evm_addr_hex>");
   const char* USAGE_STAKE("stake [index=<N1>[,<N2>,...]] [<priority>] <master node pubkey> <amount|percent%>");
   const char* USAGE_REQUEST_STAKE_UNLOCK("request_stake_unlock <master_node_pubkey>");
   const char* USAGE_PRINT_LOCKED_STAKES("print_locked_stakes [key_images]");
@@ -2657,7 +2656,7 @@ simple_wallet::simple_wallet()
                            tr("Show the blockchain height."));
   m_cmd_binder.set_handler("transfer", [this](const auto& x) { return transfer(x); },
                            tr(USAGE_TRANSFER),
-                           tr("Transfer <amount> to <address>. If the parameter \"index=<N1>[,<N2>,...]\" is specified, the wallet uses outputs received by addresses of those indices. If omitted, the wallet randomly chooses address indices to be used. In any case, it tries its best not to combine outputs across multiple addresses. <priority> is the priority of the transaction. The higher the priority, the higher the transaction fee. Valid values in priority order (from lowest to highest) are: unimportant, normal, elevated, priority. If omitted, the default value (see the command \"set priority\") is used. Multiple payments can be made at once by adding <address_2> <amount_2> etcetera (before the payment ID, if it's included). The \"subtractfeefrom=\" list allows you to choose which destinations to fund the tx fee from instead of the change output. The fee will be split across the chosen destinations proportionally equally. For example, to make 3 transfers where the fee is taken from the first and third destinations, one could do: \"transfer <addr1> 3 <addr2> 0.5 <addr3> 1 subtractfeefrom=0,2\". Let's say the tx fee is 0.1. The balance would drop by exactly 4.5 BDX including fees, and addr1 & addr3 would receive 2.925 & 0.975 BDX, respectively. Use \"subtractfeefrom=all\" to spread the fee across all destinations."));
+                           tr("Transfer <amount> to <address>. If the parameter \"index=<N1>[,<N2>,...]\" is specified, the wallet uses outputs received by addresses of those indices. If omitted, the wallet randomly chooses address indices to be used. In any case, it tries its best not to combine outputs across multiple addresses. <priority> is the priority of the transaction. The higher the priority, the higher the transaction fee. Valid values in priority order (from lowest to highest) are: unimportant, normal, elevated, priority. If omitted, the default value (see the command \"set priority\") is used. Multiple payments can be made at once by adding <address_2> <amount_2> etcetera (before the payment ID, if it's included). The \"subtractfeefrom=\" list allows you to choose which destinations to fund the tx fee from instead of the change output. The fee will be split across the chosen destinations proportionally equally. For example, to make 3 transfers where the fee is taken from the first and third destinations, one could do: \"transfer <addr1> 3 <addr2> 0.5 <addr3> 1 subtractfeefrom=0,2\". Let's say the tx fee is 0.1. The balance would drop by exactly 4.5 BDX including fees, and addr1 & addr3 would receive 2.925 & 0.975 BDX, respectively. Use \"subtractfeefrom=all\" to spread the fee across all destinations. When <address> is a gateway address (gwB.../gwiB...), an optional bridge memo may follow the amount as \"<evm_chain_id>:0x<evm_address>\" (e.g. \"11155111:0xDeaDBeeF00000000000000000000000000000000\"), telling the gateway operator which EVM chain and address to forward to. <evm_chain_id> is the destination chain's real EIP-155 id and must be one of the supported chains for this wallet's network (an unsupported id is rejected, and the error lists the valid ones); <evm_address> is 40 hex chars (the 0x prefix is optional). The memo is encrypted to the gateway, so only the gateway owner can read it. It is only accepted after a gateway address; supplying it after an ordinary address is an error."));
   m_cmd_binder.set_handler("locked_transfer",
                            [this](const auto& x) { return locked_transfer(x); },
                            tr(USAGE_LOCKED_TRANSFER),
@@ -3142,10 +3141,6 @@ Pending or Failed: "failed"|"pending",  "out", Lock, Checkpointed, Time, Amount*
                            [this](const auto& x) { return bridge_rotation_ack(x); },
                            tr(USAGE_BRIDGE_ROTATION_ACK),
                            tr("Submit a bridge wBDX rotation observation (HF23 Sovereign Bridge, Phase H / H.6.3). The ack's authority is the committee evidence it carries, not this wallet — any wallet may submit it, paying only the fee. Accepting it advances the L1's observed key epoch, which gates the release of outgoing operators' bonds. <rotation_hex> is produced by a bridge signer and verified by the daemon's `bridge.rotation_ack' OMQ endpoint."));
-  m_cmd_binder.set_handler("bridge_deposit",
-                           [this](const auto& x) { return bridge_deposit(x); },
-                           tr(USAGE_BRIDGE_DEPOSIT),
-                           tr("Deposit BDX to a bridge gateway to mint wBDX (HF23 Sovereign Bridge, BDX->wBDX). Sends <amount> BDX to <gateway_address> and attaches the encrypted A.5 routing memo {<chain_id>, <evm_addr_hex>} so the committee knows the EVM destination to mint to. <evm_addr_hex> is a 20-byte (40 hex char) Ethereum address."));
   m_cmd_binder.set_handler("stake",
                            [this](const auto& x) { return stake(x); },
                            tr(USAGE_STAKE),
@@ -6027,7 +6022,59 @@ bool simple_wallet::transfer_main(Transfer transfer_type, const std::vector<std:
         de.gateway_id         = gw_info.gateway_id;
         de.gateway_payment_id = gw_info.has_payment_id ? gw_info.payment_id : 0;
         de.original           = local_args[i];
-        i += 2;
+
+        // Gateway bridge memo (HF22+): OPTIONAL third token "<evm-chain-id>:0x<40hex>"
+        // (e.g. "11155111:0xDeaDBeeF..." for Sepolia), consumed only when it matches
+        // this shape -- no valid address contains ':', so this is unambiguous.
+        // <evm-chain-id> is the real EIP-155 chain id, not a Beldex-internal index.
+        // The 0x prefix is optional, matching wallet-rpc/daemon-rpc bridge addresses.
+        size_t consumed = 2;
+        if (i + 2 < local_args.size())
+        {
+          static const std::regex bridge_re("^([0-9]+):(?:0[xX])?([0-9a-fA-F]{40})$");
+          std::smatch match;
+          const std::string& token = local_args[i + 2];
+          if (std::regex_match(token, match, bridge_re))
+          {
+            uint64_t chain_id = 0;
+            if (!tools::parse_int(match[1].str(), chain_id))
+            {
+              fail_msg_writer() << tr("bridge chain id out of range: ") << match[1].str();
+              return false;
+            }
+            // chain_id is the destination chain's real EIP-155 id, stored verbatim in
+            // the (encrypted) memo. Check it against the supported-chain allow-list so
+            // a typo'd or unsupported chain fails here rather than becoming a routing
+            // hint the bridge operator cannot honour.
+            const auto* chain = cryptonote::find_bridge_chain(chain_id);
+            if (!chain)
+            {
+              fail_msg_writer() << tr("unsupported bridge chain id: ") << chain_id
+                                << tr(". Supported: ")
+                                << cryptonote::supported_bridge_chains_str(m_wallet->nettype());
+              return false;
+            }
+            if (chain->nettype != m_wallet->nettype())
+            {
+              fail_msg_writer() << tr("bridge chain ") << chain->name << "(" << chain_id << ")"
+                                << tr(" is not valid on this wallet's network. Supported: ")
+                                << cryptonote::supported_bridge_chains_str(m_wallet->nettype());
+              return false;
+            }
+            crypto::eth_address evm_addr{};
+            const std::string evm_hex = match[2].str(); // 40 hex chars, 0x already stripped by the regex
+            if (!tools::hex_to_type(evm_hex, evm_addr))
+            {
+              fail_msg_writer() << tr("invalid bridge evm address: ") << evm_hex;
+              return false;
+            }
+            de.gateway_bridge_chain_id = chain_id;
+            de.gateway_bridge_evm_addr = evm_addr;
+            consumed = 3;
+          }
+        }
+
+        i += consumed;
         dsts.push_back(de);
         continue;
       }
@@ -6443,83 +6490,6 @@ bool simple_wallet::bridge_rotation_ack(const std::vector<std::string> &args_)
   {
     std::vector<tools::wallet2::pending_tx> ptx_vector = {result.ptx};
     commit_or_save(ptx_vector, m_do_not_relay, false /* don't flash */);
-  }
-  catch (const std::exception& e)
-  {
-    handle_transfer_exception(std::current_exception(), m_wallet->is_trusted_daemon());
-  }
-  catch (...)
-  {
-    LOG_ERROR("unknown error");
-    fail_msg_writer() << tr("unknown error");
-  }
-
-  return true;
-}
-//----------------------------------------------------------------------------------------------------
-bool simple_wallet::bridge_deposit(const std::vector<std::string> &args_)
-{
-  if (!try_connect_to_daemon())
-    return true;
-
-  // bridge_deposit [<priority>] <gateway_address> <amount> <chain_id> <evm_addr_hex>
-  std::vector<std::string> local_args = args_;
-  uint32_t priority = 0;
-  if (local_args.size() == 5)
-  {
-    if (!epee::string_tools::get_xtype_from_string(priority, local_args[0]))
-    {
-      fail_msg_writer() << tr(USAGE_BRIDGE_DEPOSIT);
-      return true;
-    }
-    local_args.erase(local_args.begin());
-  }
-  if (local_args.size() != 4)
-  {
-    fail_msg_writer() << tr(USAGE_BRIDGE_DEPOSIT);
-    return true;
-  }
-
-  const std::string& gateway_address = local_args[0];
-  uint64_t amount = 0;
-  if (!cryptonote::parse_amount(amount, local_args[1]) || amount == 0)
-  {
-    fail_msg_writer() << tr("Invalid amount: ") << local_args[1];
-    return true;
-  }
-  uint64_t chain_id = 0;
-  if (!epee::string_tools::get_xtype_from_string(chain_id, local_args[2]))
-  {
-    fail_msg_writer() << tr("Invalid chain_id: ") << local_args[2];
-    return true;
-  }
-  const std::string& evm_addr_hex = local_args[3];
-
-  SCOPED_WALLET_UNLOCK()
-  tools::wallet2::bridge_deposit_result result =
-      m_wallet->create_bridge_deposit_tx(gateway_address, amount, chain_id, evm_addr_hex, priority, m_current_subaddress_account);
-  if (!result.success)
-  {
-    fail_msg_writer() << result.msg;
-    return true;
-  }
-
-  uint64_t total_fee = 0;
-  for (const auto& ptx : result.ptx)
-    total_fee += ptx.fee;
-
-  std::string prompt = (boost::format(tr("Depositing %s BDX to bridge gateway %s for minting wBDX to EVM address %s (chain %llu). Transaction fee is %s across %zu transaction(s). Is this okay? (Y/Yes/N/No): "))
-                        % print_money(amount) % gateway_address % evm_addr_hex
-                        % static_cast<unsigned long long>(chain_id) % print_money(total_fee) % result.ptx.size()).str();
-  if (!command_line::is_yes(input_line(prompt, true)))
-  {
-    fail_msg_writer() << tr("Transaction cancelled.");
-    return true;
-  }
-
-  try
-  {
-    commit_or_save(result.ptx, m_do_not_relay, false /* don't flash */);
   }
   catch (const std::exception& e)
   {

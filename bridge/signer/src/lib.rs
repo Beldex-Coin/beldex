@@ -128,9 +128,9 @@ pub mod reconcile;
 #[cfg(feature = "tss-integration")]
 pub mod ffi;
 
-/// A.5 gateway deposit-memo decryption (signer side): reproduces `beldexd`'s
-/// `decrypt_gateway_deposit_memo` (Monero DH `generate_key_derivation` + the
-/// `GW_DEPOSIT_MEMO` keystream) so the signer recovers a
+/// Gateway bridge-memo decryption (signer side): reproduces `beldexd`'s
+/// `decrypt_gateway_bridge_memo` (Monero DH `generate_key_derivation` + the
+/// `GW_BRIDGE_MEMO_MASK` single-block mask) so the signer recovers a
 /// [`beldex_watcher::BridgeMemo`] from the on-chain ciphertext. Needs libsodium
 /// (`tss-integration`).
 #[cfg(feature = "tss-integration")]

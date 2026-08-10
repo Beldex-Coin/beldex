@@ -112,8 +112,8 @@ struct extra_printer {
   void operator()(const tx_extra_gateway_repoint& x) {
     std::cout << "Gateway repoint (seq " << x.governance_seq << ", " << x.evidence.size() << " attestations)";
   }
-  void operator()(const tx_extra_gateway_deposit_memo& x) {
-    std::cout << "Gateway deposit memo (" << x.enc_memo.size() << " bytes) for " << x.gateway_id;
+  void operator()(const tx_extra_gateway_bridge_memo& x) {
+    std::cout << "Gateway bridge memo for output " << x.output_index;
   }
   void operator()(const tx_extra_bridge_registration& x) {
     std::cout << "Bridge registration: MN " << x.master_node_pubkey;

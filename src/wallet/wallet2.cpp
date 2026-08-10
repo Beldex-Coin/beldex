@@ -51,7 +51,7 @@
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "rpc/core_rpc_server_commands_defs.h"
 #include "cryptonote_basic/cryptonote_basic_impl.h"
-#include "cryptonote_core/gateway_utils.h" // build_bridge_deposit_memo (A.5 bridge deposit)
+#include "cryptonote_core/gateway_utils.h" // gateway deposit / bridge memo helpers
 #include "cryptonote_basic/hardfork.h"
 #include "multisig/multisig.h"
 #include "common/boost_serialization_helper.h"
@@ -8557,92 +8557,6 @@ wallet2::bridge_slash_result wallet2::create_bridge_slash_tx(const std::string& 
     {
       result.msg = ERR_MSG_TOO_MANY_TXS_CONSTRUCTED;
     }
-  }
-  catch (const std::exception& e)
-  {
-    result.msg = ERR_MSG_EXCEPTION_THROWN;
-    result.msg += e.what();
-    return result;
-  }
-
-  return result;
-}
-
-wallet2::bridge_deposit_result wallet2::create_bridge_deposit_tx(const std::string& gateway_address, uint64_t amount,
-                                                                 uint64_t chain_id, const std::string& evm_addr_hex,
-                                                                 uint32_t priority, uint32_t subaddr_account,
-                                                                 std::set<uint32_t> subaddr_indices)
-{
-  bridge_deposit_result result{};
-
-  auto hf_version = get_hard_fork_version();
-  if (!hf_version)
-  {
-    result.msg = ERR_MSG_NETWORK_VERSION_QUERY_FAILED;
-    return result;
-  }
-  if (*hf_version < cryptonote::hf::hf23_bridge)
-  {
-    result.msg = tr("Bridge deposits require the bridge hard fork (HF23)");
-    return result;
-  }
-  if (amount == 0)
-  {
-    result.msg = tr("Bridge deposit amount must be non-zero");
-    return result;
-  }
-  if (priority == tx_priority_flash)
-  {
-    result.msg = tr("Bridge deposits cannot use flash priority");
-    return result;
-  }
-
-  // Parse the gateway address (gwB…/gwiB…) → gateway id, exactly as the `transfer`
-  // command does for a gateway deposit destination.
-  cryptonote::gateway_address_parse_info gw_info{};
-  if (!cryptonote::get_gateway_address_from_str(gw_info, nettype(), gateway_address))
-  {
-    result.msg = tr("Invalid gateway address: ") + gateway_address;
-    return result;
-  }
-
-  // Parse the 20-byte EVM destination address.
-  std::string evm_hex = evm_addr_hex;
-  if (evm_hex.rfind("0x", 0) == 0 || evm_hex.rfind("0X", 0) == 0)
-    evm_hex = evm_hex.substr(2);
-  if (evm_hex.size() != 40 || !oxenc::is_hex(evm_hex))
-  {
-    result.msg = tr("Invalid EVM address: expected a 20-byte (40 hex char) address");
-    return result;
-  }
-  const std::string evm_bytes = oxenc::from_hex(evm_hex);
-  std::array<uint8_t, 20> evm_addr{};
-  std::copy(evm_bytes.begin(), evm_bytes.end(), evm_addr.begin());
-
-  // The deposit destination: a transparent gateway output carrying the encrypted A.5
-  // routing memo. cryptonote_tx_utils encrypts `gateway_bridge_memo` to the gateway view
-  // key and attaches it; the bridge committee decrypts it to learn the EVM destination.
-  cryptonote::tx_destination_entry de{};
-  de.amount              = amount;
-  de.is_gateway          = true;
-  de.gateway_id          = gw_info.gateway_id;
-  de.gateway_payment_id  = gw_info.has_payment_id ? gw_info.payment_id : 0;
-  de.gateway_bridge_memo = cryptonote::build_bridge_deposit_memo(chain_id, evm_addr);
-  de.original            = gateway_address;
-
-  try
-  {
-    std::vector<uint8_t> extra;
-    beldex_construct_tx_params tx_params = tools::wallet2::construct_params(*hf_version, txtype::standard, priority);
-    auto ptx_vector = create_transactions_2({de}, cryptonote::TX_OUTPUT_DECOYS, 0 /*unlock*/, priority, extra,
-                                            subaddr_account, subaddr_indices, tx_params);
-    if (ptx_vector.empty())
-    {
-      result.msg = tr("No transaction was constructed for the bridge deposit");
-      return result;
-    }
-    result.success = true;
-    result.ptx     = std::move(ptx_vector);
   }
   catch (const std::exception& e)
   {

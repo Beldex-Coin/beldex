@@ -1451,22 +1451,6 @@ private:
     };
     bridge_rotation_ack_result create_bridge_rotation_ack_tx(const std::string& rotation_hex, uint32_t priority = 0, std::set<uint32_t> subaddr_indices = {});
 
-    // HF23 Sovereign Bridge (Phase A.5 / Phase L): build a BDX->wBDX **bridge deposit** —
-    // a gateway deposit of `amount` to `gateway_address`, carrying the encrypted A.5
-    // routing memo {chain_id, evm_addr} so the committee knows the EVM destination to mint
-    // to. Unlike the other bridge txs this moves real value (with change), so it may split
-    // into multiple pending txs.
-    struct bridge_deposit_result
-    {
-      bool                    success = false;
-      std::string             msg;
-      std::vector<pending_tx> ptx;
-    };
-    bridge_deposit_result create_bridge_deposit_tx(const std::string& gateway_address, uint64_t amount,
-                                                   uint64_t chain_id, const std::string& evm_addr_hex,
-                                                   uint32_t priority = 0, uint32_t subaddr_account = 0,
-                                                   std::set<uint32_t> subaddr_indices = {});
-
     struct request_stake_unlock_result
     {
       bool        success;

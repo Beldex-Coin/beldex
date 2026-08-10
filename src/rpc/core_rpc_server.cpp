@@ -731,6 +731,15 @@ namespace cryptonote::rpc {
 
         set("gateway_descriptor", std::move(gw));
       }
+      void operator()(const tx_extra_gateway_bridge_memo& x) {
+        // Opaque to the daemon: the ciphertext only decrypts with the gateway's
+        // secret key (see decrypt_gateway_bridge_memo / scripts/gateway_decode_bridge_memo.py).
+        set("gateway_bridge_memo", json{
+            {"version", x.version},
+            {"output_index", x.output_index},
+            {"ciphertext", tools::type_to_hex(x.ciphertext)},
+        });
+      }
       void operator()(const tx_extra_gateway_freeze& x) {
         set("gateway_freeze", json{
             {"version", x.version},
@@ -815,14 +824,6 @@ namespace cryptonote::rpc {
         });
         json_binary_proxy{ack["new_signer"], format} =
             std::string_view{reinterpret_cast<const char*>(x.new_signer.data()), x.new_signer.size()};
-      }
-      void operator()(const tx_extra_gateway_deposit_memo& x) {
-        auto& memo = set("gateway_deposit_memo", json{
-            {"version", x.version},
-            {"gateway_id", tools::type_to_hex(x.gateway_id)},
-        });
-        json_binary_proxy{memo["enc_memo"], format} =
-            std::string_view{reinterpret_cast<const char*>(x.enc_memo.data()), x.enc_memo.size()};
       }
       void operator()(const tx_extra_gateway_release_ref& x) {
         set("gateway_release_ref", json{
@@ -3688,13 +3689,26 @@ namespace cryptonote::rpc {
   }
 
   //------------------------------------------------------------------------------------------------------------------------------
+  //------------------------------------------------------------------------------------------------------------------------------
+  namespace
+  {
+    // Resolve a gwB… address or 64-char hex string to a gateway id.
+    bool resolve_gateway_id(cryptonote::network_type nettype, const std::string& s, crypto::public_key& out)
+    {
+      cryptonote::gateway_address_parse_info info{};
+      if (cryptonote::get_gateway_address_from_str(info, nettype, s)) { out = info.gateway_id; return true; }
+      return tools::hex_to_type(s, out);
+    }
+  }
+
   void core_rpc_server::invoke(GET_GATEWAY_INFO& cmd, rpc_context context)
   {
-    crypto::public_key gw_id;
-    cryptonote::gateway_address_parse_info info{};
-    if (!cryptonote::get_gateway_address_from_str(info, m_core.get_nettype(), cmd.request.gateway_address))
-      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_address (expected a gwB… address)"};
-    gw_id = info.gateway_id;
+    // Accepts a gwB… address or a 64-char hex id, matching gateway_get_history and
+    // bridge_get_reserves — the same gateway should be addressable the same way on
+    // every endpoint.
+    crypto::public_key gw_id{};
+    if (!resolve_gateway_id(m_core.get_nettype(), cmd.request.gateway_address, gw_id))
+      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_address (expected gwB… address or 64-char hex)"};
 
     auto& db = m_core.get_blockchain_storage().get_db();
     cryptonote::gateway_account_data acct;
@@ -3708,6 +3722,12 @@ namespace cryptonote::rpc {
       cmd.response["owner_key_type"] = okey.index();
       cmd.response["owner_key"] = std::visit([](const auto& k) { return tools::type_to_hex(k); }, okey);
       cmd.response["meta_info"]  = acct.latest_descriptor().meta_info;
+      // Account/descriptor state every gateway consumer needs, not just bridge
+      // dashboards: a frozen gateway rejects ALL withdrawals and descriptor ops
+      // regardless of a valid owner signature, and bridge_reserve makes a release
+      // ref mandatory on every withdrawal (sticky, HF23 §3.6).
+      cmd.response["frozen"]         = acct.frozen != 0;
+      cmd.response["bridge_reserve"] = acct.latest_descriptor().is_bridge_reserve();
 
       auto balances = json::array();
       for (const auto& b : acct.balances)
@@ -3776,6 +3796,12 @@ namespace cryptonote::rpc {
 
     if (req.destinations.empty() || req.destinations.size() != req.amounts.size())
       throw rpc_error{ERROR_WRONG_PARAM, "destinations and amounts must be non-empty and of equal length"};
+    if (!req.bridge_chain_ids.empty() && req.bridge_chain_ids.size() != req.destinations.size())
+      throw rpc_error{ERROR_WRONG_PARAM, "bridge_chain_ids must be empty or match destinations in length"};
+    if (!req.bridge_evm_addresses.empty() && req.bridge_evm_addresses.size() != req.destinations.size())
+      throw rpc_error{ERROR_WRONG_PARAM, "bridge_evm_addresses must be empty or match destinations in length"};
+    if (req.bridge_chain_ids.empty() != req.bridge_evm_addresses.empty())
+      throw rpc_error{ERROR_WRONG_PARAM, "bridge_chain_ids and bridge_evm_addresses must both be set or both empty"};
 
     auto& db = m_core.get_blockchain_storage().get_db();
     cryptonote::gateway_account_data acct;
@@ -3809,10 +3835,50 @@ namespace cryptonote::rpc {
         d.gateway_id = info.gateway_id;
         d.amount     = req.amounts[i];
         d.payment_id = info.has_payment_id ? info.payment_id : 0;
+        if (!req.bridge_chain_ids.empty() && req.bridge_chain_ids[i] != 0)
+        {
+          // bridge_chain_ids[i] is the destination chain's real EIP-155 id, stored
+          // verbatim in the (encrypted) memo. Checked against the supported-chain
+          // allow-list (input-side only; see cryptonote_config.h) so an unsupported
+          // or wrong-network chain is rejected here instead of being encrypted into
+          // a routing hint the bridge operator cannot honour.
+          const auto* chain = cryptonote::find_bridge_chain(req.bridge_chain_ids[i]);
+          if (!chain)
+            throw rpc_error{ERROR_WRONG_PARAM,
+                "unsupported bridge_chain_ids[" + std::to_string(i) + "]: " +
+                std::to_string(req.bridge_chain_ids[i]) + ". Supported: " +
+                cryptonote::supported_bridge_chains_str(nettype)};
+          if (chain->nettype != nettype)
+            throw rpc_error{ERROR_WRONG_PARAM,
+                "bridge_chain_ids[" + std::to_string(i) + "] (" + std::string(chain->name) +
+                ") is not valid on this daemon's network. Supported: " +
+                cryptonote::supported_bridge_chains_str(nettype)};
+          std::string_view eth_hex = req.bridge_evm_addresses[i];
+          if (eth_hex.size() >= 2 && eth_hex[0] == '0' && (eth_hex[1] == 'x' || eth_hex[1] == 'X'))
+            eth_hex.remove_prefix(2);
+          crypto::eth_address eth_addr{};
+          if (!tools::hex_to_type(eth_hex, eth_addr))
+            throw rpc_error{ERROR_WRONG_PARAM, "invalid bridge_evm_addresses[" + std::to_string(i) + "] (expected 40-char hex, optional 0x prefix)"};
+          d.gateway_bridge_chain_id = req.bridge_chain_ids[i];
+          d.gateway_bridge_evm_addr = eth_addr;
+        }
+        else if (!req.bridge_evm_addresses.empty() && !req.bridge_evm_addresses[i].empty())
+        {
+          // An address with no chain id would be silently dropped; that is
+          // almost certainly a caller mistake, so reject it rather than ignore it.
+          throw rpc_error{ERROR_WRONG_PARAM,
+              "bridge_evm_addresses[" + std::to_string(i) + "] set without a bridge_chain_ids[" + std::to_string(i) + "]"};
+        }
         gw_dests.push_back(d);
       }
       else
       {
+        // Bridge memos only attach to gateway outputs; silently dropping one on a
+        // gateway->wallet destination would lose routing info the caller asked for.
+        if ((!req.bridge_chain_ids.empty() && req.bridge_chain_ids[i] != 0) ||
+            (!req.bridge_evm_addresses.empty() && !req.bridge_evm_addresses[i].empty()))
+          throw rpc_error{ERROR_WRONG_PARAM,
+              "bridge memo is only supported for gateway destinations (destinations[" + std::to_string(i) + "] is a wallet address)"};
         cryptonote::address_parse_info info{};
         if (!cryptonote::get_account_address_from_str(info, nettype, req.destinations[i]))
           throw rpc_error{ERROR_WRONG_PARAM, "invalid destination address: " + req.destinations[i]};
@@ -4074,18 +4140,6 @@ namespace cryptonote::rpc {
   }
 
   //------------------------------------------------------------------------------------------------------------------------------
-  namespace
-  {
-    // Resolve a gwB… address or 64-char hex string to a gateway id.
-    bool resolve_gateway_id(cryptonote::network_type nettype, const std::string& s, crypto::public_key& out)
-    {
-      cryptonote::gateway_address_parse_info info{};
-      if (cryptonote::get_gateway_address_from_str(info, nettype, s)) { out = info.gateway_id; return true; }
-      return tools::hex_to_type(s, out);
-    }
-  }
-
-  //------------------------------------------------------------------------------------------------------------------------------
   void core_rpc_server::invoke(GATEWAY_RELEASE_REF_STATUS& cmd, rpc_context context)
   {
     auto& req = cmd.request;
@@ -4157,6 +4211,16 @@ namespace cryptonote::rpc {
     cmd.response["epoch_released"] = exists ? acct.released_in_window(window) : uint64_t{0};
     cmd.response["release_cap"]    = cryptonote::GATEWAY_RELEASE_CAP_PER_WINDOW;
     cmd.response["per_tx_max"]     = cryptonote::GATEWAY_RELEASE_PER_TX_MAX;
+    // The retention floor, same contract as gateway_release_ref_status: release
+    // accounting is kept only for the current + immediately-previous window and
+    // lazily pruned below that. Without this a caller passing an older `height`
+    // reads epoch_released = 0 and cannot tell "nothing was released" from "that
+    // window is no longer retained" — on a reserve-audit surface that is the
+    // difference between a clean audit and a silently missed release.
+    uint64_t retained_from = 0;
+    for (const auto& w : acct.release_windows)
+      if (retained_from == 0 || w.window_id < retained_from) retained_from = w.window_id;
+    cmd.response["retained_from_window"] = retained_from;
     // Per-chain expected wBDX supply is sourced from the EVM chain registry +
     // watchers (Phase E); empty until those land. The dashboard cross-check
     // (Σ wBDX == gateway_balance) is computed off-chain against this balance.
@@ -4198,15 +4262,20 @@ namespace cryptonote::rpc {
       {
         const std::string txid = tools::type_to_hex(cryptonote::get_transaction_hash(tx));
 
-        // The bridge deposit-routing memo (A.5), if this tx carries one for gw_id.
-        // Surfaced raw (ciphertext + tx pubkey + output index) so the bridge signer
-        // — which holds the shared gateway view secret, not the daemon — decrypts it
-        // (plan §A.5, "signer decrypts").
-        cryptonote::tx_extra_gateway_deposit_memo dmemo{};
-        const bool has_dmemo =
-            cryptonote::get_field_from_tx_extra(tx.extra, dmemo) && dmemo.gateway_id == gw_id;
-        const crypto::public_key dmemo_txpub =
-            has_dmemo ? cryptonote::get_tx_pub_key_from_extra(tx) : crypto::public_key{};
+        // Bridge deposit-routing memos (tx_extra_gateway_bridge_memo), keyed by the
+        // gateway output they tag. Memos are sparse and a tx may carry several, so
+        // collect them all rather than taking the first. Surfaced raw (ciphertext +
+        // tx pubkey + output index): the bridge signer holds the gateway view
+        // secret, the daemon does not, so the signer decrypts.
+        std::unordered_map<uint32_t, crypto::hash> bridge_memos;
+        {
+          size_t skip = 0;
+          cryptonote::tx_extra_gateway_bridge_memo bm{};
+          while (cryptonote::get_field_from_tx_extra(tx.extra, bm, skip++))
+            bridge_memos.emplace(bm.output_index, bm.ciphertext);
+        }
+        const crypto::public_key memo_txpub =
+            bridge_memos.empty() ? crypto::public_key{} : cryptonote::get_tx_pub_key_from_extra(tx);
 
         // deposits (tx_out_gateway to this gateway)
         for (size_t oi = 0; oi < tx.vout.size(); ++oi)
@@ -4216,11 +4285,10 @@ namespace cryptonote::rpc {
           if (!g || g->gateway_addr != gw_id)
             continue;
           json ev{{"height", h}, {"txid", txid}, {"type", "deposit"}, {"amount", g->amount}};
-          if (has_dmemo)
+          if (auto it = bridge_memos.find(static_cast<uint32_t>(oi)); it != bridge_memos.end())
           {
-            ev["enc_memo"] = oxenc::to_hex(std::string_view{
-                reinterpret_cast<const char*>(dmemo.enc_memo.data()), dmemo.enc_memo.size()});
-            ev["tx_pubkey"] = tools::type_to_hex(dmemo_txpub);
+            ev["enc_memo"]  = tools::type_to_hex(it->second);
+            ev["tx_pubkey"] = tools::type_to_hex(memo_txpub);
             ev["out_index"] = oi;
           }
           events.push_back(std::move(ev));

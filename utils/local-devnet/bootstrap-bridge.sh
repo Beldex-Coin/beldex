@@ -184,7 +184,7 @@ cat <<EOF
 ────────────────────────────────────────────────────────────────────────────
 Bridge is up. Next, from a CLI wallet (fund it per DEVNET_SETUP.md §4):
 
-  bridge_deposit $GATEWAY_ADDR 50 31337 <20-byte evm address, no 0x>
+  transfer $GATEWAY_ADDR 50 31337:0x<20-byte evm address>
 
 and to auto-broadcast mints, in another shell:
 

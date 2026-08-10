@@ -86,14 +86,6 @@ inline constexpr uint64_t GATEWAY_RELEASE_PER_TX_MAX           = UINT64_C(500000
 inline constexpr uint32_t GATEWAY_GOVERNANCE_SUPERMAJORITY_NUM = 4;
 inline constexpr uint32_t GATEWAY_GOVERNANCE_SUPERMAJORITY_DEN = 5;
 
-// Bridge deposit-routing memo (A.5): bounded encrypted blob carrying
-// {dst_chain_id, dst_addr} for a bridge deposit. 1 (version) + 8 (chain id) +
-// 32 (max dst addr, e.g. 20-byte EVM address left-padded) = 41 plaintext bytes;
-// capped at 64 to leave headroom for future destination encodings without a new
-// wire format. The stored/serialized ciphertext is the same length as the
-// plaintext (stream-XOR against a view-key-derived mask, like GW_OUT_PID_MASK).
-inline constexpr size_t   GATEWAY_DEPOSIT_MEMO_MAX_BYTES       = 64;
-
 // ---- Sovereign Bridge (HF23) Phase B: bonded bridge set --------------------
 // The bridge committee is drawn per epoch from an opt-in, separately-bonded
 // subset of masternodes (whitepaper §3.3, plan §6). All amounts are atomic
@@ -200,6 +192,8 @@ namespace hashkey {
   inline constexpr std::string_view GW_OWNERSHIP    = "gateway_ownership"sv;    // descriptor-update ownership proof message
   inline constexpr std::string_view GW_OUT_PID_MASK = "gateway_out_pid_mask"sv; // integrated-address payment-id encryption mask
   inline constexpr std::string_view GW_BALANCE      = "gateway_balance"sv;      // gw→wallet withdrawal balance-proof message
+  // Gateway bridge deposit-routing memo (HF22+) encryption mask.
+  inline constexpr std::string_view GW_BRIDGE_MEMO_MASK = "gateway_bridge_memo_mask"sv; // bridge-memo (chain+evm_addr) encryption mask
   // Sovereign Bridge governance (HF23) domain separators. Each governance
   // attestation message is H(tag || genesis_hash || …) — the genesis binding
   // (same rationale as GW_INPUT_SIG) prevents cross-chain/fork replay of a
@@ -207,7 +201,6 @@ namespace hashkey {
   // evidence non-interchangeable.
   inline constexpr std::string_view GW_FREEZE       = "gateway_freeze"sv;       // supermajority freeze/unfreeze attestation message
   inline constexpr std::string_view GW_REPOINT      = "gateway_repoint"sv;      // supermajority owner re-point attestation message
-  inline constexpr std::string_view GW_DEPOSIT_MEMO = "gateway_deposit_memo"sv; // bridge deposit-routing memo encryption mask
   // Phase F accountability: the bridge-committee slash-report domain. MUST match the
   // off-chain signer's `slash::SLASH_REPORT_DOMAIN` byte-for-byte.
   inline constexpr std::string_view BRIDGE_SLASH    = "bridge_slash_report_v1"sv; // bridge accountability slash report
@@ -387,6 +380,83 @@ constexpr uint64_t bridge_epoch_blocks(network_type n)
 constexpr uint64_t bridge_bond_unlock_blocks(network_type n)
 {
   return is_local_bridge_net(n) ? 360 : BRIDGE_BOND_UNLOCK_BLOCKS;
+}
+
+// Destination chains accepted for gateway bridge memos (HF22+).
+//
+// This is an INPUT-SIDE allow-list only, never consensus: the memo itself
+// carries the raw EIP-155 chain id (see tx_extra_gateway_bridge_memo), which
+// only exists once decrypted, so no node ever validates it. The list exists so
+// a wallet/daemon rejects a typo'd or unsupported chain at the point the user
+// submits it, rather than silently encrypting a routing hint the bridge
+// operator cannot honour.
+//
+// Consequences of it being input-side only:
+//  - Decoding is unaffected: an operator whose build predates a chain being
+//    added still reads the id out of the memo correctly, it just won't have a
+//    friendly name for it. Nothing breaks, nothing forks.
+//  - Adding a chain is a plain code change here; no wire format changes.
+//
+// `nettype` is the Beldex network the chain may be used from, so a mainnet
+// chain id typed into a testnet wallet is rejected as the mistake it is.
+struct BridgeChain
+{
+  uint64_t         chain_id;   // real EIP-155 chain id
+  network_type     nettype;    // Beldex network this chain is accepted on
+  std::string_view name;
+};
+
+inline constexpr std::array SUPPORTED_BRIDGE_CHAINS = {
+  BridgeChain{1,        MAINNET, "ethereum"},
+  BridgeChain{10,       MAINNET, "optimism"},
+  BridgeChain{56,       MAINNET, "bsc"},
+  BridgeChain{137,      MAINNET, "polygon"},
+  BridgeChain{250,      MAINNET, "fantom"},
+  BridgeChain{8453,     MAINNET, "base"},
+  BridgeChain{42161,    MAINNET, "arbitrum"},
+  BridgeChain{43114,    MAINNET, "avalanche"},
+
+  BridgeChain{97,       TESTNET, "bsc-testnet"},
+  BridgeChain{4002,     TESTNET, "fantom-testnet"},
+  BridgeChain{17000,    TESTNET, "holesky"},
+  BridgeChain{43113,    TESTNET, "avalanche-fuji"},
+  BridgeChain{80002,    TESTNET, "polygon-amoy"},
+  BridgeChain{84532,    TESTNET, "base-sepolia"},
+  BridgeChain{421614,   TESTNET, "arbitrum-sepolia"},
+  BridgeChain{11155111, TESTNET, "sepolia"},
+  BridgeChain{11155420, TESTNET, "optimism-sepolia"},
+
+  // Local bridge devnet: the hardhat/anvil default chain id, used by
+  // utils/local-devnet (bootstrap-bridge.sh / serve-live.sh) against a wBDX
+  // contract on 127.0.0.1:8545. Scoped to DEVNET so it can never be selected
+  // from a mainnet or testnet wallet.
+  BridgeChain{31337,    DEVNET,  "devnet-hardhat"},
+};
+
+// Looks up a chain id in the allow-list, ignoring which network it belongs to.
+// Returns nullptr if the chain is not supported at all. Callers that need the
+// network check should compare the returned entry's `nettype` with their own,
+// so they can tell "unknown chain" apart from "wrong network for this chain".
+inline constexpr const BridgeChain* find_bridge_chain(uint64_t chain_id)
+{
+  for (const auto& c : SUPPORTED_BRIDGE_CHAINS)
+    if (c.chain_id == chain_id)
+      return &c;
+  return nullptr;
+}
+
+// Comma-separated "name(id)" list of the chains usable on `nettype`, for error
+// messages that tell the user what they *can* pick.
+inline std::string supported_bridge_chains_str(network_type nettype)
+{
+  std::string out;
+  for (const auto& c : SUPPORTED_BRIDGE_CHAINS)
+  {
+    if (c.nettype != nettype) continue;
+    if (!out.empty()) out += ", ";
+    out += std::string(c.name) + "(" + std::to_string(c.chain_id) + ")";
+  }
+  return out;
 }
 
 // Constants for older hard-forks that are mostly irrelevant now, but are still needed to sync the

@@ -64,9 +64,9 @@ constexpr uint8_t
   TX_EXTRA_TAG_BURN                       = 0x79,
   TX_EXTRA_TAG_BELDEX_NAME_SYSTEM           = 0x7A,
   TX_EXTRA_TAG_GATEWAY_DESCRIPTOR_OPERATION = 0x7C, // HF22 (0x7B reserved for CA asset op)
-  TX_EXTRA_TAG_GATEWAY_FREEZE               = 0x7D, // HF23 (Sovereign Bridge governance)
-  TX_EXTRA_TAG_GATEWAY_REPOINT              = 0x7E, // HF23 (Sovereign Bridge governance)
-  TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO         = 0x7F, // HF23 (bridge deposit routing)
+  TX_EXTRA_TAG_GATEWAY_BRIDGE_MEMO          = 0x7D, // HF22 (bridge deposit routing)
+  TX_EXTRA_TAG_GATEWAY_FREEZE               = 0x7E, // HF23 (Sovereign Bridge governance)
+  TX_EXTRA_TAG_GATEWAY_REPOINT              = 0x7F, // HF23 (Sovereign Bridge governance)
   TX_EXTRA_TAG_BRIDGE_REGISTRATION          = 0x80, // HF23 (bonded bridge set)
   TX_EXTRA_TAG_BRIDGE_UNBOND                = 0x81, // HF23 (bonded bridge set)
   TX_EXTRA_TAG_BRIDGE_SLASH                 = 0x82, // HF23 (Phase F accountability)
@@ -578,6 +578,37 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Gateway bridge memo (HF22+). Pairs with exactly one tx_out_gateway in the
+  // same tx via output_index -- positional matching (as gateway_input_sig uses
+  // for withdrawal inputs) doesn't work here because memos are sparse: most
+  // gateway outputs will not carry one.
+  //
+  // Plaintext (visible): version, output_index.
+  // Encrypted (ciphertext, 32 bytes): XOR of a 32-byte keystream against a
+  // 28-byte plaintext (chain_id (8B LE) || evm_addr (20B)) zero-padded to
+  // 32 bytes. chain_id is the destination chain's real EIP-155 id (1 =
+  // Ethereum mainnet, 11155111 = Sepolia, …) stored verbatim: it is never
+  // visible to consensus (it only exists once decrypted), so there is nothing
+  // for nodes to agree on and no reason to indirect it through a table --
+  // which also means a new destination chain needs no core/wallet release.
+  // The keystream reuses the same DH derivation as encrypt_gateway_payment_id
+  // (8·r·V_gw, Hs(derivation, output_index)), with a distinct domain tag
+  // (hashkey::GW_BRIDGE_MEMO_MASK) and the full 32-byte mask instead of an
+  // 8-byte truncation. The 4 zero-padding bytes double as a free integrity
+  // check on decrypt: a wrong key won't zero them.
+  struct tx_extra_gateway_bridge_memo
+  {
+    uint8_t      version      = 0;
+    uint32_t     output_index = 0;   // tx.vout[output_index] MUST be a tx_out_gateway
+    crypto::hash ciphertext{};       // opaque 32-byte XOR ciphertext, NOT a hash
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      VARINT_FIELD(output_index)
+      FIELD(ciphertext)
+    END_SERIALIZE()
+  };
+
   // ---- Sovereign Bridge governance (HF23) ----------------------------------
   // A single masternode governance attestation: a checkpoint-quorum member's
   // signature over the freeze/re-point message (see gateway_utils). Mirrors the
@@ -649,27 +680,6 @@ namespace cryptonote
       VARINT_FIELD(governance_seq)
       VARINT_FIELD(epoch_height)
       FIELD(evidence)
-    END_SERIALIZE()
-  };
-
-  // Bridge deposit-routing memo (HF23, plan §A.5). A bounded encrypted blob on a
-  // gateway deposit carrying {dst_chain_id, dst_addr} for the destination EVM
-  // chain. Encrypted (stream-XOR) against a mask derived from the gateway view
-  // key and the tx public key, so only the gateway owner can read it — the same
-  // shape as the integrated-address payment-id mask (GW_OUT_PID_MASK). The
-  // plaintext length is bounded by GATEWAY_DEPOSIT_MEMO_MAX_BYTES; the ciphertext
-  // is the same length. Only meaningful for deposits to a bridge-registered
-  // gateway (semantic routing is off-chain; consensus only bounds the size).
-  struct tx_extra_gateway_deposit_memo
-  {
-    uint8_t              version = 0;
-    crypto::public_key   gateway_id{};     // which deposit target this memo routes
-    std::vector<uint8_t> enc_memo;         // ciphertext, |enc_memo| <= GATEWAY_DEPOSIT_MEMO_MAX_BYTES
-
-    BEGIN_SERIALIZE()
-      FIELD(version)
-      FIELD(gateway_id)
-      FIELD(enc_memo)
     END_SERIALIZE()
   };
 
@@ -936,9 +946,9 @@ namespace cryptonote
       tx_extra_tx_key_image_unlock,
       tx_extra_burn,
       tx_extra_gateway_descriptor_operation,
+      tx_extra_gateway_bridge_memo,
       tx_extra_gateway_freeze,
       tx_extra_gateway_repoint,
-      tx_extra_gateway_deposit_memo,
       tx_extra_gateway_release_ref,
       tx_extra_bridge_registration,
       tx_extra_bridge_unbond,
@@ -971,9 +981,9 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_proofs,         cryptonote:
 BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_unlock,         cryptonote::TX_EXTRA_TAG_TX_KEY_IMAGE_UNLOCK);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_burn,                        cryptonote::TX_EXTRA_TAG_BURN);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_descriptor_operation, cryptonote::TX_EXTRA_TAG_GATEWAY_DESCRIPTOR_OPERATION);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_bridge_memo,          cryptonote::TX_EXTRA_TAG_GATEWAY_BRIDGE_MEMO);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_freeze,               cryptonote::TX_EXTRA_TAG_GATEWAY_FREEZE);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_repoint,              cryptonote::TX_EXTRA_TAG_GATEWAY_REPOINT);
-BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_deposit_memo,         cryptonote::TX_EXTRA_TAG_GATEWAY_DEPOSIT_MEMO);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_release_ref,          cryptonote::TX_EXTRA_TAG_GATEWAY_RELEASE_REF);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_registration,          cryptonote::TX_EXTRA_TAG_BRIDGE_REGISTRATION);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_bridge_unbond,                cryptonote::TX_EXTRA_TAG_BRIDGE_UNBOND);

@@ -917,9 +917,49 @@ namespace tools
         de.is_gateway         = true;
         de.gateway_id         = gw_info.gateway_id;
         de.gateway_payment_id = gw_info.has_payment_id ? gw_info.payment_id : 0;
+
+        if (it->bridge_chain_id != 0)
+        {
+          // bridge_chain_id is the destination chain's real EIP-155 id, stored
+          // verbatim in the (encrypted) memo. Checked against the supported-chain
+          // allow-list (input-side only; see cryptonote_config.h) so an unsupported
+          // or wrong-network chain is rejected here instead of being encrypted into
+          // a routing hint the bridge operator cannot honour.
+          const auto* chain = cryptonote::find_bridge_chain(it->bridge_chain_id);
+          if (!chain)
+            throw wallet_rpc_error{error_code::WRONG_ADDRESS,
+                "unsupported bridge_chain_id: "s + std::to_string(it->bridge_chain_id) +
+                ". Supported: " + cryptonote::supported_bridge_chains_str(m_wallet->nettype())};
+          if (chain->nettype != m_wallet->nettype())
+            throw wallet_rpc_error{error_code::WRONG_ADDRESS,
+                "bridge_chain_id "s + std::to_string(it->bridge_chain_id) + " (" + std::string(chain->name) +
+                ") is not valid on this wallet's network. Supported: " +
+                cryptonote::supported_bridge_chains_str(m_wallet->nettype())};
+          std::string_view eth_hex = it->bridge_evm_address;
+          if (eth_hex.size() >= 2 && eth_hex[0] == '0' && (eth_hex[1] == 'x' || eth_hex[1] == 'X'))
+            eth_hex.remove_prefix(2);
+          crypto::eth_address eth_addr{};
+          if (!tools::hex_to_type(eth_hex, eth_addr))
+            throw wallet_rpc_error{error_code::WRONG_ADDRESS, "invalid bridge_evm_address: "s + it->bridge_evm_address};
+          de.gateway_bridge_chain_id = it->bridge_chain_id;
+          de.gateway_bridge_evm_addr = eth_addr;
+        }
+        else if (!it->bridge_evm_address.empty())
+        {
+          // An address with no chain id would be silently dropped; that is almost
+          // certainly a caller mistake, so reject it rather than ignore it.
+          throw wallet_rpc_error{error_code::WRONG_ADDRESS, "bridge_evm_address set without a bridge_chain_id"};
+        }
+
         dsts.push_back(de);
         continue;
       }
+
+      // Bridge memos only attach to gateway outputs; silently dropping one on a
+      // normal wallet destination would lose routing info the caller asked for.
+      if (it->bridge_chain_id != 0 || !it->bridge_evm_address.empty())
+        throw wallet_rpc_error{error_code::WRONG_ADDRESS,
+            "bridge memo is only supported for gateway (gwB…/gwiB…) destinations: "s + it->address};
 
       cryptonote::address_parse_info info = extract_account_addr(m_wallet->nettype(), it->address);
 

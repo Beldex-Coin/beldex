@@ -398,13 +398,15 @@ namespace cryptonote::rpc {
 
   void parse_request(GATEWAY_CREATE_TRANSFER& c, rpc_input in) {
     get_values(in,
-        "amounts",       required{c.request.amounts},
-        "destinations",  required{c.request.destinations},
-        "fee",           c.request.fee,
-        "ref_chain_id",  c.request.ref_chain_id,
-        "ref_evm_txid",  c.request.ref_evm_txid,
-        "ref_log_index", c.request.ref_log_index,
-        "source",        required{c.request.source});
+        "amounts",              required{c.request.amounts},
+        "bridge_chain_ids",     c.request.bridge_chain_ids,
+        "bridge_evm_addresses", c.request.bridge_evm_addresses,
+        "destinations",         required{c.request.destinations},
+        "fee",                  c.request.fee,
+        "ref_chain_id",         c.request.ref_chain_id,
+        "ref_evm_txid",         c.request.ref_evm_txid,
+        "ref_log_index",        c.request.ref_log_index,
+        "source",               required{c.request.source});
   }
 
   void parse_request(GATEWAY_DECODE_WITHDRAWAL& c, rpc_input in) {

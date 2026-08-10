@@ -47,10 +47,8 @@ use std::collections::BTreeSet;
 
 /// Fixed memo length (bytes).
 pub const MEMO_LEN: usize = 32;
-/// Current memo version.
-pub const MEMO_VERSION: u8 = 1;
 
-/// The decoded A.5 bridge memo: where a deposit should mint.
+/// The decoded bridge memo: where a deposit should mint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeMemo {
     pub chain_id: u64,
@@ -61,33 +59,40 @@ pub struct BridgeMemo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoError {
     BadLength(usize),
-    UnsupportedVersion(u8),
+    /// The 4 trailing bytes were not zero: wrong decryption key, or not a memo.
+    BadPadding,
 }
 
 impl BridgeMemo {
-    /// The canonical 32-byte encoding (the C++/wallet side mirrors this layout).
+    /// The canonical 32-byte memo **plaintext**, mirroring `encrypt_gateway_bridge_memo`
+    /// in `cryptonote_tx_utils.cpp` byte-for-byte:
+    ///   bytes 0..8   chain_id (u64, LITTLE-endian — explicitly LE, host order never leaks)
+    ///   bytes 8..28  evm_addr (20 bytes)
+    ///   bytes 28..32 zero padding (doubles as the wrong-key integrity check)
+    ///
+    /// There is no version byte here: the memo's version lives in the plaintext
+    /// `tx_extra_gateway_bridge_memo::version` field, outside the ciphertext.
     pub fn encode(&self) -> [u8; MEMO_LEN] {
         let mut m = [0u8; MEMO_LEN];
-        m[0] = MEMO_VERSION;
-        // m[1] flags = 0
-        m[2..10].copy_from_slice(&self.chain_id.to_be_bytes());
-        m[10..30].copy_from_slice(&self.evm_addr);
-        // m[30..32] reserved = 0
+        m[0..8].copy_from_slice(&self.chain_id.to_le_bytes());
+        m[8..28].copy_from_slice(&self.evm_addr);
+        // m[28..32] zero padding
         m
     }
 
-    /// Decode a (decrypted) memo. Reserved bytes are ignored for forward
-    /// compatibility; the version gates the layout.
+    /// Decode a decrypted memo. The 4 trailing zero bytes are verified: a wrong view
+    /// key produces uniformly random bytes there, so this rejects bad decrypts with
+    /// probability `1 - 2^-32` (the same check `decrypt_gateway_bridge_memo` makes).
     pub fn decode(bytes: &[u8]) -> Result<BridgeMemo, MemoError> {
         if bytes.len() != MEMO_LEN {
             return Err(MemoError::BadLength(bytes.len()));
         }
-        if bytes[0] != MEMO_VERSION {
-            return Err(MemoError::UnsupportedVersion(bytes[0]));
+        if bytes[28..32] != [0u8; 4] {
+            return Err(MemoError::BadPadding);
         }
-        let chain_id = u64::from_be_bytes(bytes[2..10].try_into().unwrap());
+        let chain_id = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
         let mut evm_addr = [0u8; 20];
-        evm_addr.copy_from_slice(&bytes[10..30]);
+        evm_addr.copy_from_slice(&bytes[8..28]);
         Ok(BridgeMemo { chain_id, evm_addr })
     }
 }
@@ -452,13 +457,17 @@ mod tests {
     fn bridge_memo_round_trips() {
         let m = BridgeMemo { chain_id: 137, evm_addr: [0xab; 20] };
         let enc = m.encode();
-        assert_eq!(enc[0], MEMO_VERSION);
+        // chain_id is little-endian at bytes 0..8, addr at 8..28, zero padding at 28..32.
+        assert_eq!(&enc[0..8], &137u64.to_le_bytes());
+        assert_eq!(&enc[8..28], &[0xab; 20]);
+        assert_eq!(&enc[28..32], &[0u8; 4]);
         assert_eq!(BridgeMemo::decode(&enc).unwrap(), m);
-        // wrong length / version rejected.
+        // Wrong length rejected.
         assert_eq!(BridgeMemo::decode(&[0u8; 8]), Err(MemoError::BadLength(8)));
+        // Non-zero padding (a wrong-key decrypt) rejected.
         let mut bad = enc;
-        bad[0] = 9;
-        assert_eq!(BridgeMemo::decode(&bad), Err(MemoError::UnsupportedVersion(9)));
+        bad[31] = 9;
+        assert_eq!(BridgeMemo::decode(&bad), Err(MemoError::BadPadding));
     }
 
     #[test]

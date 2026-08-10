@@ -2010,6 +2010,117 @@ PendingTransaction *WalletImpl::createBnsTransaction(std::string& owner, std::st
 }
 
 EXPORT
+PendingTransaction *WalletImpl::createGatewayRegisterTransaction(
+    const std::string& gateway_secret,
+    const std::string& owner_key_type,
+    const std::string& owner_key_hex,
+    const std::string& meta_info,
+    uint32_t priority,
+    uint32_t subaddr_account,
+    std::set<uint32_t> subaddr_indices)
+{
+    clearStatus();
+
+    auto *transaction = new PendingTransactionImpl(*this);
+    bool refresh_paused = false;
+
+    do {
+        crypto::secret_key gateway_skey;
+        if (!tools::hex_to_type(gateway_secret, gateway_skey)) {
+            setStatusError(tr("Invalid gateway secret key: expected 64 hexadecimal characters"));
+            break;
+        }
+
+        if (meta_info.size() > cryptonote::GATEWAY_DESCRIPTOR_MAX_META_INFO_SIZE) {
+            setStatusError(
+                tr("Gateway meta information exceeds the maximum size of ") +
+                std::to_string(cryptonote::GATEWAY_DESCRIPTOR_MAX_META_INFO_SIZE) +
+                tr(" bytes"));
+            break;
+        }
+
+        cryptonote::gateway_owner_key_v owner_key;
+        if (owner_key_type == "schnorr") {
+            crypto::public_key key;
+            if (!tools::hex_to_type(owner_key_hex, key)) {
+                setStatusError(tr("Invalid schnorr owner key: expected 64 hexadecimal characters"));
+                break;
+            }
+            owner_key = key;
+        } else if (owner_key_type == "eth") {
+            crypto::eth_public_key key;
+            if (!tools::hex_to_type(owner_key_hex, key)) {
+                setStatusError(tr("Invalid eth owner key: expected a 66-character compressed secp256k1 key"));
+                break;
+            }
+            owner_key = key;
+        } else if (owner_key_type == "eddsa") {
+            crypto::eddsa_public_key key;
+            if (!tools::hex_to_type(owner_key_hex, key)) {
+                setStatusError(tr("Invalid eddsa owner key: expected 64 hexadecimal characters"));
+                break;
+            }
+            owner_key = key;
+        } else {
+            setStatusError(tr("Owner key type must be one of: schnorr, eth, eddsa"));
+            break;
+        }
+
+        // Validation above does not touch wallet state. Only stop the refresh
+        // worker once transaction construction is actually going to access the
+        // wallet; otherwise an uninitialized validation-only caller would
+        // unnecessarily start a refresh worker on return.
+        pauseRefresh();
+        refresh_paused = true;
+
+        auto w = wallet();
+        if (subaddr_indices.empty()) {
+            for (uint32_t index = 0; index < w->get_num_subaddresses(subaddr_account); ++index)
+                subaddr_indices.insert(index);
+        }
+
+        try {
+            std::string reason;
+            transaction->m_pending_tx = w->create_gateway_register_tx(
+                gateway_skey,
+                owner_key,
+                meta_info,
+                &reason,
+                priority,
+                subaddr_account,
+                std::move(subaddr_indices));
+
+            if (transaction->m_pending_tx.empty()) {
+                setStatusError(
+                    reason.empty()
+                        ? tr("Failed to create gateway registration transaction")
+                        : reason);
+                break;
+            }
+
+            pendingTxPostProcess(transaction);
+        } catch (const tools::error::daemon_busy&) {
+            setStatusError(tr("daemon is busy. Please try again later."));
+        } catch (const tools::error::no_connection_to_daemon&) {
+            setStatusError(tr("no connection to daemon. Please make sure daemon is running."));
+        } catch (const tools::error::wallet_rpc_error& e) {
+            setStatusError(tr("RPC error: ") + e.to_string());
+        } catch (const tools::error::transfer_error& e) {
+            setStatusError(std::string{tr("transfer error: ")} + e.what());
+        } catch (const std::exception& e) {
+            setStatusError(std::string{tr("unexpected error: ")} + e.what());
+        } catch (...) {
+            setStatusError(tr("unknown error"));
+        }
+    } while (false);
+
+    transaction->m_status = status();
+    if (refresh_paused)
+        startRefresh();
+    return transaction;
+}
+
+EXPORT
 PendingTransaction *WalletImpl::bnsUpdateTransaction(std::string& owner, std::string& backup_owner,std::string &value_bchat,std::string &value_wallet,std::string &value_belnet, std::string &value_eth_addr, std::string &name,
                                                   uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
 
