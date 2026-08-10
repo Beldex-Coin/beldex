@@ -558,11 +558,19 @@ namespace cryptonote
           // plus one gateway_balance_proof for a gateway→wallet withdrawal), is an
           // update_gateway_address tx (one ownership proof), or is a
           // register_gateway_address tx (one ownership proof signed by the gateway
-          // id itself, proving the registrant controls the id — F2). The vector is
-          // length-prefixed, so a mixed [balance_proof, input_sig] payload
-          // round-trips without a separate count. Prunable region, like RCT above.
-          if (!pruned && (has_gateway_inputs() || type == txtype::update_gateway_address
-              || type == txtype::register_gateway_address))
+          // id itself, proving the registrant controls the id — F2). The layout of
+          // the vector is pinned by consensus (gateway_utils.cpp), not by this
+          // serializer.
+          //
+          // Prunable region, like RCT above -- which means the tx hashers MUST
+          // NOT skip the prunable hash for a pure-gateway (Null) withdrawal, or
+          // the owner signature falls outside the tx id. This exact condition is
+          // repeated in cryptonote_format_utils.cpp (calculate_transaction_hash,
+          // get_pruned_transaction_hash, calculate_transaction_prunable_hash);
+          // all four copies must stay identical or the tx id stops reproducing.
+          if (!pruned && (has_gateway_inputs()
+                          || type == txtype::update_gateway_address
+                          || type == txtype::register_gateway_address))
           {
             ar.tag("gateway_proofs");
             serialization::value(ar, gateway_proofs);

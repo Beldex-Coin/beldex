@@ -731,6 +731,15 @@ namespace cryptonote::rpc {
 
         set("gateway_descriptor", std::move(gw));
       }
+      void operator()(const tx_extra_gateway_bridge_memo& x) {
+        // Opaque to the daemon: the ciphertext only decrypts with the gateway's
+        // secret key (see decrypt_gateway_bridge_memo / scripts/gateway_decode_bridge_memo.py).
+        set("gateway_bridge_memo", json{
+            {"version", x.version},
+            {"output_index", x.output_index},
+            {"ciphertext", tools::type_to_hex(x.ciphertext)},
+        });
+      }
       void operator()(const tx_extra_master_node_winner& x) { set("mn_winner", x.m_master_node_key); }
       void operator()(const tx_extra_master_node_pubkey& x) { set("mn_pubkey", x.m_master_node_key); }
       void operator()(const tx_extra_security_signature& x) { set("security_sig", tools::type_to_hex(x.m_security_signature)); }
@@ -3669,6 +3678,12 @@ namespace cryptonote::rpc {
 
     if (req.destinations.empty() || req.destinations.size() != req.amounts.size())
       throw rpc_error{ERROR_WRONG_PARAM, "destinations and amounts must be non-empty and of equal length"};
+    if (!req.bridge_chain_ids.empty() && req.bridge_chain_ids.size() != req.destinations.size())
+      throw rpc_error{ERROR_WRONG_PARAM, "bridge_chain_ids must be empty or match destinations in length"};
+    if (!req.bridge_evm_addresses.empty() && req.bridge_evm_addresses.size() != req.destinations.size())
+      throw rpc_error{ERROR_WRONG_PARAM, "bridge_evm_addresses must be empty or match destinations in length"};
+    if (req.bridge_chain_ids.empty() != req.bridge_evm_addresses.empty())
+      throw rpc_error{ERROR_WRONG_PARAM, "bridge_chain_ids and bridge_evm_addresses must both be set or both empty"};
 
     auto& db = m_core.get_blockchain_storage().get_db();
     cryptonote::gateway_account_data acct;
@@ -3702,10 +3717,50 @@ namespace cryptonote::rpc {
         d.gateway_id = info.gateway_id;
         d.amount     = req.amounts[i];
         d.payment_id = info.has_payment_id ? info.payment_id : 0;
+        if (!req.bridge_chain_ids.empty() && req.bridge_chain_ids[i] != 0)
+        {
+          // bridge_chain_ids[i] is the destination chain's real EIP-155 id, stored
+          // verbatim in the (encrypted) memo. Checked against the supported-chain
+          // allow-list (input-side only; see cryptonote_config.h) so an unsupported
+          // or wrong-network chain is rejected here instead of being encrypted into
+          // a routing hint the bridge operator cannot honour.
+          const auto* chain = cryptonote::find_bridge_chain(req.bridge_chain_ids[i]);
+          if (!chain)
+            throw rpc_error{ERROR_WRONG_PARAM,
+                "unsupported bridge_chain_ids[" + std::to_string(i) + "]: " +
+                std::to_string(req.bridge_chain_ids[i]) + ". Supported: " +
+                cryptonote::supported_bridge_chains_str(nettype)};
+          if (chain->nettype != nettype)
+            throw rpc_error{ERROR_WRONG_PARAM,
+                "bridge_chain_ids[" + std::to_string(i) + "] (" + std::string(chain->name) +
+                ") is not valid on this daemon's network. Supported: " +
+                cryptonote::supported_bridge_chains_str(nettype)};
+          std::string_view eth_hex = req.bridge_evm_addresses[i];
+          if (eth_hex.size() >= 2 && eth_hex[0] == '0' && (eth_hex[1] == 'x' || eth_hex[1] == 'X'))
+            eth_hex.remove_prefix(2);
+          crypto::eth_address eth_addr{};
+          if (!tools::hex_to_type(eth_hex, eth_addr))
+            throw rpc_error{ERROR_WRONG_PARAM, "invalid bridge_evm_addresses[" + std::to_string(i) + "] (expected 40-char hex, optional 0x prefix)"};
+          d.gateway_bridge_chain_id = req.bridge_chain_ids[i];
+          d.gateway_bridge_evm_addr = eth_addr;
+        }
+        else if (!req.bridge_evm_addresses.empty() && !req.bridge_evm_addresses[i].empty())
+        {
+          // An address with no chain id would be silently dropped; that is
+          // almost certainly a caller mistake, so reject it rather than ignore it.
+          throw rpc_error{ERROR_WRONG_PARAM,
+              "bridge_evm_addresses[" + std::to_string(i) + "] set without a bridge_chain_ids[" + std::to_string(i) + "]"};
+        }
         gw_dests.push_back(d);
       }
       else
       {
+        // Bridge memos only attach to gateway outputs; silently dropping one on a
+        // gateway->wallet destination would lose routing info the caller asked for.
+        if ((!req.bridge_chain_ids.empty() && req.bridge_chain_ids[i] != 0) ||
+            (!req.bridge_evm_addresses.empty() && !req.bridge_evm_addresses[i].empty()))
+          throw rpc_error{ERROR_WRONG_PARAM,
+              "bridge memo is only supported for gateway destinations (destinations[" + std::to_string(i) + "] is a wallet address)"};
         cryptonote::address_parse_info info{};
         if (!cryptonote::get_account_address_from_str(info, nettype, req.destinations[i]))
           throw rpc_error{ERROR_WRONG_PARAM, "invalid destination address: " + req.destinations[i]};

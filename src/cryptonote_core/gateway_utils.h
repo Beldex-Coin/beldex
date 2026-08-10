@@ -157,4 +157,38 @@ bool simulate_gateways_from_transactions(BlockchainDB& db, const std::vector<tra
 // Read the transaction history for a gateway (height-ascending, paginated).
 std::vector<crypto::hash> get_gateway_history(BlockchainDB& db, const crypto::public_key& gateway_addr, uint64_t offset, uint64_t count);
 
+// Decoded plaintext of a gateway bridge memo (see tx_extra_gateway_bridge_memo).
+struct gateway_bridge_memo_plaintext
+{
+  uint64_t chain_id = 0;   // destination chain's real EIP-155 id
+  crypto::eth_address evm_addr{};
+};
+
+// Mirror-image of encrypt_gateway_bridge_memo (cryptonote_tx_utils.cpp):
+// recomputes the same DH mask using the gateway's view secret key and the tx's
+// public key (pulled from tx_extra_pub_key), then XORs it against the memo's
+// ciphertext. gateway_view_secret_key is the secret key paired with the
+// gateway's identity (gateway_addr / tx_out_gateway.gateway_addr), NOT the
+// gateway_owner_key_v spend-authorization key -- these are separate keys.
+// Gateway outputs always use the tx's single main key (never
+// additional_tx_public_keys, see the construct_tx_with_tx_key guard in
+// cryptonote_tx_utils.cpp), so there is no per-output key ambiguity here.
+// Only memos addressed to this gateway are decrypted: the referenced output's
+// gateway_addr must equal the public key of gateway_view_secret_key. A tx can
+// carry outputs (and memos) for several gateways, and skipping that check would
+// mean wrong-key decrypt attempts on other gateways' memos, caught only by the
+// 4-byte zero padding (i.e. with probability 1 - 2^-32).
+// Returns false if memo.output_index doesn't name a tx_out_gateway in tx, if
+// that output belongs to a different gateway, or if the zero-padding integrity
+// check fails (wrong key / not a real memo).
+bool decrypt_gateway_bridge_memo(const transaction& tx, const tx_extra_gateway_bridge_memo& memo,
+                                 const crypto::secret_key& gateway_view_secret_key,
+                                 gateway_bridge_memo_plaintext& out);
+
+// Structural consensus check for every tx_extra_gateway_bridge_memo in tx:
+// version supported, output_index in range and names a tx_out_gateway, no
+// duplicate output_index across memos. Content (chain_id/evm_addr) is
+// never inspected -- it's inside the ciphertext, invisible to validators.
+bool validate_gateway_bridge_memos(const transaction& tx, std::string& reason);
+
 } // namespace cryptonote

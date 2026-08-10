@@ -1002,6 +1002,14 @@ namespace cryptonote
     return result;
   }
   //---------------------------------------------------------------
+  bool add_gateway_bridge_memo_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_gateway_bridge_memo& memo)
+  {
+    tx_extra_field field = memo;
+    bool result = add_tx_extra_field_to_tx_extra(tx_extra, field);
+    CHECK_AND_NO_ASSERT_MES_L1(result, false, "failed to serialize gateway bridge memo");
+    return result;
+  }
+  //---------------------------------------------------------------
   bool get_inputs_money_amount(const transaction& tx, uint64_t& money)
   {
     money = 0;
@@ -1389,6 +1397,22 @@ namespace cryptonote
       try {
         const_cast<transaction&>(t).rct_signatures.p.serialize_rctsig_prunable(
                 ba, t.rct_signatures.type, native_inputs, rct_outputs, mixin);
+        // Gateway proofs (HF22) are emitted immediately after rctsig_prunable in
+        // transaction::serialize_value and live in the PRUNABLE region, so this
+        // re-serialize path must reproduce them or the prunable hash will not
+        // match the blob-slice path above. This matters most for a pure-gateway
+        // withdrawal, where rct_signatures.type is Null: serialize_rctsig_prunable
+        // returns immediately for Null, so without this the prunable blob would be
+        // empty here while the blob path hashes the proof bytes.
+        // Guards mirror transaction::serialize_value exactly (!pruned, non-empty
+        // vin): without them a pruned tx or an empty-vin tx would get a 0x00
+        // empty-vector length prefix here where the wire format has no bytes at
+        // all, and the two prunable-hash paths would disagree by one byte.
+        if (!t.pruned && !t.vin.empty()
+            && (t.has_gateway_inputs()
+                || t.type == txtype::update_gateway_address
+                || t.type == txtype::register_gateway_address))
+          serialization::value(ba, const_cast<transaction&>(t).gateway_proofs);
       } catch (const std::exception& e) {
         LOG_ERROR("Failed to serialize rct signatures (prunable): " << e.what());
         return false;
@@ -1429,7 +1453,20 @@ namespace cryptonote
     }
 
     // prunable rct
-    if (t.rct_signatures.type == rct::RCTType::Null)
+    // RCTType::Null normally implies an empty prunable region, but a HF22
+    // pure-gateway withdrawal (gateway in -> gateway out) is Null and still
+    // carries gateway_proofs there. Those proofs are the sole authorization for
+    // a keyless txin_gateway, so the tx id must commit to them: only
+    // short-circuit when the prunable region is genuinely empty.
+    //
+    // Testing has_gateway_inputs() alone is sufficient because a
+    // register_/update_gateway_address tx can never be RCTType::Null: both are
+    // is_transfer(), so blockchain.cpp's CLSAG-minimum rule rejects type < CLSAG
+    // for them (its exemption is !has_gateway_inputs(), which they fail), and
+    // check_tx_inputs rejects Null on any non-coinbase. If either of those rules
+    // ever gains an exemption for the descriptor tx types, this gate must be
+    // widened to the full gateway_proofs condition in serialize_value.
+    if (t.rct_signatures.type == rct::RCTType::Null && !t.has_gateway_inputs())
       hashes[2] = crypto::null_hash;
     else
       hashes[2] = pruned_data_hash;
@@ -1492,7 +1529,13 @@ namespace cryptonote
     }
 
     // prunable rct
-    if (t.rct_signatures.type == rct::RCTType::Null)
+    // See get_pruned_transaction_hash: a HF22 pure-gateway withdrawal is
+    // RCTType::Null yet has a non-empty prunable region (gateway_proofs), and
+    // those proofs are the only authorization for its keyless gateway input.
+    // Skipping the prunable hash here would leave the owner signature outside
+    // the tx id entirely. has_gateway_inputs() alone suffices -- see
+    // get_pruned_transaction_hash for why the descriptor tx types cannot be Null.
+    if (t.rct_signatures.type == rct::RCTType::Null && !t.has_gateway_inputs())
     {
       hashes[2] = crypto::null_hash;
     }

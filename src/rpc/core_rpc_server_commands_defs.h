@@ -2774,6 +2774,18 @@ namespace cryptonote::rpc {
       std::vector<std::string> destinations;
       std::vector<uint64_t> amounts;
       uint64_t fee = 0;
+      // Gateway bridge memo (HF22+), OPTIONAL and parallel to `destinations`:
+      // bridge_chain_ids[i] (the destination chain's real EVM chain id, EIP-155 --
+      // e.g. 1 for Ethereum mainnet, 11155111 for Sepolia -- stored verbatim in the
+      // encrypted memo and NOT validated against any known-chain list, since only
+      // the bridge operator ever acts on it) and bridge_evm_addresses[i]
+      // (40-char hex, optional "0x") tag
+      // destinations[i] with a destination-chain routing hint, encrypted into a
+      // paired tx_extra entry. Leave both empty for no memos; if either is
+      // non-empty, both must be sized to match `destinations` (0/"" entries mean
+      // "no memo for this destination").
+      std::vector<uint64_t> bridge_chain_ids;
+      std::vector<std::string> bridge_evm_addresses;
     } request;
   };
 

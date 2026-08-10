@@ -91,6 +91,7 @@ add_executable(unit_tests
   gateway_eth.cpp
   gateway_address_prefix.cpp
   gateway_withdrawal.cpp
+  gateway_bridge_memo.cpp
   aligned.cpp)
 
 target_link_libraries(unit_tests
@@ -130,3 +131,36 @@ add_test(
 add_executable(test_notifier test_notifier.cpp)
 target_link_libraries(test_notifier extra)
 set_property(TARGET test_notifier PROPERTY FOLDER "tests")
+
+# Gateway address (HF22) tests as their own binary, so they can be built and run
+# without the whole unit_tests target (which currently cannot link due to
+# unrelated pre-existing breakage in block_queue.cpp / levin.cpp).
+#   make gateway_tests && ./tests/unit_tests/gateway_tests
+add_executable(gateway_tests
+  main.cpp
+  gateway_address_prefix.cpp
+  gateway_bridge_memo.cpp
+  gateway_eddsa.cpp
+  gateway_eth.cpp
+  gateway_withdrawal.cpp)
+target_link_libraries(gateway_tests
+  PRIVATE
+    ringct
+    cryptonote_core
+    blockchain_db
+    lmdb_lib
+    wallet
+    version
+    Boost::thread
+    gtest
+    extra)
+set_property(TARGET gateway_tests PROPERTY FOLDER "tests")
+if (NOT MSVC)
+  set_property(TARGET gateway_tests
+    APPEND_STRING
+    PROPERTY
+      COMPILE_FLAGS " -Wno-undef -Wno-sign-compare")
+endif ()
+add_test(
+  NAME    gateway_tests
+  COMMAND gateway_tests --data-dir "${TEST_DATA_DIR}")

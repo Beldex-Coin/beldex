@@ -30,6 +30,7 @@
 
 #include <unordered_set>
 #include <random>
+#include <oxenc/endian.h>
 #include "epee/string_tools.h"
 #include "common/apply_permutation.h"
 #include "common/hex.h"
@@ -621,6 +622,46 @@ namespace cryptonote
     return payment_id ^ mask_u64;
   }
   //---------------------------------------------------------------
+  // Encrypt a gateway bridge memo (HF22+): same DH derivation as
+  // encrypt_gateway_payment_id above (d = 8·r·V_gw, h = Hs(d, out_index)), but
+  // with a distinct domain tag and the FULL 32-byte mask (not an 8-byte
+  // truncation), since the plaintext here is 28 bytes (chain_id || evm_addr)
+  // rather than 8. The unused 4 trailing plaintext bytes are left zero, which
+  // doubles as a decrypt-side integrity check (a wrong key won't zero them).
+  // Returns false if the DH derivation fails; callers MUST NOT ship a memo in
+  // that case (an all-zero ciphertext would be a silently undecryptable routing
+  // hint, i.e. funds bridged nowhere).
+  static bool encrypt_gateway_bridge_memo(uint64_t chain_id, const crypto::eth_address& evm_addr,
+                                          const crypto::secret_key& tx_key,
+                                          const crypto::public_key& gateway_id, size_t output_index,
+                                          crypto::hash& ciphertext)
+  {
+    crypto::key_derivation derivation;
+    if (!crypto::generate_key_derivation(gateway_id, tx_key, derivation))
+      return false;
+    crypto::ec_scalar h;
+    crypto::derivation_to_scalar(derivation, output_index, h);
+    std::string buf;
+    buf.reserve(hashkey::GW_BRIDGE_MEMO_MASK.size() + sizeof(h));
+    buf.append(hashkey::GW_BRIDGE_MEMO_MASK);
+    buf.append(reinterpret_cast<const char*>(&h), sizeof(h));
+    const crypto::hash mask = crypto::cn_fast_hash(buf.data(), buf.size());
+
+    // chain_id is stored explicitly little-endian: the memo plaintext is a wire
+    // format shared with non-C++ readers (scripts/gateway_decode_bridge_memo.py
+    // parses it as "<Q"), so it must not depend on host byte order.
+    unsigned char plain[32] = {0};
+    uint64_t chain_id_le = chain_id;
+    oxenc::host_to_little_inplace(chain_id_le);
+    std::memcpy(plain, &chain_id_le, sizeof(chain_id_le));                // bytes 0..7, LE
+    std::memcpy(plain + sizeof(chain_id_le), &evm_addr, sizeof(evm_addr)); // bytes 8..27
+    // bytes 28..31 stay zero (integrity check on decrypt)
+
+    for (size_t i = 0; i < sizeof(ciphertext.data); ++i)
+      ciphertext.data[i] = static_cast<char>(plain[i] ^ static_cast<unsigned char>(mask.data[i]));
+    return true;
+  }
+  //---------------------------------------------------------------
   // Gateway withdrawal (HF22). Builds a pure-gateway transfer: it spends from a
   // source gateway's on-chain balance via a single txin_gateway (no ring, no key
   // image) and pays one or more destination gateways via transparent
@@ -693,6 +734,21 @@ namespace cryptonote
       gw.payment_id   = encrypt_gateway_payment_id(d.payment_id, txkey.sec, d.gateway_id, i);
       out.target      = gw;
       tx.vout.push_back(out);
+
+      if (d.gateway_bridge_chain_id != 0)
+      {
+        tx_extra_gateway_bridge_memo memo{};
+        memo.version      = 0;
+        memo.output_index = static_cast<uint32_t>(i);
+        if (!encrypt_gateway_bridge_memo(d.gateway_bridge_chain_id, d.gateway_bridge_evm_addr,
+                                         txkey.sec, d.gateway_id, i, memo.ciphertext))
+        {
+          LOG_ERROR("Failed to encrypt gateway bridge memo for output " << i);
+          return false;
+        }
+        add_gateway_bridge_memo_to_tx_extra(tx.extra, memo);
+      }
+
       // v3+ txs require one per-output unlock time (gateway deposits credit the
       // destination account immediately, so 0).
       if (tx.version >= txversion::v3_per_output_unlock_times)
@@ -1236,6 +1292,22 @@ namespace cryptonote
         gw.payment_id   = encrypt_gateway_payment_id(dst_entr.gateway_payment_id, tx_key, dst_entr.gateway_id, output_index);
         out.target      = gw;
         tx.vout.push_back(out);
+
+        if (dst_entr.gateway_bridge_chain_id != 0)
+        {
+          tx_extra_gateway_bridge_memo memo{};
+          memo.version      = 0;
+          memo.output_index = static_cast<uint32_t>(output_index);
+          if (!encrypt_gateway_bridge_memo(dst_entr.gateway_bridge_chain_id,
+                                           dst_entr.gateway_bridge_evm_addr,
+                                           tx_key, dst_entr.gateway_id, output_index, memo.ciphertext))
+          {
+            LOG_ERROR("Failed to encrypt gateway bridge memo for output " << output_index);
+            return false;
+          }
+          add_gateway_bridge_memo_to_tx_extra(tx.extra, memo);
+        }
+
         output_index++;
         summary_outs_money += dst_entr.amount;
         continue;

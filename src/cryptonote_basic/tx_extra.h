@@ -64,6 +64,7 @@ constexpr uint8_t
   TX_EXTRA_TAG_BURN                       = 0x79,
   TX_EXTRA_TAG_BELDEX_NAME_SYSTEM           = 0x7A,
   TX_EXTRA_TAG_GATEWAY_DESCRIPTOR_OPERATION = 0x7C, // HF22 (0x7B reserved for CA asset op)
+  TX_EXTRA_TAG_GATEWAY_BRIDGE_MEMO          = 0x7D, // HF22
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
@@ -570,6 +571,37 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Gateway bridge memo (HF22+). Pairs with exactly one tx_out_gateway in the
+  // same tx via output_index -- positional matching (as gateway_input_sig uses
+  // for withdrawal inputs) doesn't work here because memos are sparse: most
+  // gateway outputs will not carry one.
+  //
+  // Plaintext (visible): version, output_index.
+  // Encrypted (ciphertext, 32 bytes): XOR of a 32-byte keystream against a
+  // 28-byte plaintext (chain_id (8B LE) || evm_addr (20B)) zero-padded to
+  // 32 bytes. chain_id is the destination chain's real EIP-155 id (1 =
+  // Ethereum mainnet, 11155111 = Sepolia, …) stored verbatim: it is never
+  // visible to consensus (it only exists once decrypted), so there is nothing
+  // for nodes to agree on and no reason to indirect it through a table --
+  // which also means a new destination chain needs no core/wallet release.
+  // The keystream reuses the same DH derivation as encrypt_gateway_payment_id
+  // (8·r·V_gw, Hs(derivation, output_index)), with a distinct domain tag
+  // (hashkey::GW_BRIDGE_MEMO_MASK) and the full 32-byte mask instead of an
+  // 8-byte truncation. The 4 zero-padding bytes double as a free integrity
+  // check on decrypt: a wrong key won't zero them.
+  struct tx_extra_gateway_bridge_memo
+  {
+    uint8_t      version      = 0;
+    uint32_t     output_index = 0;   // tx.vout[output_index] MUST be a tx_out_gateway
+    crypto::hash ciphertext{};       // opaque 32-byte XOR ciphertext, NOT a hash
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      VARINT_FIELD(output_index)
+      FIELD(ciphertext)
+    END_SERIALIZE()
+  };
+
   struct tx_extra_beldex_name_system
   {
     uint8_t                 version = 0;
@@ -668,6 +700,7 @@ namespace cryptonote
       tx_extra_tx_key_image_unlock,
       tx_extra_burn,
       tx_extra_gateway_descriptor_operation,
+      tx_extra_gateway_bridge_memo,
       tx_extra_merge_mining_tag,
       tx_extra_mysterious_minergate,
       tx_extra_padding,
@@ -695,5 +728,6 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_proofs,         cryptonote:
 BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_unlock,         cryptonote::TX_EXTRA_TAG_TX_KEY_IMAGE_UNLOCK);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_burn,                        cryptonote::TX_EXTRA_TAG_BURN);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_descriptor_operation, cryptonote::TX_EXTRA_TAG_GATEWAY_DESCRIPTOR_OPERATION);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_gateway_bridge_memo,          cryptonote::TX_EXTRA_TAG_GATEWAY_BRIDGE_MEMO);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_beldex_name_system,            cryptonote::TX_EXTRA_TAG_BELDEX_NAME_SYSTEM);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_security_signature,            cryptonote::TX_EXTRA_TAG_SECURITY_SIGNATURE);
