@@ -141,15 +141,25 @@ where
         use crate::beldex_watcher::{resolve_mint, Resolution};
         let deposits = match self.beldex.advance() {
             Ok(d) => d,
-            Err(_) => return Vec::new(), // a poll error is transient; retry next tick
+            Err(e) => {
+                // Transient (retried next tick) — but NEVER silent: a swallowed RPC error is
+                // indistinguishable from "no deposits", which turns a config/transport fault
+                // into an invisible stall.
+                eprintln!("beldex watcher poll failed (will retry): {e:?}");
+                return Vec::new();
+            }
         };
         let mut out = Vec::new();
         for mut dep in deposits {
             dep.decrypt_memo(&self.view_secret);
-            if let Resolution::Mint(ev) = resolve_mint(&dep, &self.registry) {
-                out.push(ev);
+            match resolve_mint(&dep, &self.registry) {
+                Resolution::Mint(ev) => out.push(ev),
+                // Held, never minted — but surfaced, so a wrong view secret / chain id is
+                // diagnosable from the logs rather than reading as "nothing happened".
+                Resolution::Unresolved { reason, .. } => {
+                    eprintln!("deposit held (not minted): {reason:?}")
+                }
             }
-            // Unresolved (no/bad/unknown-chain/over-cap memo) → held, not minted.
         }
         out
     }
@@ -157,8 +167,9 @@ where
     fn poll_releases(&mut self) -> Vec<ReleaseEvent> {
         let mut out = Vec::new();
         for w in &mut self.evm {
-            if let Ok(update) = w.advance() {
-                out.extend(update.finalized);
+            match w.advance() {
+                Ok(update) => out.extend(update.finalized),
+                Err(e) => eprintln!("evm watcher poll failed (will retry): {e:?}"),
             }
         }
         out

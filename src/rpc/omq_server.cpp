@@ -11,6 +11,7 @@
 #include "oxenmq/oxenmq.h"
 #include "oxenc/bt.h"
 #include "oxenc/hex.h"
+#include <sodium/crypto_sign.h>  // crypto_sign_verify_detached (bridge mint publisher auth)
 #include <fmt/core.h>
 #include <nlohmann/json.hpp>
 
@@ -327,6 +328,26 @@ omq_rpc::omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::prog
   // submit — the same daemon-verifies / wallet-submits split as `bridge.slash_report`.
   omq.add_request_command("bridge", "rotation_ack", [this](oxenmq::Message& m) {
     on_bridge_rotation_ack(m);
+  });
+
+  // Phase I mint-payload bus. A committee signer publishes its completed, already-signed
+  // wBDX mint payload here and the daemon fans it out to subscribed relayers, so relaying
+  // needs no access to a signer host, its logs, or its filesystem.
+  //
+  // **Only a seated committee member may publish**, proven cryptographically: the publisher
+  // signs `BRIDGE_MINT_PUBLISH ‖ genesis ‖ payload` with the `signer_ed25519` consensus
+  // records for it, exactly as bridge.slash_report / bridge.rotation_ack authenticate their
+  // evidence. So basic auth is safe here — authenticity comes from the signature, not from
+  // the transport, which also means a member on a remote node can publish to any daemon.
+  omq.add_request_command("bridge", "mint_payload", [this](oxenmq::Message& m) {
+    on_bridge_mint_payload(m);
+  });
+
+  // [sub.bridge_mint] — subscribe to those payloads. Basic auth: the payloads are public
+  // (they are broadcast to a public EVM chain moments later) and relaying is permissionless
+  // by design, so anyone may listen and carry them.
+  omq.add_request_command("sub", "bridge_mint", [this](oxenmq::Message& m) {
+    on_bridge_mint_sub_request(m);
   });
 
   core_.get_blockchain_storage().hook_block_post_add([this] (const auto& info) { send_block_notifications(info.block); return true; });
@@ -869,6 +890,162 @@ void omq_rpc::on_block_sub_request(oxenmq::Message& m)
     MDEBUG("New block subscription request from conn " << m.conn << " @ " << m.remote);
     m.send_reply("OK");
   }
+}
+
+void omq_rpc::on_bridge_mint_sub_request(oxenmq::Message& m)
+{
+  bool is_new;
+  {
+    std::unique_lock lock{subs_mutex_};
+    auto expiry = std::chrono::steady_clock::now() + 30min;
+    auto result = bridge_mint_subs_.emplace(m.conn, bridge_mint_sub{expiry});
+    is_new = result.second;
+    if (!is_new)
+      result.first->second.expiry = expiry;
+  }
+
+  // Replay the retained backlog to a NEW connection (a renewal on the same conn already
+  // received everything live). A relayer that reconnects after an outage therefore picks
+  // up where it left off, up to the retention window; re-delivery of already-minted
+  // payloads is harmless (the contract's replay guard is the idempotency authority, and
+  // the relayer's gas estimation catches it before any gas is spent).
+  size_t replayed = 0;
+  if (is_new) {
+    std::vector<std::string> backlog;
+    {
+      std::lock_guard lk{bridge_mint_seen_mutex_};
+      backlog.reserve(bridge_mint_retained_.size());
+      for (const auto& [txid, payload] : bridge_mint_retained_)
+        backlog.push_back(payload);
+    }
+    auto& omq = core_.get_omq();
+    for (const auto& payload : backlog) {
+      omq.send(m.conn, "notify.bridge_mint", payload);
+      ++replayed;
+    }
+    MDEBUG("New bridge-mint subscription from conn " << m.conn << " @ " << m.remote
+           << " (replayed " << replayed << " retained payload(s))");
+    m.send_reply("OK", std::to_string(replayed));
+  } else {
+    MTRACE("Renewed bridge-mint subscription from conn id " << m.conn << " @ " << m.remote);
+    m.send_reply("ALREADY");
+  }
+}
+
+void omq_rpc::on_bridge_mint_payload(oxenmq::Message& m)
+{
+  // Wire: [ payload_json, publisher_index (ascii), signature (128 hex) ]
+  //
+  // The publisher must be a **seated bridge committee member**, proven by signing
+  //     BRIDGE_MINT_PUBLISH ‖ genesis ‖ payload
+  // with the `signer_ed25519` that consensus records for it. That is the same key and the
+  // same style of check as bridge.slash_report / bridge.rotation_ack, so the bus cannot be
+  // used as an open amplifier: a non-member's publication is rejected before any fan-out.
+  //
+  // Note what this does and does not prove. It authenticates the PUBLISHER, not the mint:
+  // the committee's `Pevm` (secp256k1) signature inside the payload is what actually
+  // authorizes the mint, and only the wBDX contract can check that. So a subscriber still
+  // trusts nothing from this bus — this check exists to keep the daemon from relaying spam.
+  constexpr size_t MAX_PAYLOAD = 8 * 1024;
+  if (m.data.size() != 3) {
+    m.send_reply(OMQ_BAD_REQUEST,
+                 "bridge.mint_payload: expected [payload, publisher_index, signature]");
+    return;
+  }
+  const std::string payload{m.data[0]};
+  if (payload.empty() || payload.size() > MAX_PAYLOAD) {
+    m.send_reply(OMQ_BAD_REQUEST, "bridge.mint_payload: payload empty or larger than 8 KiB");
+    return;
+  }
+
+  uint16_t publisher_index = 0;
+  {
+    const std::string idx_s{m.data[1]};
+    if (!epee::string_tools::get_xtype_from_string(publisher_index, idx_s)) {
+      m.send_reply(OMQ_BAD_REQUEST, "bridge.mint_payload: publisher_index must be an integer");
+      return;
+    }
+  }
+  crypto::ed25519_signature publisher_sig{};
+  if (!tools::hex_to_type(std::string{m.data[2]}, publisher_sig)) {
+    m.send_reply(OMQ_BAD_REQUEST, "bridge.mint_payload: signature must be 128-char hex");
+    return;
+  }
+
+  // Well-formedness + the dedup key.
+  std::string beldex_txid;
+  try {
+    const auto j = nlohmann::json::parse(payload);
+    if (j.value("kind", "") != "mint") {
+      m.send_reply(OMQ_BAD_REQUEST, "bridge.mint_payload: not a mint payload");
+      return;
+    }
+    beldex_txid = j.value("beldex_txid", "");
+    if (beldex_txid.empty() || j.value("sig", "").empty()) {
+      m.send_reply(OMQ_BAD_REQUEST, "bridge.mint_payload: missing beldex_txid or sig");
+      return;
+    }
+  } catch (const std::exception& e) {
+    m.send_reply(OMQ_BAD_REQUEST, std::string{"bridge.mint_payload: invalid JSON: "} + e.what());
+    return;
+  }
+
+  // Authenticate the publisher against the CURRENT epoch's committee.
+  {
+    const auto nettype = core_.get_nettype();
+    const uint64_t top = core_.get_current_blockchain_height();
+    const uint64_t epoch_blocks = cryptonote::bridge_epoch_blocks(nettype);
+    const uint64_t epoch_height = epoch_blocks ? (top ? (top - 1) / epoch_blocks * epoch_blocks : 0) : 0;
+
+    std::vector<crypto::public_key> members;
+    std::vector<crypto::ed25519_public_key> signer_keys;
+    size_t threshold = 0;
+    if (!core_.get_master_node_list().get_bridge_committee(epoch_height, members, signer_keys, threshold)) {
+      m.send_reply(OMQ_BAD_REQUEST, "bridge.mint_payload: no active bridge committee");
+      return;
+    }
+    if (publisher_index >= signer_keys.size()) {
+      m.send_reply(OMQ_BAD_REQUEST, "bridge.mint_payload: publisher_index out of committee range");
+      return;
+    }
+    const std::string msg = cryptonote::bridge_mint_publish_message(nettype, payload);
+    if (crypto_sign_verify_detached(publisher_sig.data,
+                                    reinterpret_cast<const unsigned char*>(msg.data()), msg.size(),
+                                    signer_keys[publisher_index].data) != 0) {
+      MWARNING("bridge.mint_payload: rejected publication claiming committee index "
+               << publisher_index << " from " << m.remote << " — bad signature");
+      m.send_reply(OMQ_BAD_REQUEST, "bridge.mint_payload: publisher signature does not verify");
+      return;
+    }
+  }
+
+  // Every member of the signing quorum produces the SAME payload for a deposit, so without
+  // this the bus would carry t+1 identical copies. The retained window doubles as the
+  // replay-on-subscribe backlog (see the header comment).
+  {
+    constexpr size_t MAX_RETAINED = 256; // ≤ 8 KiB each → ≤ 2 MiB worst case
+    std::lock_guard lk{bridge_mint_seen_mutex_};
+    if (!bridge_mint_seen_.insert(beldex_txid).second) {
+      MTRACE("bridge.mint_payload: duplicate for txid " << beldex_txid << ", not re-fanning");
+      m.send_reply(OMQ_OK, "DUPLICATE");
+      return;
+    }
+    bridge_mint_retained_.emplace_back(beldex_txid, payload);
+    while (bridge_mint_retained_.size() > MAX_RETAINED) {
+      bridge_mint_seen_.erase(bridge_mint_retained_.front().first);
+      bridge_mint_retained_.pop_front();
+    }
+  }
+
+  auto& omq = core_.get_omq();
+  size_t sent = 0;
+  send_notifies(subs_mutex_, bridge_mint_subs_, "bridge_mint", [&](auto& conn, auto&) {
+    omq.send(conn, "notify.bridge_mint", payload);
+    ++sent;
+  });
+  MGINFO("bridge.mint_payload: committee index " << publisher_index << " published mint for txid "
+         << beldex_txid << "; fanned out to " << sent << " subscriber(s)");
+  m.send_reply(OMQ_OK, std::to_string(sent));
 }
 
 }} // namespace cryptonote::rpc

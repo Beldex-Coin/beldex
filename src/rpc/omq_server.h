@@ -33,6 +33,10 @@
 #include "cryptonote_core/blockchain.h"
 #include "oxenmq/connections.h"
 
+#include <deque>
+#include <mutex>
+#include <unordered_set>
+
 namespace oxenmq { class OxenMQ; }
 
 namespace cryptonote::rpc {
@@ -56,11 +60,34 @@ class omq_rpc final{
     std::chrono::steady_clock::time_point expiry;
   };
 
+  // Sovereign Bridge mint-payload bus (Phase I): relayers subscribe here to receive
+  // committee-signed wBDX mint payloads as they are produced, instead of being handed
+  // them out-of-band. Same shape as block_sub.
+  struct bridge_mint_sub {
+    std::chrono::steady_clock::time_point expiry;
+  };
+
   cryptonote::core& core_;
   core_rpc_server& rpc_;
   std::shared_timed_mutex subs_mutex_;
   std::unordered_map<oxenmq::ConnectionID, mempool_sub> mempool_subs_;
   std::unordered_map<oxenmq::ConnectionID, block_sub> block_subs_;
+  std::unordered_map<oxenmq::ConnectionID, bridge_mint_sub> bridge_mint_subs_;
+
+  // Recently published mint payloads, keyed by beldex_txid. Serves two purposes:
+  //  * de-duplication — the N committee members each produce the SAME payload for one
+  //    deposit; only the first fan-out happens;
+  //  * bounded RETENTION — a subscriber that connects (or reconnects after an outage) is
+  //    replayed the retained backlog, so a relayer that was down does not permanently miss
+  //    payloads published meanwhile. At-least-once by design: re-delivery is harmless
+  //    because the wBDX contract's `processedDeposits` makes minting idempotent (a relayer
+  //    detects the replay at gas estimation for the cost of an eth_call).
+  // This is a bounded convenience buffer, NOT durable storage — the durable artifacts are
+  // the signers' MINT-PAYLOAD logs, and the committee itself re-produces any unminted
+  // payload on restart via on-chain reconciliation.
+  std::mutex bridge_mint_seen_mutex_;
+  std::deque<std::pair<std::string /*txid*/, std::string /*payload*/>> bridge_mint_retained_;
+  std::unordered_set<std::string> bridge_mint_seen_;
 
 public:
   omq_rpc(cryptonote::core& core, core_rpc_server& rpc, const boost::program_options::variables_map& vm);
@@ -89,6 +116,10 @@ private:
   void on_mempool_sub_request(oxenmq::Message& m);
 
   void on_block_sub_request(oxenmq::Message& m);
+
+  void on_bridge_mint_payload(oxenmq::Message& m);
+
+  void on_bridge_mint_sub_request(oxenmq::Message& m);
 };
 
 } // namespace cryptonote::rpc

@@ -163,6 +163,12 @@ crypto::hash gateway_release_ref_hash(uint64_t chain_id, const crypto::hash& evm
 // All tx_extra_gateway_release_ref fields on a tx (validation enforces at most one).
 std::vector<tx_extra_gateway_release_ref> extract_gateway_release_refs(const transaction& tx);
 
+// Phase I mint bus: the bytes a publishing committee member signs with its
+// `signer_ed25519` so the daemon can authenticate the publisher of a mint payload:
+//   BRIDGE_MINT_PUBLISH ‖ genesis ‖ payload
+// (ed25519 signs the message directly, as with bridge_rotation_ack_message.)
+std::string bridge_mint_publish_message(network_type nettype, std::string_view payload);
+
 // Validate a freeze / re-point op against current DB state + governance
 // evidence. Gated on HF23 by the caller. Freeze: gateway exists; op.governance_seq
 // == the gateway's current nonce; evidence is a valid supermajority over the

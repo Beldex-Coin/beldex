@@ -217,6 +217,12 @@ namespace hashkey {
   // Consensus-internal (the tx carries the raw tuple; signers compare raw fields, R6),
   // so no cross-language byte-mirroring is required — but versioned all the same.
   inline constexpr std::string_view GW_RELEASE_REF  = "gateway_release_ref_v1"sv;
+  // Phase I mint bus: a committee member signs the payload it publishes to
+  // `bridge.mint_payload` with its `signer_ed25519`, so the daemon can prove the publisher
+  // is a seated member before fanning it out. Genesis-bound like every other bridge
+  // attestation, so a publication cannot be replayed onto another chain/fork.
+  // MUST match the signer's `omq_client` publisher byte-for-byte.
+  inline constexpr std::string_view BRIDGE_MINT_PUBLISH = "bridge_mint_publish_v1"sv;
 }
 
 // Maximum allowed stake contribution, as a fraction of the available contribution room.  This

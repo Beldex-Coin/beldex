@@ -69,8 +69,13 @@ fn print_status(cfg: &Config) {
     }
     if cfg!(feature = "autonomy") {
         println!("  serve — autonomous watcher pipeline: detect + dedup deposit/burn duties (dry-run backend)");
+        println!("          with --features serve-live + BRIDGE_SIGNER_SERVE_LIVE=1: coordinated live signing");
     } else {
         println!("(build with --features autonomy for the `serve` subcommand)");
+    }
+    if cfg!(feature = "omq-client") {
+        println!("  relay-watch — subscribe to the daemon's mint bus and broadcast each payload");
+        println!("                (no bridge key needed; this is the relayer-operator command)");
     }
 }
 
@@ -804,6 +809,10 @@ fn run_serve(cfg: &Config) -> Result<(), String> {
         })?,
     )
     .ok_or("BRIDGE_SIGNER_GATEWAY_VIEW_SECRET must be 32-byte hex")?;
+    // Echo the watcher config: a wrong gateway id / RPC / start height otherwise reads as
+    // an eternally quiet, "healthy" pipeline (the watcher successfully finds nothing).
+    println!("  beldex watcher: gateway {gateway_id} via {beldexd_rpc}, from height {start_height}");
+
     // Cloned before the watcher consumes them — the live backend reuses both.
     let beldexd_rpc_for_live = beldexd_rpc.clone();
     let gateway_id_for_live = gateway_id.clone();
@@ -891,6 +900,125 @@ fn run_serve(cfg: &Config) -> Result<(), String> {
 #[cfg(not(feature = "autonomy"))]
 fn run_serve(_cfg: &Config) -> Result<(), String> {
     Err("the `serve` subcommand requires a build with `--features autonomy`".into())
+}
+
+/// `relay-watch` — subscribe to the daemon's mint bus and hand each payload to a broadcaster.
+///
+/// This is what a **relayer operator** runs. It needs no bridge key, no share material, no
+/// signer-host access — only an OMQ endpoint it can reach — which is the whole point of
+/// Phase I: relaying is permissionless and carries no authority. Each payload is piped to
+/// `BRIDGE_SIGNER_RELAY_CMD` (default `beldex-bridge-relayer relay -`), whose own environment
+/// holds the gas key.
+///
+/// Failures are logged and skipped, never retried in a tight loop: a payload that fails to
+/// broadcast is still valid forever, another subscriber may carry it, and the wBDX contract
+/// rejects a duplicate anyway.
+#[cfg(feature = "omq-client")]
+fn run_relay_watch_standalone() -> Result<(), String> {
+    use beldex_bridge_signer::omq_client::OmqMintSubscriber;
+    use std::time::Duration;
+
+    // Comma-separated list: subscribe to EVERY endpoint given. Signers publish to their own
+    // daemons by default, so a relayer that watches several daemons is robust to any one
+    // signer being a straggler (its daemon then simply carries no publish that round);
+    // duplicates across daemons are deduped below by txid.
+    let endpoints = std::env::var("BRIDGE_SIGNER_OXENMQ_ENDPOINT").map_err(|_| {
+        "set BRIDGE_SIGNER_OXENMQ_ENDPOINT (one or more comma-separated beldexd OMQ sockets \
+         to subscribe to, e.g. ipc://<node>/devnet/beldexd.sock) — this is the only required \
+         setting"
+            .to_string()
+    })?;
+    let cmd = std::env::var("BRIDGE_SIGNER_RELAY_CMD")
+        .unwrap_or_else(|_| "beldex-bridge-relayer relay -".to_string());
+    let mut subs: Vec<OmqMintSubscriber> = endpoints
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|e| {
+            println!("relay-watch: subscribing to {e}");
+            OmqMintSubscriber::new(e.to_string())
+        })
+        .collect();
+    if subs.is_empty() {
+        return Err("BRIDGE_SIGNER_OXENMQ_ENDPOINT contained no endpoints".into());
+    }
+    println!("  each mint payload → `{cmd}`");
+    println!("  (this process holds NO bridge key; the gas key lives in the relay command)");
+    let mut count = 0u64;
+    // Process-local dedup by beldex_txid: the daemon replays its retained backlog to a new
+    // subscriber (so an outage is caught up), and reconnections can re-deliver — skip what
+    // this process already handled instead of re-running gas estimation on it. The
+    // contract's replay guard remains the real idempotency authority.
+    let mut handled: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let per_sub_timeout = Duration::from_millis(5000 / subs.len().max(1) as u64);
+    loop {
+        for sub in subs.iter_mut() {
+            match sub.poll(per_sub_timeout) {
+                Ok(Some(payload)) => {
+                    let txid = payload
+                        .split(r#""beldex_txid":""#)
+                        .nth(1)
+                        .and_then(|s| s.split('"').next())
+                        .unwrap_or("")
+                        .to_string();
+                    if !txid.is_empty() && !handled.insert(txid.clone()) {
+                        println!("(skip: txid {txid} already handled this session)");
+                        continue;
+                    }
+                    count += 1;
+                    println!("[{count}] mint payload received: {payload}");
+                    match pipe_to_relay(&cmd, &payload) {
+                        Ok(out) => println!("     relayed: {}", out.trim()),
+                        Err(e) => eprintln!("     RELAY FAILED ({e}) — payload above stays valid"),
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("relay-watch: {e}; will retry that endpoint");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "omq-client"))]
+fn run_relay_watch_standalone() -> Result<(), String> {
+    Err("the `relay-watch` subcommand requires a build with `--features omq-client`".into())
+}
+
+/// Run `cmd` (via the shell, so it can carry arguments/pipes) and write `payload` to its
+/// stdin — the mint hand-off from the keyless signer to a gas-paying relayer. Returns the
+/// command's stdout on success. Best-effort by design: see the call site.
+/// (`serve-live` implies `live-dkg` implies `omq-client`, so this one gate covers both the
+/// `serve --live` hand-off and the standalone `relay-watch`.)
+#[cfg(feature = "omq-client")]
+fn pipe_to_relay(cmd: &str, payload: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn `{cmd}`: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin on the relay command")?
+        .write_all(payload.as_bytes())
+        .map_err(|e| format!("write to relay stdin: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("wait for relay: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "exit {}: {}",
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Loaded, reusable signing context for the live `serve` backend: the committee view, this
@@ -1090,7 +1218,29 @@ fn build_live_signers(cfg: &Config) -> Result<LiveSigners, String> {
             .unwrap_or(120),
     );
 
-    // Pgw FROST material.
+    // Pgw FROST material. The share files are indexed by this node's committee index AT
+    // DKG TIME; committee indices are canonical (pubkey-sorted) per epoch, so they are
+    // stable while the committee's membership is stable. If the file for our CURRENT
+    // index is missing but a differently-indexed share exists, the committee has changed
+    // (membership, or a daemon predating the canonical-order rule) — say so explicitly,
+    // because the bare ENOENT reads as "dkg never ran".
+    if !std::path::Path::new(&format!("{dir}/pgw-{self_index}.keypackage")).exists() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            let others: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.starts_with("pgw-") && n.ends_with(".keypackage"))
+                .collect();
+            if !others.is_empty() {
+                return Err(format!(
+                    "this node's committee index is now {self_index}, but its share dir holds \
+                     {others:?} — the committee order/membership changed since the DKG ran. \
+                     Re-run the DKG for the current committee (shares, the contract signer, \
+                     and the gateway owner key must all be regenerated together)."
+                ));
+            }
+        }
+    }
     let read = |suffix: &str| {
         std::fs::read(format!("{dir}/pgw-{self_index}.{suffix}"))
             .map_err(|e| format!("read pgw {suffix}: {e} (run `dkg` first with BRIDGE_SIGNER_SHARE_DIR set)"))
@@ -1282,6 +1432,73 @@ where
     };
 
     // --- Completion: emit the mint relayer payload / self-submit the release.
+    //
+    // Mint hand-off. The signer holds no EVM gas key by design, so it does not broadcast:
+    // it produces the signed payload and hands it off. Two mechanisms, in order:
+    //
+    //   1. `BRIDGE_SIGNER_RELAY_CMD` — spawn that command and write the payload JSON to its
+    //      stdin (e.g. `beldex-bridge-relayer relay -`). The gas key lives in *that*
+    //      process's environment, never here.
+    //   2. Always: print `MINT-PAYLOAD <json>`. This line is the **durable artifact** — the
+    //      committee's job is done once the signature exists, and anyone holding this line
+    //      can broadcast it later with `relay -` or `prepare` + `cast send`.
+    //
+    // Broadcast failure therefore does NOT fail the duty: re-running a whole mesh signing
+    // round to retry an HTTP call would be the wrong layer, and the payload is already
+    // public and reusable. Failures are logged loudly instead.
+    //
+    // Enabling the hook on several nodes is safe but not free: a *late* duplicate costs
+    // nothing (gas estimation catches `Replay()` before broadcasting), while *simultaneous*
+    // duplicates all pass estimation and all but one revert on-chain, burning gas. Set
+    // `BRIDGE_SIGNER_RELAY_STAGGER_MS` (multiplied by this node's committee index) so
+    // configured relayers fire in sequence rather than at once. Each needs its own gas key —
+    // a shared key means colliding nonces.
+    // Preferred hand-off: publish to the daemon's mint bus (`bridge.mint_payload`), which
+    // fans out to every subscribed relayer. Relayers then need no signer-host access at all.
+    // The daemon dedups by beldex_txid, so all t+1 members publishing is expected and only
+    // one fan-out occurs. Off by default only because it needs the OMQ endpoint.
+    let publish_bus = std::env::var("BRIDGE_SIGNER_PUBLISH_MINT_BUS")
+        .map(|v| v != "0" && v != "false")
+        .unwrap_or(true);
+    // The daemon accepts a publication only from a seated committee member, so we sign each
+    // one with this node's `signer_ed25519` — the same key the mesh authenticates with, and
+    // the one consensus records for our committee index.
+    let bus_genesis: [u8; 32] = match std::env::var("BRIDGE_SIGNER_GENESIS_HASH") {
+        Ok(h) => config::parse_hex32(&h).unwrap_or([0u8; 32]),
+        Err(_) => [0u8; 32],
+    };
+    // Where to publish. Default: this node's own daemon — correct when relayers subscribe
+    // broadly. But a publisher→own-daemon / subscriber→one-daemon topology only intersects
+    // by luck (found live: the one subscribed daemon's signer was a straggler that round,
+    // so every fan-out happened where nobody listened). BRIDGE_SIGNER_MINT_BUS_ENDPOINT
+    // points all signers at a common bus daemon; publishing is signature-authenticated,
+    // not socket-authenticated, so a remote daemon works fine.
+    let bus_endpoint = std::env::var("BRIDGE_SIGNER_MINT_BUS_ENDPOINT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| cfg.oxenmq_endpoint.clone());
+    let bus_client = if publish_bus {
+        println!("  mint hand-off: publishing to bridge.mint_payload at {bus_endpoint}");
+        if bus_genesis == [0u8; 32] {
+            println!("    WARNING: no BRIDGE_SIGNER_GENESIS_HASH — publications will not verify \
+                      against a daemon that binds a real genesis");
+        }
+        Some(beldex_bridge_signer::omq_client::OmqCommitteeClient::new(bus_endpoint))
+    } else {
+        None
+    };
+    let bus_sign_key = ls.ed25519_secret;
+
+    let relay_cmd = std::env::var("BRIDGE_SIGNER_RELAY_CMD").ok().filter(|s| !s.trim().is_empty());
+    let relay_stagger_ms: u64 = std::env::var("BRIDGE_SIGNER_RELAY_STAGGER_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    match &relay_cmd {
+        Some(c) => println!("  mint hand-off: piping payloads to `{c}` (stagger {}ms)", relay_stagger_ms * self_index as u64),
+        None => println!("  mint hand-off: log only (set BRIDGE_SIGNER_RELAY_CMD to auto-broadcast)"),
+    }
+
     let done_rpc = rpc.clone();
     let done_contracts = contracts;
     let complete = move |d: &Duty, proposal: &[u8], sig: &[u8]| -> ExecOutcome {
@@ -1290,7 +1507,38 @@ where
                 let Some(&contract) = done_contracts.get(&ev.dst_chain.0) else {
                     return ExecOutcome::Abandon;
                 };
-                println!("MINT-PAYLOAD {}", mint_relay_payload_json(ev, contract, sig));
+                let payload = mint_relay_payload_json(ev, contract, sig);
+                // Print first: the payload must survive even if every hand-off below fails.
+                println!("MINT-PAYLOAD {payload}");
+                if let Some(bus) = &bus_client {
+                    use beldex_bridge_signer::omq_client::mint_publish_message;
+                    let msg = mint_publish_message(&bus_genesis, &payload);
+                    match beldex_bridge_signer::ffi::ed25519_sign_detached(&bus_sign_key, &msg) {
+                        Ok(pub_sig) => match bus.publish_mint_payload(&payload, self_index, &pub_sig) {
+                            // `DUPLICATE` = a peer in the same quorum published it first.
+                            // Expected and desirable: one fan-out per deposit, not t+1.
+                            Ok(status) => println!("  published to mint bus: {status}"),
+                            Err(e) => {
+                                eprintln!("  mint-bus publish failed ({e}) — payload still logged")
+                            }
+                        },
+                        Err(e) => eprintln!("  mint-bus signing failed ({e}) — payload still logged"),
+                    }
+                }
+                if let Some(cmd) = &relay_cmd {
+                    if relay_stagger_ms > 0 && self_index > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            relay_stagger_ms * self_index as u64,
+                        ));
+                    }
+                    match pipe_to_relay(cmd, &payload) {
+                        Ok(out) => println!("  relayed: {}", out.trim()),
+                        Err(e) => eprintln!(
+                            "  RELAY FAILED ({e}) — the MINT-PAYLOAD line above is still valid; \
+                             broadcast it with `beldex-bridge-relayer relay -`"
+                        ),
+                    }
+                }
                 ExecOutcome::Submitted
             }
             Duty::Release(_) => {
@@ -1309,8 +1557,19 @@ where
                         ExecOutcome::Submitted
                     }
                     Err(e) => {
-                        eprintln!("release submit failed (will retry): {e}");
-                        ExecOutcome::Retry
+                        // Every finalizing node submits the SAME signed tx; only the first
+                        // lands, and the daemon reports the rest as duplicates / replays.
+                        // That is success, not failure — retrying would reopen a session
+                        // for a settled burn and churn against the consensus replay guard.
+                        let el = e.to_lowercase();
+                        if el.contains("already") || el.contains("replay") || el.contains("discharged")
+                        {
+                            println!("RELEASE already submitted by a peer (ok): {e}");
+                            ExecOutcome::Submitted
+                        } else {
+                            eprintln!("release submit failed (will retry): {e}");
+                            ExecOutcome::Retry
+                        }
                     }
                 }
             }
@@ -1373,6 +1632,36 @@ where
                 rep.opened, rep.acked, rep.nacked, rep.signed, rep.completed, rep.requeued, rep.abandoned, rep.resolved
             );
         }
+        // Idle heartbeat (~once a minute): proves the watchers are scanning and shows how
+        // far finality has advanced — a stalled `finalized_up_to` means the chain (or the
+        // miner) stopped; one that advances past a deposit with no duty means the deposit
+        // didn't resolve (and the `deposit held` line above says why).
+        if ticks % 12 == 0 {
+            let (pending, in_flight, done) = orch.counts();
+            // The EVM half matters as much as the Beldex half. A burn is held in the
+            // watcher's `pending` set until its inclusion block is `confirmations` deep
+            // (watch.rs FinalityGate: depth = tip - inclusion_height), so on an idle
+            // automine chain — anvil started without --block-time — the tip stops at the
+            // block containing the burn, depth stays 0, and the release never opens.
+            // Without a pending count that is indistinguishable from "no burn happened",
+            // which is the one thing the operator most needs to tell apart.
+            let evm: Vec<String> = src
+                .evm
+                .iter()
+                .map(|w| {
+                    let tip = w
+                        .tip()
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|e| format!("unreachable({e:?})"));
+                    format!("chain {} tip={} pending={}", w.chain().0, tip, w.pending_len())
+                })
+                .collect();
+            println!(
+                "watch: beldex finalized_up_to={} | evm {} | duties p={pending} f={in_flight} d={done}",
+                src.beldex.finalized_up_to(),
+                evm.join("; ")
+            );
+        }
         ticks += 1;
         if opts.max_ticks.is_some_and(|max| ticks >= max) {
             break;
@@ -1389,6 +1678,22 @@ where
 
 fn main() -> ExitCode {
     let subcommand = std::env::args().nth(1);
+
+    // `relay-watch` is dispatched BEFORE the config load, deliberately: it is the
+    // relayer-operator command, and a relayer holds no signer identity — no gateway, no MN
+    // key, no shares. Requiring the full signer config here would force operators to invent
+    // dummy values for keys they must not have. It needs exactly one setting: the OMQ
+    // endpoint to subscribe to.
+    if subcommand.as_deref() == Some("relay-watch") {
+        return match run_relay_watch_standalone() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("relay-watch: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     let cfg = match Config::from_map(&config_map()) {
         Ok(c) => c,
         Err(e) => {
@@ -1427,6 +1732,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        // ("relay-watch" is dispatched before the config load — see the top of main.)
         _ => {
             print_status(&cfg);
             ExitCode::SUCCESS

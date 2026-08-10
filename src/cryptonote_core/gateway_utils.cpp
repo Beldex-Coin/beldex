@@ -112,6 +112,17 @@ std::vector<tx_extra_gateway_release_ref> extract_gateway_release_refs(const tra
   return v;
 }
 
+std::string bridge_mint_publish_message(network_type nettype, std::string_view payload)
+{
+  const crypto::hash& genesis = gateway_chain_binding(nettype);
+  std::string buf;
+  buf.reserve(hashkey::BRIDGE_MINT_PUBLISH.size() + sizeof(genesis) + payload.size());
+  buf.append(hashkey::BRIDGE_MINT_PUBLISH);
+  buf.append(reinterpret_cast<const char*>(&genesis), sizeof(genesis));
+  buf.append(payload);
+  return buf;
+}
+
 crypto::hash gateway_release_ref_hash(uint64_t chain_id, const crypto::hash& evm_txid, uint32_t log_index)
 {
   std::string buf;

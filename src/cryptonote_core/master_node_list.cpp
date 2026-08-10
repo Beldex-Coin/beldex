@@ -2082,7 +2082,8 @@ namespace master_nodes
 
           // Deterministic, seed-based shuffle (unpredictable until the boundary
           // block exists, deterministic after), then pick n with one slot per
-          // operator identity.
+          // operator identity. The shuffle governs *selection fairness* only —
+          // which seats serve this epoch when there are more seats than slots.
           std::mt19937_64 rng = quorum_rng(hf_version, state.block_hash, type);
           tools::shuffle_portable(seats.begin(), seats.end(), rng);
 
@@ -2098,6 +2099,18 @@ namespace master_nodes
             used_ops.push_back(op);
             quorum->validators.push_back(s.first);
           }
+
+          // CANONICAL member ORDER: sort the selected committee by pubkey. A member's
+          // committee index is its identity across the whole signing stack — DKG share
+          // files, FROST identifiers, cggmp21 keygen positions, mesh peer books — all of
+          // which are fixed at DKG time. Leaving the members in shuffled order re-labels
+          // every member each epoch and silently breaks that binding (each node then
+          // loads a share that is not its own). Index order carries NO security role
+          // here: session leadership is derived from per-duty payload hashes, and
+          // message authentication binds to per-member keys, not positions. Sorting
+          // makes indices stable for as long as the committee's *membership* is stable
+          // — and a membership change genuinely requires a new DKG anyway (H.6).
+          std::sort(quorum->validators.begin(), quorum->validators.end());
           continue;
         }
 
