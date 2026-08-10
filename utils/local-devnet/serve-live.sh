@@ -43,7 +43,29 @@ EVM_RPC="${EVM_RPC:-http://127.0.0.1:8545}"
 CHAIN_ID="${CHAIN_ID:-31337}"
 NODES="${NODES:-all}"          # which committee indices to start (default: all with shares)
 THRESHOLD="${THRESHOLD:-4}"    # t+1, for the liveness warning below
+
+# Genesis hash: binds release canonical ids (S6) and the mint-bus publish signatures.
+# Auto-fetched from the pinned daemon when not provided.
+if [ -z "${BRIDGE_SIGNER_GENESIS_HASH:-}" ]; then
+  BRIDGE_SIGNER_GENESIS_HASH=$(curl -s http://127.0.0.1:19191/json_rpc \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":"0","method":"get_block_header_by_height","params":{"height":0}}' \
+    | sed -n 's/.*"hash": *"\([0-9a-f]*\)".*/\1/p' | head -1)
+fi
+if [ -n "$BRIDGE_SIGNER_GENESIS_HASH" ]; then
+  echo "genesis: $BRIDGE_SIGNER_GENESIS_HASH"
+else
+  echo "!! could not fetch the genesis hash — mint-bus publications will not verify" >&2
+fi
 RELEASE_FEE="${RELEASE_FEE:-100000000}"
+# Mint hand-off: which node(s) auto-broadcast the signed mint payload, and with what.
+# Releases self-submit from every signer; MINTS need a gas key, which the signer never holds
+# — so a relayer command is piped the payload instead. Default: only committee index 0 does
+# it (one broadcaster = no duplicate-revert gas). Set RELAY_NODES=all for redundancy, and
+# then RELAY_STAGGER_MS so they don't fire simultaneously. Empty RELAY_CMD = log only.
+RELAY_CMD="${RELAY_CMD:-}"
+RELAY_NODES="${RELAY_NODES:-0}"
+RELAY_STAGGER_MS="${RELAY_STAGGER_MS:-2000}"
 START_HEIGHT="${START_HEIGHT:-0}"
 POLL_SECS="${POLL_SECS:-5}"
 
@@ -108,7 +130,12 @@ started=0
 PIDS=()
 for d in beldex-127.0.0.1-*/; do
   sock="$PWD/${d}devnet/beldexd.sock"; key="$PWD/${d}devnet/key_ed25519"
-  share="$PWD/${d}devnet/shares"
+  # SHARE_SUBDIR: which per-node share tree the signer loads from (default `shares`).
+  # `shares-pool` is the devnet-only workaround for EPOCH_RESHUFFLE_ORPHANS_SHARES.md —
+  # a symlinked pool holding every node's share, so a node whose live committee index no
+  # longer matches its dkg index can still open the share for the seat it now occupies.
+  # Same knob name as sign-pevm.sh, deliberately.
+  share="$PWD/${d}devnet/${SHARE_SUBDIR:-shares}"
   [ -S "$sock" ] && [ -f "$key" ] || continue
 
   # This node's committee index, from its own dkg share filename.
@@ -116,7 +143,10 @@ for d in beldex-127.0.0.1-*/; do
   # command substitution aborts the whole script, so a node dir with no pgw share
   # killed the loop before the guard below could skip it — and every node after it
   # in glob order never started.
-  idx=$(ls "$share"/pgw-*.keypackage 2>/dev/null | sed -E 's/.*pgw-([0-9]+)\.keypackage/\1/' | head -1) || true
+  # NB: read from the node's OWN `shares` tree, never from $share — under SHARE_SUBDIR=shares-pool
+  # every node sees all six keypackages and `head -1` would report index 0 for all of them,
+  # silently collapsing the NODES filter and handing RELAY_CMD to the whole fleet.
+  idx=$(ls "$PWD/${d}devnet/shares"/pgw-*.keypackage 2>/dev/null | sed -E 's/.*pgw-([0-9]+)\.keypackage/\1/' | head -1) || true
   [ -n "$idx" ] || { echo "skip ${d%/}: no pgw share (did dkg run here?)"; continue; }
   if [ "$NODES" != "all" ]; then
     case ",$NODES," in
@@ -125,7 +155,20 @@ for d in beldex-127.0.0.1-*/; do
     esac
   fi
 
-  echo "start ${d%/}: committee index $idx"
+  # Give the relay hook only to the chosen node(s).
+  node_relay=""
+  if [ -n "$RELAY_CMD" ]; then
+    case "$RELAY_NODES" in
+      all) node_relay="$RELAY_CMD" ;;
+      *) case ",$RELAY_NODES," in *",$idx,"*) node_relay="$RELAY_CMD" ;; esac ;;
+    esac
+  fi
+
+  echo "start ${d%/}: committee index $idx${node_relay:+  (relays mints)}"
+  BRIDGE_SIGNER_GENESIS_HASH="$BRIDGE_SIGNER_GENESIS_HASH" \
+  BRIDGE_SIGNER_MINT_BUS_ENDPOINT="ipc://$PWD/beldex-127.0.0.1-19191/devnet/beldexd.sock" \
+  BRIDGE_SIGNER_RELAY_CMD="$node_relay" \
+  BRIDGE_SIGNER_RELAY_STAGGER_MS="$RELAY_STAGGER_MS" \
   BRIDGE_SIGNER_SERVE_LIVE=1 \
   BRIDGE_SIGNER_BELDEXD_RPC_URL="http://127.0.0.1:19191" \
   BRIDGE_SIGNER_OXENMQ_ENDPOINT="ipc://$sock" \

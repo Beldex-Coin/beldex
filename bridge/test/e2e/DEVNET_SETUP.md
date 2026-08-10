@@ -143,52 +143,12 @@ grep -E '^(PROXY|IMPL|SIGNER_ADDR)=' devnet/mint.env    # → PROXY=0x…  (the 
 
 ---
 
-## 4. `view_secret_hex` — generate it, then register ONE gateway
+## 4. Wallet CLI — how to get one, and how to fund it
 
-The gateway's **id is its view public key**, so the secret you register with *is* the view
-secret the signers use to decrypt A.5 memos. Generate a valid ed25519 scalar (pad the
-most-significant byte — scalars are little-endian, so that's the last byte):
-
-```bash
-VIEW_SECRET=$(openssl rand -hex 31)00
-echo "VIEW_SECRET=$VIEW_SECRET"        # SAVE THIS
-```
-
-One gateway serves **both legs** (deposits in, releases out) because the id key and the owner
-key are independent. Register it with the committee's Pgw key as owner, and flag it as a
-bridge reserve so consensus enforces the replay guard (§3.6).
-
-You need a funded wallet. The devnet runs wallets under `beldex-wallet-rpc` (random ports);
-`bridge_deposit` is a **CLI-only** command, so create a CLI wallet and fund it (§5), then:
-
-```
-[wallet]> register_gateway_address <VIEW_SECRET> eddsa <PGW_GROUP_VK> bridge_reserve
-    (confirm the sticky-flag prompt, then the tx)
-```
-
-The wallet prints two forms. `GATEWAY_ID` for the signers is the **hex** one, on the
-`Gateway id  :` line — the signer parses it with `parse_hex32` and a `gwB…` address dies
-at startup with `config key gateway_id is not 32-byte hex`. Keep the `gwB…` address too:
-that is what wallet `transfer` / `bridge_deposit` and the RPC below want. Confirm it landed:
-
-```bash
-curl -s http://127.0.0.1:19191/json_rpc -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":"0","method":"bridge_get_reserves","params":{"gateway_id":"<gwB…>"}}' \
-  | tr ',' '\n' | grep -E 'registered|bridge_reserve|gateway_balance'
-# → registered:true, bridge_reserve:true, gateway_balance:…
-# (no jq — it is not installed, and `brew install jq` resolves to the Intel prefix
-#  /usr/local/bin/brew on this machine, which would fetch an x86_64 build.)
-```
-
-> Prefer an unflagged gateway for a first smoke run? Omit `bridge_reserve`. The guard still
-> dedupes refs that are present; the flag only forecloses omitting them.
-
----
-
-## 5. Wallet CLI — how to get one, and how to fund it
-
-The devnet's own wallets are held open by `beldex-wallet-rpc`, so don't reuse those files.
-Create a **separate** CLI wallet pointed at devnet node 19191:
+The gateway registration in §5 burns a fee and `bridge_deposit` is a **CLI-only** command,
+so you need a funded CLI wallet first. The devnet's own wallets are held open by
+`beldex-wallet-rpc`, so don't reuse those files — create a **separate** CLI wallet pointed
+at devnet node 19191:
 
 ```bash
 cd $BLD/build/Darwin/dkg-tss-implementation/release/bin
@@ -234,7 +194,48 @@ curl -s $MIKE -H 'Content-Type: application/json' -d '{
 > `ps axww | grep -o 'beldex-wallet-rpc.*--rpc-bind-port=[0-9]*' | grep -o '[0-9]*$'`.
 
 Then in the CLI: `refresh`, `balance`. If every wallet shows 0, mine a few blocks — the
-devnet harness exposes `mnn.mine(10)` in the Python session that's running the network.
+devnet harness exposes `mnn.mine(10)` in the Python session that's running the network
+(and `./mine.sh 20` works too).
+
+---
+
+## 5. `view_secret_hex` — generate it, then register ONE gateway
+
+The gateway's **id is its view public key**, so the secret you register with *is* the view
+secret the signers use to decrypt A.5 memos. Generate a valid ed25519 scalar (pad the
+most-significant byte — scalars are little-endian, so that's the last byte):
+
+```bash
+VIEW_SECRET=$(openssl rand -hex 31)00
+echo "VIEW_SECRET=$VIEW_SECRET"        # SAVE THIS
+```
+
+One gateway serves **both legs** (deposits in, releases out) because the id key and the owner
+key are independent. Register it with the committee's Pgw key as owner, and flag it as a
+bridge reserve so consensus enforces the replay guard (§3.6). From the funded CLI wallet
+(§4):
+
+```
+[wallet]> register_gateway_address <VIEW_SECRET> eddsa <PGW_GROUP_VK> bridge_reserve
+    (confirm the sticky-flag prompt, then the tx)
+```
+
+The wallet prints two forms. `GATEWAY_ID` for the signers is the **hex** one, on the
+`Gateway id  :` line — the signer parses it with `parse_hex32` and a `gwB…` address dies
+at startup with `config key gateway_id is not 32-byte hex`. Keep the `gwB…` address too:
+that is what wallet `transfer` / `bridge_deposit` and the RPC below want. Confirm it landed:
+
+```bash
+curl -s http://127.0.0.1:19191/json_rpc -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"0","method":"bridge_get_reserves","params":{"gateway_id":"<gwB…>"}}' \
+  | tr ',' '\n' | grep -E 'registered|bridge_reserve|gateway_balance'
+# → registered:true, bridge_reserve:true, gateway_balance:…
+# (no jq — it is not installed, and `brew install jq` resolves to the Intel prefix
+#  /usr/local/bin/brew on this machine, which would fetch an x86_64 build.)
+```
+
+> Prefer an unflagged gateway for a first smoke run? Omit `bridge_reserve`. The guard still
+> dedupes refs that are present; the flag only forecloses omitting them.
 
 **Pre-fund the reserve** (optional, for burn drills beyond what you bridge in): send a plain
 transfer to the gateway address with **no memo** — a memo-less deposit is held

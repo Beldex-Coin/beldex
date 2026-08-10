@@ -108,8 +108,62 @@ Watch the signer logs. After checkpoint finality (`immutable_height` passes the 
 3. `signed=1` per acker (one Pevm cggmp21 session over the sign mesh);
 4. each finalizing node prints `MINT-PAYLOAD {…}` — the exact `RelayPayload` JSON.
 
-Broadcast one of them (they are identical; the contract's `processedDeposits` makes duplicates
-harmless). Either hand it to the reference relayer service — the hands-off path:
+### How the payload reaches the relayer
+
+The signer holds **no EVM gas key** by design, so it never broadcasts — it produces the
+signed payload and hands it off. Every node in the ACK set derives the *identical* payload,
+so any one of them can carry it (or none: the printed line is enough for anyone to broadcast
+later). Two mechanisms:
+
+**Via the OMQ mint bus (preferred)** — on completion each signer publishes to
+`bridge.mint_payload` on its own daemon, which fans it out as `notify.bridge_mint` to every
+subscriber. Relayers then need no signer-host access at all — just an OMQ endpoint:
+
+```bash
+BRIDGE_SIGNER_OXENMQ_ENDPOINT=ipc://<…>/devnet/beldexd.sock \
+RELAYER_GAS_KEY=<32-byte hex gas key> \
+RELAYER_CHAINS='[{"chain_id":31337,"rpc_url":"http://127.0.0.1:8545"}]' \
+  beldex-bridge-signer relay-watch
+```
+
+That process holds **no bridge key and no shares**; it subscribes, and pipes each payload to
+`BRIDGE_SIGNER_RELAY_CMD` (default `beldex-bridge-relayer relay -`), whose environment holds
+the gas key. Run as many as you like, anywhere.
+
+Only a **seated committee member** can publish: the publisher signs
+`BRIDGE_MINT_PUBLISH ‖ genesis ‖ payload` with the `signer_ed25519` consensus records for it,
+and the daemon verifies that against the current committee before fanning out (so the bus
+cannot be used as an open amplifier). Set `BRIDGE_SIGNER_GENESIS_HASH` on the signers or the
+signature won't match the daemon's binding. The daemon dedups by `beldex_txid`, so all t+1
+members publishing yields exactly one fan-out — a `DUPLICATE` reply is a success. Disable
+publishing with `BRIDGE_SIGNER_PUBLISH_MINT_BUS=0`.
+
+> This authenticates the *publisher*, not the mint. The committee's `Pevm` signature inside
+> the payload is what authorizes minting, and only the wBDX contract verifies it — so a
+> subscriber trusts nothing from the bus.
+
+**Direct pipe** — alternatively set `BRIDGE_SIGNER_RELAY_CMD` on the signer itself and it
+pipes the payload JSON to that command's stdin as the duty completes. Via the launcher:
+
+```bash
+RELAY_CMD='beldex-bridge-relayer relay -' \
+RELAYER_GAS_KEY=<32-byte hex anvil key> \
+RELAYER_CHAINS='[{"chain_id":31337,"rpc_url":"http://127.0.0.1:8545"}]' \
+GATEWAY_ID=… VIEW_SECRET=… WBDX=… ./serve-live.sh
+```
+
+By default only committee index 0 gets the hook (`RELAY_NODES=0`) — one broadcaster means no
+duplicate-revert gas. For redundancy use `RELAY_NODES=all`; then `RELAY_STAGGER_MS` (default
+2000, multiplied by committee index) keeps them from firing at once. Each relaying node needs
+its **own** gas key — a shared key means colliding nonces.
+
+Broadcast failure never fails the duty: the committee's work is done once the signature
+exists, and re-running a mesh signing round to retry an HTTP call would be the wrong layer.
+The `MINT-PAYLOAD` line is always printed first and remains valid for manual broadcast.
+
+**Manual** — the always-available path. Take any `MINT-PAYLOAD` line from the logs
+(they are identical across nodes; `processedDeposits` makes duplicates harmless) and either
+hand it to the relayer:
 
 ```bash
 export RELAYER_GAS_KEY=<32-byte hex anvil key>     # gas only; no bridge authority
