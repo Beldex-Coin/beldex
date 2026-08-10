@@ -8162,6 +8162,16 @@ bool wallet2::sign_multisig_tx(multisig_tx_set &exported_txs, std::vector<crypto
     for (const auto &source: sources)
       indices.push_back(source.real_output);
 
+    std::unordered_set<rct::key> all_used_L;
+    for (const auto &sig: ptx.multisig_sigs)
+    {
+      for (const auto &L: sig.used_L)
+      {
+        THROW_WALLET_EXCEPTION_IF(!all_used_L.insert(L).second,
+            error::wallet_internal_error, "Duplicate used_L found in multisig signature variants");
+      }
+    }
+
     for (auto &sig: ptx.multisig_sigs)
     {
       if (sig.ignore.find(local_signer) == sig.ignore.end())
@@ -15402,16 +15412,22 @@ crypto::public_key wallet2::get_multisig_signing_public_key(size_t idx) const
   return get_multisig_signing_public_key(get_account().get_multisig_keys()[idx]);
 }
 //----------------------------------------------------------------------------------------------------
-rct::key wallet2::get_multisig_k(size_t idx, const std::unordered_set<rct::key> &used_L) const
+rct::key wallet2::get_multisig_k(size_t idx, const std::unordered_set<rct::key> &used_L)
 {
   CHECK_AND_ASSERT_THROW_MES(m_multisig, "Wallet is not multisig");
   CHECK_AND_ASSERT_THROW_MES(idx < m_transfers.size(), "idx out of range");
-  for (const auto &k: m_transfers[idx].m_multisig_k)
+  auto &ks = m_transfers[idx].m_multisig_k;
+  for (auto it = ks.begin(); it != ks.end(); ++it)
   {
     rct::key L;
-    rct::scalarmultBase(L, k);
+    rct::scalarmultBase(L, *it);
     if (used_L.find(L) != used_L.end())
+    {
+      rct::key k = *it;
+      memwipe(&*it, sizeof(rct::key));
+      ks.erase(it);
       return k;
+    }
   }
   THROW_WALLET_EXCEPTION(tools::error::multisig_export_needed);
   return rct::zero();
