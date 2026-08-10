@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import os
 import random
 import subprocess
 import sys
@@ -352,15 +353,23 @@ class Wallet(RPCDaemon):
         )
         self.wallet_address = None
 
-    def ready(self, wallet="wallet", existing=False):
+    def wallet_exists(self, wallet="wallet"):
+        """True if a wallet file of this name already exists in this wallet's dir (i.e. we are
+        resuming a previous devnet run rather than starting a fresh one)."""
+        return os.path.exists(os.path.join(self.walletdir, wallet))
+
+    def ready(self, wallet="wallet", existing=None):
         """Makes the wallet ready, waiting for it to start up and create a new wallet (or load an
-        existing one, if `existing`) within the rpc wallet.  Calls `start()` first if it hasn't
-        already been called.  Does *not* explicitly refresh."""
+        existing one, if `existing`) within the rpc wallet.  `existing=None` (the default)
+        auto-detects: the wallet is opened if its file already exists, otherwise created.  Calls
+        `start()` first if it hasn't already been called.  Does *not* explicitly refresh."""
 
         if not self.proc:
             self.start()
 
         self.wallet_filename = wallet
+        if existing is None:
+            existing = self.wallet_exists(wallet)
         if existing:
             r = self.wait_for_json_rpc(
                 "open_wallet", {"filename": wallet, "password": ""}
