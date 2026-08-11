@@ -44,7 +44,7 @@ library archives (`.a`).
 | libzmq       | 4.3.0         | YES      | `libzmq3-dev`          | `zeromq`     | `zeromq-devel`      | NO       | ZeroMQ library   |
 | sqlite3      | 3.24.0        | YES      | `libsqlite3-dev`       | `sqlite`     | `sqlite-devel`      | NO       | Beldex Name System |
 | libsodium    | 1.0.9         | YES      | `libsodium-dev`        | `libsodium`  | `libsodium-devel`   | NO       | cryptography     |
-| libcurl      | 4.0           | NO       | `curl`                 | `curl-devel` | NO                  | HTTP     | RPC              |
+| libcurl      | 4.0           | NO       | `libcurl4-openssl-dev` | `curl-devel` | NO                  | HTTP     | RPC              |
 | libuv (Win)  | any           | NO       | (Windows only)         | --           | --                  | NO       | RPC event loop   |
 | libunwind    | any           | NO       | `libunwind8-dev`       | `libunwind`  | `libunwind-devel`   | YES      | Stack traces     |
 | liblzma      | any           | NO       | `liblzma-dev`          | `xz`         | `xz-devel`          | YES      | For libunwind    |
