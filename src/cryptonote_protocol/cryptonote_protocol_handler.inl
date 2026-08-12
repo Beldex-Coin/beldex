@@ -1848,6 +1848,14 @@ skip:
   template<class t_core>
   int t_cryptonote_protocol_handler<t_core>::handle_request_chain(int command, NOTIFY_REQUEST_CHAIN::request& arg, cryptonote_connection_context& context)
   {
+
+    if (arg.block_ids.size() > CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT)
+    {
+      LOG_ERROR_CCONTEXT("Too many block IDs requested: " << arg.block_ids.size() << " (maximum " << CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT << ")");
+      drop_connection(context, false, false);
+      return 1;
+    }
+
     MLOG_P2P_MESSAGE("Received NOTIFY_REQUEST_CHAIN (" << arg.block_ids.size() << " blocks");
     NOTIFY_RESPONSE_CHAIN_ENTRY::request r;
     if(!m_core.find_blockchain_supplement(arg.block_ids, r))
@@ -2513,6 +2521,13 @@ skip:
   int t_cryptonote_protocol_handler<t_core>::handle_response_block_flashes(int command, NOTIFY_RESPONSE_BLOCK_FLASHES::request& arg, cryptonote_connection_context& context)
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_RESPONSE_BLOCK_FLASHES: txs.size()=" << arg.txs.size());
+
+    if (arg.txs.size() > CURRENCY_PROTOCOL_MAX_TXS_REQUEST_COUNT)
+    {
+      LOG_ERROR_CCONTEXT("Too many flash transactions received: " << arg.txs.size() << " (maximum " << CURRENCY_PROTOCOL_MAX_TXS_REQUEST_COUNT << ")");
+      drop_connection(context, false, false);
+      return 1;
+    }
 
     m_core.get_pool().keep_missing_flashes(arg.txs);
     if (arg.txs.empty())

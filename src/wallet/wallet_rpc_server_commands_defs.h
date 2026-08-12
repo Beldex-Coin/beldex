@@ -50,7 +50,7 @@
 // advance which version they will stop working with
 // Don't go over 32767 for any of these
 #define WALLET_RPC_VERSION_MAJOR 1
-#define WALLET_RPC_VERSION_MINOR 17
+#define WALLET_RPC_VERSION_MINOR 18
 #define MAKE_WALLET_RPC_VERSION(major,minor) (((major)<<16)|(minor))
 #define WALLET_RPC_VERSION MAKE_WALLET_RPC_VERSION(WALLET_RPC_VERSION_MAJOR, WALLET_RPC_VERSION_MINOR)
 
@@ -1365,7 +1365,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Export transfers to csv
-  struct EXPORT_TRANSFERS : RPC_COMMAND
+  struct EXPORT_TRANSFERS : RESTRICTED
   {
     static constexpr auto names() { return NAMES("export_transfers"); }
 
@@ -1419,7 +1419,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Export a signed set of key images.
-  struct EXPORT_KEY_IMAGES : RPC_COMMAND
+  struct EXPORT_KEY_IMAGES : RESTRICTED
   {
     static constexpr auto names() { return NAMES("export_key_images"); }
 
@@ -1668,7 +1668,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Start mining in the beldex daemon.
-  struct START_MINING : RPC_COMMAND
+  struct START_MINING : RESTRICTED
   {
     static constexpr auto names() { return NAMES("start_mining"); }
 
@@ -1684,7 +1684,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Stop mining in the beldex daemon.
-  struct STOP_MINING : RPC_COMMAND
+  struct STOP_MINING : RESTRICTED
   {
     static constexpr auto names() { return NAMES("stop_mining"); }
 
@@ -1753,7 +1753,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Close the currently opened wallet, after trying to save it.
-  struct CLOSE_WALLET : RPC_COMMAND
+  struct CLOSE_WALLET : RESTRICTED
   {
     static constexpr auto names() { return NAMES("close_wallet"); }
 
