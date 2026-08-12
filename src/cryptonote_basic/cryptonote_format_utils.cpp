@@ -569,6 +569,13 @@ namespace cryptonote
           out_sum += g->amount;
       CHECK_AND_ASSERT_MES(in_sum >= out_sum, false, "pure-gateway tx outputs exceed inputs");
       fee = in_sum - out_sum;
+      if (burning_enabled)
+      {
+        uint64_t fee_burned = get_burned_amount_from_tx_extra(tx.extra);
+        fee -= std::min(fee, fee_burned);
+        if (burned)
+          *burned = fee_burned;
+      }
       return true;
     }
     if (tx.version >= txversion::v2_ringct)
