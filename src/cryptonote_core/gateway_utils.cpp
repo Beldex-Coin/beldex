@@ -575,6 +575,13 @@ bool validate_gateway_descriptor_operation(BlockchainDB& db, network_type nettyp
         return false;
       }
 
+      if (acct.latest_descriptor().owner_key == op.descriptor.owner_key &&
+          acct.latest_descriptor().meta_info == op.descriptor.meta_info)
+      {
+        reason = "update descriptor is identical to current descriptor";
+        return false;
+      }
+
       const gateway_ownership_proof* proof = nullptr;
       for (const auto& p : tx.gateway_proofs)
       {

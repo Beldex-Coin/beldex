@@ -814,7 +814,7 @@ namespace cryptonote
       proofs.emplace_back(gateway_input_sig{owner_sig});
     tx.gateway_proofs = std::move(proofs);
     tx.invalidate_hashes();
-    return true;
+        return true;
   }
   //---------------------------------------------------------------
   bool sign_gateway_register_tx(network_type nettype, transaction& tx,
@@ -844,6 +844,133 @@ namespace cryptonote
       if (!std::holds_alternative<gateway_ownership_proof>(p))
         proofs.push_back(p);
     proofs.emplace_back(gateway_ownership_proof{gateway_owner_sig_v{sig}});
+    tx.gateway_proofs = std::move(proofs);
+    tx.invalidate_hashes();
+    return true;
+  }
+  //---------------------------------------------------------------
+  // Gateway descriptor update (HF22). See the header for the two-signature
+  // rationale. Self-funded and output-less, so it is a pure-gateway tx:
+  // verify_pure_gateway_balance computes fee = Σin − Σout = the input amount.
+  bool construct_gateway_update_tx(hf hf_version,
+                                   network_type nettype,
+                                   const crypto::public_key& gateway_id,
+                                   const gateway_owner_key_v& new_owner_key,
+                                   const std::string& meta_info,
+                                   uint64_t fee,
+                                   transaction& tx,
+                                   crypto::hash& hash_to_sign_input,
+                                   crypto::hash& hash_to_sign_ownership)
+  {
+    tx.set_null();
+    tx.version     = transaction::get_max_version_for_hf(hf_version);
+    tx.type        = txtype::update_gateway_address;
+    tx.unlock_time = 0;
+
+    if (fee == 0)
+    {
+      LOG_ERROR("gateway update: fee must be > 0 (it is the tx's only input amount)");
+      return false;
+    }
+    // Fail here rather than let consensus reject it later with a vaguer reason.
+    if (!is_valid_gateway_owner_key(new_owner_key))
+    {
+      LOG_ERROR("gateway update: invalid new owner key for its type");
+      return false;
+    }
+    if (meta_info.size() > GATEWAY_DESCRIPTOR_MAX_META_INFO_SIZE)
+    {
+      LOG_ERROR("gateway update: meta_info exceeds " << GATEWAY_DESCRIPTOR_MAX_META_INFO_SIZE << " bytes");
+      return false;
+    }
+
+    // The descriptor operation carries the NEW owner key / meta.
+    tx_extra_gateway_descriptor_operation op{};
+    op.version              = 0;
+    op.op_type              = gateway_descriptor_op_type::update_address;
+    op.address_id           = gateway_id;
+    op.descriptor.version   = 0;
+    op.descriptor.owner_key = new_owner_key;
+    op.descriptor.meta_info = meta_info;
+    if (!add_gateway_descriptor_operation_to_tx_extra(tx.extra, op))
+    {
+      LOG_ERROR("gateway update: failed to serialize descriptor operation");
+      return false;
+    }
+    if (!add_burned_amount_to_tx_extra(tx.extra, GATEWAY_ADDRESS_UPDATE_FEE))
+    {
+      LOG_ERROR("gateway update: failed to serialize burn amount to tx extra");
+      return false;
+    }
+
+    // Single gateway input funding the fee; no outputs (update txs are exempt
+    // from the minimum-output-count rule).
+    txin_gateway in{};
+    in.version      = 0;
+    in.gateway_addr = gateway_id;
+    in.asset_id     = crypto::null_aid; // HF22: native BDX
+    in.amount       = GATEWAY_ADDRESS_UPDATE_FEE + fee;
+    tx.vin.emplace_back(in);
+
+    // Pure-gateway tx: no RCT data.
+    tx.rct_signatures      = {};
+    tx.rct_signatures.type = rct::RCTType::Null;
+
+    // Canonical proof layout consensus expects for a descriptor tx with one
+    // gateway input: [ownership_proof][input_sig]. Empty slots; the owner fills them.
+    tx.gateway_proofs.clear();
+    tx.gateway_proofs.emplace_back(gateway_ownership_proof{});
+    tx.gateway_proofs.emplace_back(gateway_input_sig{});
+
+    tx.invalidate_hashes();
+    // Both messages hash the tx PREFIX, which the (prunable) proof slots are not
+    // part of, so filling them later does not change either hash.
+    hash_to_sign_input     = gateway_input_message(nettype, tx);
+    hash_to_sign_ownership = gateway_ownership_message(nettype, tx);
+    return true;
+  }
+  //---------------------------------------------------------------
+  bool finalize_gateway_update_tx(network_type nettype,
+                                  transaction& tx,
+                                  const gateway_owner_key_v& current_owner_key,
+                                  const gateway_owner_sig_v& input_sig,
+                                  const gateway_owner_sig_v& ownership_sig)
+  {
+    if (tx.type != txtype::update_gateway_address)
+    {
+      LOG_ERROR("gateway update finalize: tx type is not update_gateway_address");
+      return false;
+    }
+    if (!tx.has_gateway_inputs())
+    {
+      LOG_ERROR("gateway update finalize: tx has no gateway inputs");
+      return false;
+    }
+
+    // Verify each signature against its OWN domain-separated message; a sig valid
+    // for one must not be accepted for the other.
+    if (!verify_gateway_owner_signature(current_owner_key, input_sig, gateway_input_message(nettype, tx)))
+    {
+      LOG_ERROR("gateway update finalize: input signature does not verify");
+      return false;
+    }
+    if (!verify_gateway_owner_signature(current_owner_key, ownership_sig, gateway_ownership_message(nettype, tx)))
+    {
+      LOG_ERROR("gateway update finalize: ownership proof does not verify");
+      return false;
+    }
+
+    size_t gw_inputs = 0;
+    for (const auto& vin : tx.vin)
+      if (std::holds_alternative<txin_gateway>(vin))
+        ++gw_inputs;
+
+    // Rewrite in canonical order: [ownership_proof][input_sig × gw_inputs].
+    std::vector<gateway_proof_v> proofs;
+    proofs.reserve(1 + gw_inputs);
+    proofs.emplace_back(gateway_ownership_proof{ownership_sig});
+    for (size_t i = 0; i < gw_inputs; ++i)
+      proofs.emplace_back(gateway_input_sig{input_sig});
     tx.gateway_proofs = std::move(proofs);
     tx.invalidate_hashes();
     return true;

@@ -62,6 +62,7 @@ inline constexpr uint64_t PUBLIC_ADDRESS_TEXTBLOB_VER          = 0;
 // TX_EXTRA_TAG_BURN machinery. 100 BDX (COIN = 10^9 atomic units). Spelled as a
 // literal here because beldex_economy.h (which defines COIN) includes this file.
 inline constexpr uint64_t GATEWAY_ADDRESS_REGISTRATION_FEE     = UINT64_C(100000000000); // 100 * pow(10, 9)
+inline constexpr uint64_t GATEWAY_ADDRESS_UPDATE_FEE           = UINT64_C(10000000000);  // 10 * pow(10, 9)
 
 // Max length (bytes) of a gateway descriptor's meta_info string. The descriptor
 // is persisted append-only into the consensus DB and an update tx pays only a

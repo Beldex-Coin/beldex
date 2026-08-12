@@ -3830,6 +3830,51 @@ namespace cryptonote::rpc {
   }
 
   //------------------------------------------------------------------------------------------------------------------------------
+  namespace {
+    // Parse a hex signature into the variant alternative matching `owner_key`'s
+    // type. `what` names the field for error messages.
+    cryptonote::gateway_owner_sig_v parse_gateway_owner_sig(
+        const cryptonote::gateway_owner_key_v& owner_key, std::string_view hex, std::string_view what)
+    {
+      if (!oxenc::is_hex(hex))
+        throw rpc_error{ERROR_WRONG_PARAM, std::string(what) + " is not valid hex"};
+      const std::string b = oxenc::from_hex(hex);
+      switch (owner_key.index())
+      {
+        case 0: { crypto::signature s{};       if (b.size() != sizeof(s)) throw rpc_error{ERROR_WRONG_PARAM, std::string(what) + ": Schnorr signature must be 64 bytes"}; std::memcpy(&s, b.data(), sizeof(s)); return s; }
+        case 1: { crypto::eth_signature s{};   if (b.size() != sizeof(s)) throw rpc_error{ERROR_WRONG_PARAM, std::string(what) + ": eth signature must be 64 bytes"};     std::memcpy(&s, b.data(), sizeof(s)); return s; }
+        case 2: { crypto::eddsa_signature s{}; if (b.size() != sizeof(s)) throw rpc_error{ERROR_WRONG_PARAM, std::string(what) + ": eddsa signature must be 64 bytes"};   std::memcpy(&s, b.data(), sizeof(s)); return s; }
+        default: throw rpc_error{ERROR_INTERNAL, "unknown gateway owner key type"};
+      }
+    }
+
+    // Parse a hex owner key of the named type into the variant.
+    cryptonote::gateway_owner_key_v parse_gateway_owner_key(std::string_view type, std::string_view hex)
+    {
+      if (type == "schnorr" || type == "ed25519")
+      {
+        crypto::public_key k{};
+        if (!tools::hex_to_type(hex, k))
+          throw rpc_error{ERROR_WRONG_PARAM, "invalid schnorr owner_key (expected 64-char hex)"};
+        return k;
+      }
+      if (type == "eth")
+      {
+        crypto::eth_public_key k{};
+        if (!tools::hex_to_type(hex, k))
+          throw rpc_error{ERROR_WRONG_PARAM, "invalid eth owner_key (expected 66-char hex / 33-byte compressed)"};
+        return k;
+      }
+      if (type == "eddsa")
+      {
+        crypto::eddsa_public_key k{};
+        if (!tools::hex_to_type(hex, k))
+          throw rpc_error{ERROR_WRONG_PARAM, "invalid eddsa owner_key (expected 64-char hex)"};
+        return k;
+      }
+      throw rpc_error{ERROR_WRONG_PARAM, "owner_key_type must be one of: schnorr, eth, eddsa"};
+    }
+  } // anonymous namespace
   void core_rpc_server::invoke(GATEWAY_SUBMIT_TRANSFER& cmd, rpc_context context)
   {
     auto& req = cmd.request;
@@ -3841,8 +3886,22 @@ namespace cryptonote::rpc {
     if (!cryptonote::parse_and_validate_tx_from_blob(blob, tx))
       throw rpc_error{ERROR_WRONG_PARAM, "failed to parse tx_blob"};
 
-    // If a detached owner signature was supplied, inject it (looking up the
-    // owner key type from the source gateway's on-chain descriptor).
+    // Which flow this is comes from the blob itself, not the caller: an update
+    // carries a descriptor op and needs a second signature over a different
+    // (domain-separated) message, a withdrawal needs only the input signature.
+    const bool is_update = tx.type == cryptonote::txtype::update_gateway_address;
+    const char* what     = is_update ? "gateway update" : "gateway withdrawal";
+
+    if (is_update && req.signature.empty() != req.ownership_signature.empty())
+      throw rpc_error{ERROR_WRONG_PARAM,
+          "an update_gateway_address tx needs both `signature` (over hash_to_sign_input) and "
+          "`ownership_signature` (over hash_to_sign_ownership), or neither for an already-signed blob"};
+    if (!is_update && !req.ownership_signature.empty())
+      throw rpc_error{ERROR_WRONG_PARAM,
+          "`ownership_signature` only applies to an update_gateway_address tx"};
+
+    // If detached owner signature(s) were supplied, inject them (looking up the
+    // owner key type from the gateway's on-chain descriptor).
     if (!req.signature.empty())
     {
       crypto::public_key source_id{};
@@ -3856,22 +3915,19 @@ namespace cryptonote::rpc {
       cryptonote::gateway_account_data acct;
       if (!cryptonote::load_gateway_account(db, source_id, acct) || acct.descriptor_history.empty())
         throw rpc_error{ERROR_WRONG_PARAM, "source gateway is not registered"};
+      // For an update this is deliberately the CURRENT owner key: the new key in
+      // the tx only takes effect once the tx is applied.
       const auto& okey = acct.latest_descriptor().owner_key;
 
-      if (!oxenc::is_hex(req.signature))
-        throw rpc_error{ERROR_WRONG_PARAM, "signature is not valid hex"};
-      const std::string sbytes = oxenc::from_hex(req.signature);
-
-      cryptonote::gateway_owner_sig_v osig;
-      switch (okey.index())
-      {
-        case 0: { crypto::signature s{};       if (sbytes.size() != sizeof(s)) throw rpc_error{ERROR_WRONG_PARAM, "Schnorr signature must be 64 bytes"};  std::memcpy(&s, sbytes.data(), sizeof(s)); osig = s; break; }
-        case 1: { crypto::eth_signature s{};   if (sbytes.size() != sizeof(s)) throw rpc_error{ERROR_WRONG_PARAM, "eth signature must be 64 bytes"};      std::memcpy(&s, sbytes.data(), sizeof(s)); osig = s; break; }
-        case 2: { crypto::eddsa_signature s{}; if (sbytes.size() != sizeof(s)) throw rpc_error{ERROR_WRONG_PARAM, "eddsa signature must be 64 bytes"};    std::memcpy(&s, sbytes.data(), sizeof(s)); osig = s; break; }
-        default: throw rpc_error{ERROR_INTERNAL, "unknown gateway owner key type"};
-      }
-      if (!cryptonote::finalize_gateway_withdraw_tx(m_core.get_nettype(), tx, okey, osig))
-        throw rpc_error{ERROR_WRONG_PARAM, "signature does not verify against the gateway owner key"};
+      const auto osig = parse_gateway_owner_sig(okey, req.signature, "signature");
+      const bool ok = is_update
+          ? cryptonote::finalize_gateway_update_tx(m_core.get_nettype(), tx, okey, osig,
+                parse_gateway_owner_sig(okey, req.ownership_signature, "ownership_signature"))
+          : cryptonote::finalize_gateway_withdraw_tx(m_core.get_nettype(), tx, okey, osig);
+      if (!ok)
+        throw rpc_error{ERROR_WRONG_PARAM,
+            is_update ? "signatures do not verify against the current gateway owner key"
+                      : "signature does not verify against the gateway owner key"};
     }
 
     std::string final_blob = tx_to_blob(tx);
@@ -3879,7 +3935,7 @@ namespace cryptonote::rpc {
     if (!m_core.handle_incoming_tx(final_blob, tvc, tx_pool_options::new_tx()) || tvc.m_verifivation_failed || !tvc.m_should_be_relayed)
     {
       std::string reason = print_tx_verification_context(tvc);
-      throw rpc_error{ERROR_INTERNAL, "gateway withdrawal rejected: " + reason};
+      throw rpc_error{ERROR_INTERNAL, std::string(what) + " rejected: " + reason};
     }
 
     NOTIFY_NEW_TRANSACTIONS::request r{};
@@ -3887,10 +3943,63 @@ namespace cryptonote::rpc {
     cryptonote_connection_context fake_context{};
     m_core.get_protocol()->relay_transactions(r, fake_context);
 
-    LOG_PRINT_L0("Gateway withdrawal transaction relayed: " << tools::type_to_hex(cryptonote::get_transaction_hash(tx)));
+    LOG_PRINT_L0("Gateway transaction relayed (" << what << "): " << tools::type_to_hex(cryptonote::get_transaction_hash(tx)));
     cmd.response["tx_hash"] = tools::type_to_hex(cryptonote::get_transaction_hash(tx));
     cmd.response["status"]  = STATUS_OK;
   }
+  //------------------------------------------------------------------------------------------------------------------------------
+
+  void core_rpc_server::invoke(GATEWAY_CREATE_UPDATE& cmd, rpc_context context)
+  {
+    auto& req = cmd.request;
+    const auto nettype = m_core.get_nettype();
+
+    cryptonote::gateway_address_parse_info info{};
+    if (!cryptonote::get_gateway_address_from_str(info, nettype, req.gateway_address))
+      throw rpc_error{ERROR_WRONG_PARAM, "invalid gateway_address (expected a gwB… address)"};
+    const crypto::public_key gateway_id = info.gateway_id;
+
+    auto& db = m_core.get_blockchain_storage().get_db();
+    cryptonote::gateway_account_data acct;
+    if (!cryptonote::load_gateway_account(db, gateway_id, acct) || acct.descriptor_history.empty())
+      throw rpc_error{ERROR_WRONG_PARAM, "gateway is not registered"};
+
+    if (req.fee == 0)
+      throw rpc_error{ERROR_WRONG_PARAM, "fee must be > 0 (it funds the update tx from the gateway balance)"};
+
+    uint64_t balance = 0;
+    for (const auto& b : acct.balances)
+      if (b.asset_id == crypto::null_aid) balance = b.amount;
+
+    const uint64_t total_fee = cryptonote::GATEWAY_ADDRESS_UPDATE_FEE + req.fee;
+    if (balance < total_fee)
+      throw rpc_error{ERROR_WRONG_PARAM, "insufficient gateway balance for update fee (requires 10 BDX update fee + miner fee)"};
+
+    const auto new_owner_key = parse_gateway_owner_key(req.owner_key_type, req.owner_key);
+
+    if (acct.latest_descriptor().owner_key == new_owner_key && acct.latest_descriptor().meta_info == req.meta_info)
+      throw rpc_error{ERROR_WRONG_PARAM, "new owner key and meta_info are identical to current descriptor (no-op update)"};
+
+    const auto hf_version = m_core.get_blockchain_storage().get_network_version();
+    cryptonote::transaction tx;
+    crypto::hash h_input{}, h_ownership{};
+    if (!cryptonote::construct_gateway_update_tx(hf_version, nettype, gateway_id, new_owner_key,
+                                                 req.meta_info, req.fee, tx, h_input, h_ownership))
+      throw rpc_error{ERROR_INTERNAL, "failed to construct gateway update transaction"};
+
+    // Both signatures verify against the CURRENT owner key; report it so the
+    // signer knows which key (and scheme) to use.
+    const auto& cur = acct.latest_descriptor().owner_key;
+    cmd.response["gateway_id"]             = tools::type_to_hex(gateway_id);
+    cmd.response["current_owner_key_type"] = cur.index();
+    cmd.response["current_owner_key"]      = std::visit([](const auto& k) { return tools::type_to_hex(k); }, cur);
+    cmd.response["unsigned_tx_blob"]       = oxenc::to_hex(tx_to_blob(tx));
+    cmd.response["hash_to_sign_input"]     = tools::type_to_hex(h_input);
+    cmd.response["hash_to_sign_ownership"] = tools::type_to_hex(h_ownership);
+    cmd.response["fee"]                    = req.fee;
+    cmd.response["status"]                 = STATUS_OK;
+  }
+  //------------------------------------------------------------------------------------------------------------------------------
 
   //------------------------------------------------------------------------------------------------------------------------------
   void core_rpc_server::invoke(BNS_RESOLVE& resolve, rpc_context context)

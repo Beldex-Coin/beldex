@@ -2791,17 +2791,23 @@ namespace cryptonote::rpc {
 
   /// RPC: gateway/gateway_submit_transfer
   ///
-  /// Admin-only. Attaches the gateway owner signature to an unsigned withdrawal
-  /// from `gateway_create_transfer` and broadcasts it. The owner key type is
-  /// looked up from the source gateway's on-chain descriptor, so the signature is
-  /// parsed to match. Alternatively an already-signed blob (proofs embedded) can
-  /// be submitted with an empty `signature`.
+  /// Admin-only. Attaches the gateway owner signature(s) to any unsigned gateway
+  /// tx — a withdrawal from `gateway_create_transfer` or a descriptor update from
+  /// `gateway_create_update` — and broadcasts it. Which flow applies is taken from
+  /// the blob's own tx type, not from the caller, so the same endpoint serves both.
+  /// The owner key type is looked up from the gateway's on-chain descriptor, so
+  /// the signature(s) are parsed to match. Alternatively an already-signed blob
+  /// (proofs embedded) can be submitted with the signature fields empty.
   ///
   /// Inputs:
-  /// - `tx_blob` -- hex of the (unsigned) tx from `gateway_create_transfer`.
-  /// - `signature` -- hex of the owner signature over `hash_to_sign`
-  ///   (Schnorr = 128 hex, eth/eddsa sized to their scheme). Omit to submit a
-  ///   blob that already carries its gateway proofs.
+  /// - `tx_blob` -- hex of the (unsigned) tx from `gateway_create_transfer` or
+  ///   `gateway_create_update`.
+  /// - `signature` -- hex of the owner signature over `hash_to_sign` (withdrawal)
+  ///   or `hash_to_sign_input` (update). Schnorr = 128 hex, eth/eddsa sized to
+  ///   their scheme. Omit to submit a blob that already carries its gateway proofs.
+  /// - `ownership_signature` -- UPDATE ONLY, and required there: hex of the
+  ///   signature over `hash_to_sign_ownership`. Both signatures come from the
+  ///   CURRENT owner key. Ignored for withdrawals.
   ///
   /// Output:
   /// - `tx_hash` -- hex of the broadcast transaction.
@@ -2813,8 +2819,54 @@ namespace cryptonote::rpc {
     {
       std::string tx_blob;
       std::string signature;
+      std::string ownership_signature; // update_gateway_address txs only
     } request;
   };
+
+  /// RPC: gateway/gateway_create_update
+  ///
+  /// Admin-only. Builds an UNSIGNED gateway descriptor update (HF22): replaces the
+  /// gateway's owner key and/or meta_info. The tx is self-funded — a single
+  /// txin_gateway spends `fee` from the gateway's own balance and there are no
+  /// outputs — so the node needs no wallet and no keys.
+  ///
+  /// Unlike a withdrawal this needs TWO signatures, both from the CURRENT owner
+  /// key (the new key only takes effect once the tx is applied), over separate
+  /// domain-separated messages: one authorizing the fee spend and one authorizing
+  /// the descriptor change. Sign both, then broadcast via `gateway_submit_transfer`
+  /// (`signature` = hash_to_sign_input, `ownership_signature` = hash_to_sign_ownership).
+  ///
+  /// The node NEVER handles an owner secret: it only ever returns an UNSIGNED tx.
+  ///
+  /// Inputs:
+  /// - `gateway_address` -- the gateway to update (gwB… address).
+  /// - `owner_key_type` -- new owner key type: "schnorr" (native), "eth" (secp256k1), or "eddsa".
+  /// - `owner_key` -- hex of the new owner key (64 for schnorr/eddsa, 66 for eth-compressed).
+  /// - `meta_info` -- (Optional) new descriptor meta string (max 255 bytes).
+  /// - `fee` -- fee to spend from the gateway's balance (must be > 0).
+  ///
+  /// Output:
+  /// - `gateway_id` -- hex of the resolved gateway id.
+  /// - `current_owner_key_type` -- the key type that must produce BOTH signatures.
+  /// - `current_owner_key` -- hex of the current owner key (what the signatures verify against).
+  /// - `unsigned_tx_blob` -- hex of the unsigned tx to sign + submit.
+  /// - `hash_to_sign_input` -- 64-char hex; authorizes spending the fee.
+  /// - `hash_to_sign_ownership` -- 64-char hex; authorizes the descriptor change.
+  /// - `fee` -- the fee.
+  /// - `status` -- Generic RPC error code. "OK" is the success value.
+  struct GATEWAY_CREATE_UPDATE : RPC_COMMAND
+  {
+    static constexpr auto names() { return NAMES("gateway_create_update"); }
+    struct request_parameters
+    {
+      std::string gateway_address;
+      std::string owner_key_type;
+      std::string owner_key;
+      std::string meta_info;
+      uint64_t fee = 0;
+    } request;
+  };
+
 
   // List of all supported rpc command structs to allow compile-time enumeration of all supported
   // RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
@@ -2827,6 +2879,7 @@ namespace cryptonote::rpc {
     GET_GATEWAY_HISTORY,
     GATEWAY_CREATE_TRANSFER,
     GATEWAY_SUBMIT_TRANSFER,
+    GATEWAY_CREATE_UPDATE,
     BANNED,
     FLUSH_CACHE,
     FLUSH_TRANSACTION_POOL,

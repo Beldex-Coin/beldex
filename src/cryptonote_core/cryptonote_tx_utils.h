@@ -287,6 +287,38 @@ namespace cryptonote
   // (vin/vout/extra) is final. Returns false on a type/key mismatch.
   bool sign_gateway_register_tx(network_type nettype, transaction& tx,
                                 const crypto::secret_key& gateway_skey);
+
+  // Build an UNSIGNED gateway descriptor update (HF22): replaces a gateway's
+  // owner key and/or meta_info. Self-funded — a single txin_gateway spends `fee`
+  // from the gateway's OWN balance and the tx has no outputs (update txs are
+  // exempt from the min-2-outputs rule), so the daemon can build it with no
+  // wallet and no keys. Being a pure-gateway tx it carries no RCT data and is
+  // balance-checked arithmetically (fee == Σin − Σout).
+  //
+  // Requires TWO signatures, both from the CURRENT owner key (the new owner key
+  // only takes effect once this tx is applied), over domain-separated messages:
+  //   hash_to_sign_input     = H(GW_INPUT_SIG || genesis || prefix)  -> authorizes spending the fee
+  //   hash_to_sign_ownership = H(GW_OWNERSHIP || genesis || prefix)  -> authorizes the descriptor change
+  // Attach both via finalize_gateway_update_tx (same nettype).
+  bool construct_gateway_update_tx(hf hf_version,
+                                   network_type nettype,
+                                   const crypto::public_key& gateway_id,
+                                   const gateway_owner_key_v& new_owner_key,
+                                   const std::string& meta_info,
+                                   uint64_t fee,
+                                   transaction& tx,
+                                   crypto::hash& hash_to_sign_input,
+                                   crypto::hash& hash_to_sign_ownership);
+
+  // Attach both current-owner signatures to an update built above (verifies each
+  // against its own message first). nettype must match construct_gateway_update_tx.
+  // Writes the canonical proof layout consensus expects: [ownership][input_sig].
+  bool finalize_gateway_update_tx(network_type nettype,
+                                  transaction& tx,
+                                  const gateway_owner_key_v& current_owner_key,
+                                  const gateway_owner_sig_v& input_sig,
+                                  const gateway_owner_sig_v& ownership_sig);
+
   struct gateway_wallet_destination
   {
     account_public_address addr; // main address only (v1: no subaddresses)
