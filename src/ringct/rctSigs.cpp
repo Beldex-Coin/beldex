@@ -1752,6 +1752,7 @@ namespace rct {
         CHECK_AND_ASSERT_MES(k.size() == rv.p.MGs.size(), false, "Mismatched k/MGs size");
         CHECK_AND_ASSERT_MES(k.size() == msout.c.size(), false, "Mismatched k/msout.c size");
         CHECK_AND_ASSERT_MES(rv.p.CLSAGs.empty(), false, "CLSAGs not empty for MLSAGs");
+        CHECK_AND_ASSERT_MES(sc_check(secret_key.bytes) == 0, false, "Invalid secret key scalar");
         if (rv.type == RCTType::Full)
         {
           CHECK_AND_ASSERT_MES(rv.p.MGs.size() == 1, false, "MGs not a single element");
@@ -1759,6 +1760,9 @@ namespace rct {
         for (size_t n = 0; n < indices.size(); ++n) {
             CHECK_AND_ASSERT_MES(indices[n] < rv.p.MGs[n].ss.size(), false, "Index out of range");
             CHECK_AND_ASSERT_MES(!rv.p.MGs[n].ss[indices[n]].empty(), false, "empty ss line");
+            CHECK_AND_ASSERT_MES(sc_check(k[n].bytes) == 0, false, "Invalid k scalar");
+            CHECK_AND_ASSERT_MES(sc_check(msout.c[n].bytes) == 0, false, "Invalid msout.c scalar");
+            CHECK_AND_ASSERT_MES(sc_isnonzero(msout.c[n].bytes) != 0, false, "msout.c scalar is zero");
         }
 
         // MLSAG: each player contributes a share to the secret-index ss: k - cc*secret_key_share
@@ -1778,12 +1782,17 @@ namespace rct {
         CHECK_AND_ASSERT_MES(k.size() == msout.c.size(), false, "Mismatched k/msout.c size");
         CHECK_AND_ASSERT_MES(rv.p.MGs.empty(), false, "MGs not empty for CLSAGs");
         CHECK_AND_ASSERT_MES(msout.c.size() == msout.mu_p.size(), false, "Bad mu_p size");
+        CHECK_AND_ASSERT_MES(sc_check(secret_key.bytes) == 0, false, "Invalid secret key scalar");
         for (size_t n = 0; n < indices.size(); ++n) {
             CHECK_AND_ASSERT_MES(indices[n] < rv.p.CLSAGs[n].s.size(), false, "Index out of range");
+            CHECK_AND_ASSERT_MES(sc_check(k[n].bytes) == 0, false, "Invalid k scalar");
+            CHECK_AND_ASSERT_MES(sc_check(msout.c[n].bytes) == 0, false, "Invalid msout.c scalar");
+            CHECK_AND_ASSERT_MES(sc_isnonzero(msout.c[n].bytes) != 0, false, "msout.c scalar is zero");
+            CHECK_AND_ASSERT_MES(sc_check(msout.mu_p[n].bytes) == 0, false, "Invalid msout.mu_p scalar");
         }
 
         // CLSAG: each player contributes a share to the secret-index ss: k - cc*mu_p*secret_key_share
-        // cc: msout.c[n], mu_p, msout.mu_p[n], secret_key_share: secret_key
+        // cc: msout.c[n], mu_p: msout.mu_p[n], secret_key_share: secret_key
         for (size_t n = 0; n < indices.size(); ++n) {
             rct::key diff, sk;
             sc_mul(sk.bytes, msout.mu_p[n].bytes, secret_key.bytes);
