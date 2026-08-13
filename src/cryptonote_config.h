@@ -111,6 +111,8 @@ namespace hashkey {
   inline constexpr unsigned char ENCRYPTED_PAYMENT_ID = 0x8d;
   inline constexpr unsigned char WALLET = 0x8c;
   inline constexpr unsigned char WALLET_CACHE = 0x8d;
+  inline constexpr unsigned char BACKGROUND_CACHE = 0x8e;
+  inline constexpr unsigned char BACKGROUND_KEYS_FILE = 0x8f;
   inline constexpr unsigned char RPC_PAYMENT_NONCE = 0x58;
   inline constexpr unsigned char MEMORY = 'k';
   inline constexpr std::string_view MULTISIG = "Multisig\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"sv;
@@ -204,6 +206,7 @@ enum class hf : uint8_t
     hf18_bns,
     hf19_enhance_bns, // provided EVM address in BNS
     hf20_bulletproof_plus,
+    hf21_bulletproof_plus,
 
     _next,
     none = 0

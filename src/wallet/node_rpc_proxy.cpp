@@ -110,9 +110,9 @@ bool NodeRPCProxy::get_info() const
       m_target_height = res.at("target_height").get<uint64_t>();
       auto it_block_weight_limit = res.find("block_weight_limit");
       if (it_block_weight_limit != res.end())
-        m_block_weight_limit = res.at("block_weight_limit");
+        m_block_weight_limit = res.at("block_weight_limit").get<uint64_t>();
       else
-        m_block_weight_limit = res.at("block_size_limit");
+        m_block_weight_limit = res.at("block_size_limit").get<uint64_t>();
       auto it_immutable_height = res.find("immutable_height");
         if (it_immutable_height != res.end())
             m_immutable_height = res.at("immutable_height").get<uint64_t>();

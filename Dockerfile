@@ -7,15 +7,13 @@
 # ./util/build_scripts/collect_from_docker_container.sh
 
 # builder stage
-FROM ubuntu:16.04 as builder
+FROM ubuntu:18.04 AS builder
 
 RUN set -ex && \
     apt-get update && \
     apt-get install -y curl apt-transport-https eatmydata && \
-    echo 'deb https://apt.kitware.com/ubuntu/ xenial main' >/etc/apt/sources.list.d/kitware-cmake.list && \
-    curl https://apt.kitware.com/keys/kitware-archive-latest.asc | apt-key add - && \
-    apt-get update && \
     eatmydata apt-get --no-install-recommends --yes install \
+        bash \
         ca-certificates \
         cmake \
         g++ \
@@ -65,6 +63,9 @@ RUN set -ex \
     && cd libsodium \
     && test `git rev-parse HEAD` = ${SODIUM_HASH} || exit 1 \
     && ./autogen.sh \
+    && cp $(find /usr/share -name config.guess | head -n 1) build-aux/config.guess \
+    && cp $(find /usr/share -name config.sub | head -n 1) build-aux/config.sub \
+    && chmod +x build-aux/config.sub build-aux/config.guess \
     && ./configure --enable-static --disable-shared --prefix=/usr \
     && make -j$(nproc) \
     && make check \
@@ -110,7 +111,11 @@ RUN set -ex \
 RUN set -ex \
     && apt-get update -y \
     && apt install software-properties-common -y \
-    && add-apt-repository ppa:ubuntu-toolchain-r/test \
+    && for attempt in 1 2 3; do \
+         add-apt-repository -y ppa:ubuntu-toolchain-r/test && break; \
+         if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+         sleep 5; \
+       done \
     && apt-get update -y \
     && apt install gcc-7 g++-7 gcc-8 g++-8 gcc-9 g++-9 -y \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90 --slave /usr/bin/g++ g++ /usr/bin/g++-9 --slave /usr/bin/gcov gcov /usr/bin/gcov-9 \
@@ -130,6 +135,10 @@ COPY . .
 
 RUN set -ex && \
     git submodule update --init --recursive && \
+    sed -i 's/add_library(_oxenmq_external_oxenc INTERFACE IMPORTED)//' external/loki-mq/CMakeLists.txt && \
+    sed -i 's/target_link_libraries(_oxenmq_external_oxenc INTERFACE oxenc::oxenc)//' external/loki-mq/CMakeLists.txt && \
+    sed -i 's/target_link_libraries(oxenmq PUBLIC _oxenmq_external_oxenc)/target_link_libraries(oxenmq PUBLIC oxenc::oxenc)/' external/loki-mq/CMakeLists.txt && \
+    sed -i 's/add_subdirectory(Catch2)/if(BUILD_TESTS)\n  add_subdirectory(Catch2)\nendif()/' external/CMakeLists.txt && \
     rm -rf build/release && mkdir -p build/release && cd build/release && \
     cmake -DSTATIC=ON -DARCH=x86-64 -DHTTPS_AND_SSL=OFF -DCMAKE_BUILD_TYPE=Release ../.. && \
     make -j$(nproc) VERBOSE=1
@@ -138,7 +147,7 @@ RUN set -ex && \
     ldd /src/build/release/bin/beldexd
 
 # runtime stage
-FROM ubuntu:16.04
+FROM ubuntu:18.04
 
 RUN set -ex && \
     apt-get update && \

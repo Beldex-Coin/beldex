@@ -49,6 +49,8 @@ Proof::Proof(const std::string& serialized_proof)
     const bt_dict bt_proof = bt_deserialize<bt_dict>(serialized_proof);
     //mnode_version <X,X,X>
     const bt_list& bt_version = var::get<bt_list>(bt_proof.at("v"));
+    if (bt_version.size() != version.size())
+      throw std::invalid_argument("uptime proof: invalid mnode_version list size");
     int k = 0;
     for (bt_value const &i: bt_version){
       version[k++] = static_cast<uint16_t>(get_int<unsigned>(i));
@@ -72,12 +74,16 @@ Proof::Proof(const std::string& serialized_proof)
     storage_omq_port = get_int<unsigned>(bt_proof.at("sop"));
     //storage_version
     const bt_list& bt_storage_version = var::get<bt_list>(bt_proof.at("sv"));
+    if (bt_storage_version.size() != storage_server_version.size())
+      throw std::invalid_argument("uptime proof: invalid storage_version list size");
     k = 0;
     for (bt_value const &i: bt_storage_version){
       storage_server_version[k++] = static_cast<uint16_t>(get_int<unsigned>(i));
     }
     //belnet_version
     const bt_list& bt_belnet_version = var::get<bt_list>(bt_proof.at("lv"));
+    if (bt_belnet_version.size() != belnet_version.size())
+      throw std::invalid_argument("uptime proof: invalid belnet_version list size");
     k = 0;
     for (bt_value const &i: bt_belnet_version){
       belnet_version[k++] = static_cast<uint16_t>(get_int<unsigned>(i));

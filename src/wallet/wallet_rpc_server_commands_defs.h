@@ -50,7 +50,7 @@
 // advance which version they will stop working with
 // Don't go over 32767 for any of these
 #define WALLET_RPC_VERSION_MAJOR 1
-#define WALLET_RPC_VERSION_MINOR 17
+#define WALLET_RPC_VERSION_MINOR 18
 #define MAKE_WALLET_RPC_VERSION(major,minor) (((major)<<16)|(minor))
 #define WALLET_RPC_VERSION MAKE_WALLET_RPC_VERSION(WALLET_RPC_VERSION_MAJOR, WALLET_RPC_VERSION_MINOR)
 
@@ -84,7 +84,6 @@ namespace tools::wallet_rpc {
       return {std::string_view{names, N-1}...};
     }
   }
-
 
   BELDEX_RPC_DOC_INTROSPECT
   // Return the wallet's balance.
@@ -1366,7 +1365,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Export transfers to csv
-  struct EXPORT_TRANSFERS : RPC_COMMAND
+  struct EXPORT_TRANSFERS : RESTRICTED
   {
     static constexpr auto names() { return NAMES("export_transfers"); }
 
@@ -1420,7 +1419,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Export a signed set of key images.
-  struct EXPORT_KEY_IMAGES : RPC_COMMAND
+  struct EXPORT_KEY_IMAGES : RESTRICTED
   {
     static constexpr auto names() { return NAMES("export_key_images"); }
 
@@ -1669,7 +1668,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Start mining in the beldex daemon.
-  struct START_MINING : RPC_COMMAND
+  struct START_MINING : RESTRICTED
   {
     static constexpr auto names() { return NAMES("start_mining"); }
 
@@ -1685,7 +1684,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Stop mining in the beldex daemon.
-  struct STOP_MINING : RPC_COMMAND
+  struct STOP_MINING : RESTRICTED
   {
     static constexpr auto names() { return NAMES("stop_mining"); }
 
@@ -1754,7 +1753,7 @@ BELDEX_RPC_DOC_INTROSPECT
 
   BELDEX_RPC_DOC_INTROSPECT
   // Close the currently opened wallet, after trying to save it.
-  struct CLOSE_WALLET : RPC_COMMAND
+  struct CLOSE_WALLET : RESTRICTED
   {
     static constexpr auto names() { return NAMES("close_wallet"); }
 
@@ -2586,6 +2585,62 @@ This command is only required if the open wallet is one of the owners of a BNS r
     };
   };
   
+  BELDEX_RPC_DOC_INTROSPECT
+  struct SETUP_BACKGROUND_SYNC : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("setup_background_sync"); }
+
+    struct request
+    {
+      std::string background_sync_type;
+      std::string wallet_password;
+      std::string background_cache_password;
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
+  BELDEX_RPC_DOC_INTROSPECT
+  struct START_BACKGROUND_SYNC : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("start_background_sync"); }
+
+    struct request
+    {
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
+  BELDEX_RPC_DOC_INTROSPECT
+  struct STOP_BACKGROUND_SYNC : RESTRICTED
+  {
+    static constexpr auto names() { return NAMES("stop_background_sync"); }
+
+    struct request
+    {
+      std::string wallet_password;
+      std::string seed;
+      std::string seed_offset;
+
+      KV_MAP_SERIALIZABLE
+    };
+
+    struct response
+    {
+      KV_MAP_SERIALIZABLE
+    };
+  };
+
   /// List of all supported rpc command structs to allow compile-time enumeration of all supported
   /// RPC types.  Every type added above that has an RPC endpoint needs to be added here, and needs
   /// a core_rpc_server::invoke() overload that takes a <TYPE>::request and returns a
@@ -2681,6 +2736,9 @@ This command is only required if the open wallet is one of the owners of a BNS r
     SET_DAEMON,
     SET_LOG_LEVEL,
     SET_LOG_CATEGORIES,
+    SETUP_BACKGROUND_SYNC,
+    START_BACKGROUND_SYNC,
+    STOP_BACKGROUND_SYNC,
     BNS_BUY_MAPPING,
     BNS_UPDATE_MAPPING,
     BNS_RENEW_MAPPING,

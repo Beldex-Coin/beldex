@@ -382,6 +382,9 @@ class WalletTest():
         assert self.file_exists('test1')
 
         wallet.close_wallet()
+        wallet.open_wallet(filename = 'test1', password = '')
+        wallet.close_wallet()
+
         self.remove_wallet_files('test1')
 
 

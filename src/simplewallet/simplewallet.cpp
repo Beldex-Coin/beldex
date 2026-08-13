@@ -125,6 +125,19 @@ using sw = cryptonote::simple_wallet;
 
 #define PRINT_USAGE(usage_help) fail_msg_writer() << boost::format(tr("usage: %s")) % usage_help;
 
+#define MAX_MNEW_ADDRESSES 1000
+
+#define CHECK_IF_BACKGROUND_SYNCING(msg) \
+  do \
+  { \
+    if (m_wallet->is_background_wallet() || m_wallet->is_background_syncing()) \
+    { \
+      std::string type = m_wallet->is_background_wallet() ? "background wallet" : "background syncing wallet"; \
+      fail_msg_writer() << boost::format(tr("%s %s")) % type % msg; \
+      return false; \
+    } \
+  } while (0)
+
 namespace
 {
   const auto arg_wallet_file = wallet_args::arg_wallet_file();
@@ -334,7 +347,7 @@ namespace
     auto pwd_container = tools::password_container::prompt(verify, prompt);
     if (!pwd_container)
     {
-      tools::fail_msg_writer() << sw::tr("failed to read wallet password");
+      tools::fail_msg_writer() << sw::tr("failed to read password");
     }
 #endif
     return pwd_container;
@@ -343,6 +356,11 @@ namespace
   std::optional<tools::password_container> default_password_prompter(bool verify)
   {
     return password_prompter(verify ? sw::tr("Enter a new password for the wallet") : sw::tr("Wallet password"), verify);
+  }
+
+  std::optional<tools::password_container> background_sync_cache_password_prompter(bool verify)
+  {
+    return password_prompter(verify ? sw::tr("Enter a custom password for the background sync cache") : sw::tr("Background sync cache password"), verify);
   }
 
   inline std::string interpret_rpc_response(bool ok, const std::string& status)
@@ -442,6 +460,41 @@ namespace
     }
     fail_msg_writer() << cryptonote::simple_wallet::tr("failed to parse refresh type");
     return false;
+  }
+
+  const struct
+  {
+    const char *name;
+    tools::wallet2::BackgroundSyncType background_sync_type;
+  } background_sync_type_names[] =
+  {
+    { "off", tools::wallet2::BackgroundSyncOff },
+    { "reuse-wallet-password", tools::wallet2::BackgroundSyncReusePassword },
+    { "custom-background-password", tools::wallet2::BackgroundSyncCustomPassword },
+  };
+
+  bool parse_background_sync_type(const std::string &s, tools::wallet2::BackgroundSyncType &background_sync_type)
+  {
+    for (size_t n = 0; n < sizeof(background_sync_type_names) / sizeof(background_sync_type_names[0]); ++n)
+    {
+      if (s == background_sync_type_names[n].name)
+      {
+        background_sync_type = background_sync_type_names[n].background_sync_type;
+        return true;
+      }
+    }
+    fail_msg_writer() << cryptonote::simple_wallet::tr("failed to parse background sync type");
+    return false;
+  }
+
+  std::string get_background_sync_type_name(tools::wallet2::BackgroundSyncType type)
+  {
+    for (size_t n = 0; n < sizeof(background_sync_type_names) / sizeof(background_sync_type_names[0]); ++n)
+    {
+      if (type == background_sync_type_names[n].background_sync_type)
+        return background_sync_type_names[n].name;
+    }
+    return "invalid";
   }
 
   std::string get_refresh_type_name(tools::wallet2::RefreshType type)
@@ -719,6 +772,7 @@ bool simple_wallet::spendkey(const std::vector<std::string> &args/* = std::vecto
     fail_msg_writer() << tr("wallet is watch-only and has no spend key");
     return true;
   }
+  CHECK_IF_BACKGROUND_SYNCING("has no spend key");
   // don't log
   rdln::suspend_readline pause_readline;
   if (m_wallet->key_on_device()) {
@@ -758,6 +812,7 @@ bool simple_wallet::print_seed(bool encrypted)
     fail_msg_writer() << tr("wallet is watch-only and has no seed");
     return true;
   }
+  CHECK_IF_BACKGROUND_SYNCING("has no seed");
 
   multisig = m_wallet->multisig(&ready);
   if (multisig)
@@ -835,6 +890,7 @@ bool simple_wallet::seed_set_language(const std::vector<std::string> &args/* = s
     fail_msg_writer() << tr("wallet is watch-only and has no seed");
     return true;
   }
+  CHECK_IF_BACKGROUND_SYNCING("has no seed");
 
   epee::wipeable_string password;
   {
@@ -962,6 +1018,7 @@ bool simple_wallet::prepare_multisig_main(const std::vector<std::string> &args, 
     fail_msg_writer() << tr("wallet is watch-only and cannot be made multisig");
     return false;
   }
+  CHECK_IF_BACKGROUND_SYNCING("cannot be made multisig");
 
   if(m_wallet->get_num_transfer_details())
   {
@@ -2060,6 +2117,7 @@ bool simple_wallet::save_known_rings(const std::vector<std::string> &args)
 
 bool simple_wallet::freeze_thaw(const std::vector<std::string> &args, bool freeze)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot freeze/thaw");
   if (args.empty())
   {
     fail_msg_writer() << fmt::format(tr("usage: {} <key_image>|<pubkey>"), (freeze ? "freeze" : "thaw"));
@@ -2099,6 +2157,7 @@ bool simple_wallet::thaw(const std::vector<std::string> &args)
 
 bool simple_wallet::frozen(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot see frozen key images");
   if (args.empty())
   {
     size_t ntd = m_wallet->get_num_transfer_details();
@@ -2523,6 +2582,52 @@ bool simple_wallet::set_track_uses(const std::vector<std::string> &args/* = std:
   return true;
 }
 
+bool simple_wallet::setup_background_sync(const std::vector<std::string> &args/* = std::vector<std::string>()*/)
+{
+  if (m_wallet->watch_only())
+  {
+    fail_msg_writer() << tr("background sync not implemented for watch only wallet");
+    return true;
+  }
+  if (m_wallet->key_on_device())
+  {
+    fail_msg_writer() << tr("command not supported by HW wallet");
+    return true;
+  }
+
+  tools::wallet2::BackgroundSyncType background_sync_type;
+  if (!parse_background_sync_type(args[1], background_sync_type))
+  {
+    fail_msg_writer() << tr("invalid option");
+    return true;
+  }
+
+  const auto pwd_container = get_and_verify_password();
+  if (!pwd_container)
+    return true;
+
+  try
+  {
+    std::optional<epee::wipeable_string> background_cache_password = std::nullopt;
+    if (background_sync_type == tools::wallet2::BackgroundSyncCustomPassword)
+    {
+      const auto background_pwd_container = background_sync_cache_password_prompter(true);
+      if (!background_pwd_container)
+        return true;
+      background_cache_password = background_pwd_container->password();
+    }
+
+    LOCK_IDLE_SCOPE();
+    m_wallet->setup_background_sync(background_sync_type, pwd_container->password(), background_cache_password);
+  }
+  catch (const std::exception &e)
+  {
+    fail_msg_writer() << tr("Error setting background sync type: ") << e.what();
+  }
+
+  return true;
+}
+
 bool simple_wallet::set_inactivity_lock_timeout(const std::vector<std::string> &args/* = std::vector<std::string>()*/)
 {
 #ifdef _WIN32
@@ -2781,6 +2886,8 @@ simple_wallet::simple_wallet()
    Ignore outputs of amount below this threshold when spending.
  track-uses <1|0>
    Whether to keep track of owned outputs uses.
+ background-sync <off|reuse-wallet-password|custom-background-password>\n
+   Set this to enable scanning in the background with just the view key while the wallet is locked.\n
  device-name <device_name[:device_spec]>
    Device name for hardware wallet.
  export-format <binary"|"ascii">
@@ -3223,6 +3330,7 @@ bool simple_wallet::set_variable(const std::vector<std::string> &args)
     success_msg_writer() << "ignore-outputs-above = " << cryptonote::print_money(m_wallet->ignore_outputs_above());
     success_msg_writer() << "ignore-outputs-below = " << cryptonote::print_money(m_wallet->ignore_outputs_below());
     success_msg_writer() << "track-uses = " << m_wallet->track_uses();
+    success_msg_writer() << "background-sync = " << get_background_sync_type_name(m_wallet->background_sync_type());
     success_msg_writer() << "device_name = " << m_wallet->device_name();
     success_msg_writer() << "inactivity-lock-timeout = " << m_wallet->inactivity_lock_timeout().count()
 #ifdef _WIN32
@@ -3233,6 +3341,7 @@ bool simple_wallet::set_variable(const std::vector<std::string> &args)
   }
   else
   {
+    CHECK_IF_BACKGROUND_SYNCING("cannot change wallet settings");
 
 #define CHECK_SIMPLE_VARIABLE(name, f, help) do \
   if (args[0] == name) { \
@@ -3280,6 +3389,7 @@ bool simple_wallet::set_variable(const std::vector<std::string> &args)
     CHECK_SIMPLE_VARIABLE("ignore-outputs-above", set_ignore_outputs_above, tr("amount"));
     CHECK_SIMPLE_VARIABLE("ignore-outputs-below", set_ignore_outputs_below, tr("amount"));
     CHECK_SIMPLE_VARIABLE("track-uses", set_track_uses, tr("0 or 1"));
+    CHECK_SIMPLE_VARIABLE("background-sync", setup_background_sync, tr("off (default); reuse-wallet-password (reuse the wallet password to encrypt the background cache); custom-background-password (use a custom background password to encrypt the background cache)"));
     CHECK_SIMPLE_VARIABLE("inactivity-lock-timeout", set_inactivity_lock_timeout, tr("unsigned integer (seconds, 0 to disable)"));
     CHECK_SIMPLE_VARIABLE("device-name", set_device_name, tr("<device_name[:device_spec]>"));
   }
@@ -4217,7 +4327,10 @@ std::string simple_wallet::get_mnemonic_language()
 //----------------------------------------------------------------------------------------------------
 std::optional<tools::password_container> simple_wallet::get_and_verify_password() const
 {
-  auto pwd_container = default_password_prompter(m_wallet_file.empty());
+  const bool verify = m_wallet_file.empty();
+  auto pwd_container = (m_wallet->is_background_wallet() && m_wallet->background_sync_type() == tools::wallet2::BackgroundSyncCustomPassword)
+    ? background_sync_cache_password_prompter(verify)
+    : default_password_prompter(verify);
   if (!pwd_container)
     return std::nullopt;
 
@@ -4518,6 +4631,8 @@ std::optional<epee::wipeable_string> simple_wallet::open_wallet(const boost::pro
       prefix = tr("Opened watch-only wallet");
     else if (m_wallet->multisig(&ready, &threshold, &total))
       prefix = fmt::format(tr("Opened {}/{} multisig wallet {}"), threshold, total, ready ? "" : " (not yet finalized)");
+    else if (m_wallet->is_background_wallet())
+      prefix = tr("Opened background wallet");
     else
       prefix = tr("Opened wallet");
     message_writer(epee::console_color_green, true) <<
@@ -5387,6 +5502,7 @@ bool simple_wallet::show_blockchain_height(const std::vector<std::string>& args)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::rescan_spent(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot rescan spent");
   if (!m_wallet->is_trusted_daemon())
   {
     fail_msg_writer() << tr("this command requires a trusted daemon. Enable with --trusted-daemon");
@@ -5679,14 +5795,38 @@ void simple_wallet::check_for_inactivity_lock(bool user)
 )";
     }
 
+    bool started_background_sync = false;
+    if (!m_wallet->is_background_wallet() &&
+        m_wallet->background_sync_type() != tools::wallet2::BackgroundSyncOff)
+    {
+      LOCK_IDLE_SCOPE();
+      m_wallet->start_background_sync();
+      started_background_sync = true;
+    }
+
     while (1)
     {
       const char *inactivity_msg = user ? "" : tr("Locked due to inactivity.");
-      tools::msg_writer() << inactivity_msg << (inactivity_msg[0] ? " " : "") << tr("The wallet password is required to unlock the console.");
+      tools::msg_writer() << inactivity_msg << (inactivity_msg[0] ? " " : "") << (
+        (m_wallet->is_background_wallet() && m_wallet->background_sync_type() == tools::wallet2::BackgroundSyncCustomPassword)
+            ? tr("The background password is required to unlock the console.")
+            : tr("The wallet password is required to unlock the console.")
+      );
+
+      if (m_wallet->is_background_syncing())
+        tools::msg_writer() << tr("\nSyncing in the background while locked...") << std::endl;
       try
       {
-        if (get_and_verify_password())
+        const auto pwd_container = get_and_verify_password();
+        if (pwd_container)
+        {
+          if (started_background_sync)
+          {
+            LOCK_IDLE_SCOPE();
+            m_wallet->stop_background_sync(pwd_container->password());
+          }
           break;
+        }
       }
       catch (...) { /* do nothing, just let the loop loop */ }
     }
@@ -5882,6 +6022,7 @@ bool simple_wallet::confirm_and_send_tx(std::vector<cryptonote::address_parse_in
 //  "transfer [index=<N1>[,<N2>,...]] [<priority>] <address> <amount> [<payment_id>]"
 bool simple_wallet::transfer_main(Transfer transfer_type, const std::vector<std::string> &args_, bool called_by_mms)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot transfer");
   if (!try_connect_to_daemon())
     return false;
 
@@ -6115,6 +6256,7 @@ bool simple_wallet::transfer_main(Transfer transfer_type, const std::vector<std:
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::transfer(const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot transfer");
   return transfer_main(Transfer::Normal, args_, false);
 }
 //----------------------------------------------------------------------------------------------------
@@ -7376,7 +7518,7 @@ bool simple_wallet::bns_by_owner(const std::vector<std::string>& args)
     std::string_view name;
     std::string value_bchat, value_wallet, value_belnet, value_eth;
 
-    if (auto got = cache.find(entry["name_hash"]); got != cache.end())
+    if (auto got = cache.find(entry["name_hash"].get<std::string>()); got != cache.end())
     {
       name = got->second.name;
 
@@ -7552,6 +7694,7 @@ bool simple_wallet::coin_burn(std::vector<std::string> args)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::sweep_unmixable(const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot sweep");
   if (!try_connect_to_daemon())
     return true;
 
@@ -7791,6 +7934,7 @@ bool simple_wallet::sweep_main_internal(sweep_type_t sweep_type, std::vector<too
 
 bool simple_wallet::sweep_main(uint32_t account, uint64_t below, Transfer transfer_type, const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot sweep");
   auto print_usage = [this, account, below]()
   {
     if (below)
@@ -7949,6 +8093,7 @@ bool simple_wallet::sweep_main(uint32_t account, uint64_t below, Transfer transf
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::sweep_single(const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot sweep");
   if (!try_connect_to_daemon())
     return true;
 
@@ -8045,11 +8190,13 @@ bool simple_wallet::sweep_single(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::sweep_all(const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot sweep");
   return sweep_main(m_current_subaddress_account, 0, Transfer::Normal, args_);
 }
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::sweep_account(const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot sweep");
   auto local_args = args_;
   if (local_args.empty())
   {
@@ -8070,6 +8217,7 @@ bool simple_wallet::sweep_account(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::sweep_below(const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot sweep");
   uint64_t below = 0;
   if (args_.size() < 1)
   {
@@ -8086,6 +8234,7 @@ bool simple_wallet::sweep_below(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::accept_loaded_tx(const std::function<size_t()> get_num_txes, const std::function<const wallet::tx_construction_data&(size_t)> &get_tx, const std::string &extra_message)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot load tx");
   // gather info to ask the user
   uint64_t amount = 0, amount_to_dests = 0, change = 0;
   size_t min_ring_size = ~0;
@@ -8264,6 +8413,8 @@ bool simple_wallet::sign_transfer(const std::vector<std::string> &args_)
      fail_msg_writer() << tr("This is a watch only wallet");
      return true;
   }
+  CHECK_IF_BACKGROUND_SYNCING("cannot sign transfer");
+
   if (args_.size() > 1 || (args_.size() == 1 && args_[0] != "export_raw"))
   {
     PRINT_USAGE(USAGE_SIGN_TRANSFER);
@@ -8351,6 +8502,8 @@ bool simple_wallet::submit_transfer(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::get_tx_key(const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot get tx key");
+
   std::vector<std::string> local_args = args_;
 
   if (m_wallet->key_on_device() && m_wallet->get_account().get_device().get_type() != hw::device::type::TREZOR)
@@ -8394,6 +8547,8 @@ bool simple_wallet::get_tx_key(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::set_tx_key(const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot set tx key");
+
   std::vector<std::string> local_args = args_;
 
   if(local_args.size() != 2) {
@@ -8452,6 +8607,8 @@ bool simple_wallet::set_tx_key(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::get_tx_proof(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot get tx proof");
+
   if (args.size() != 2 && args.size() != 3)
   {
     PRINT_USAGE(USAGE_GET_TX_PROOF);
@@ -8658,6 +8815,7 @@ bool simple_wallet::check_tx_proof(const std::vector<std::string> &args)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::get_spend_proof(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot get spend proof");
   if (m_wallet->key_on_device())
   {
     fail_msg_writer() << tr("command not supported by HW wallet");
@@ -8742,6 +8900,7 @@ bool simple_wallet::check_spend_proof(const std::vector<std::string> &args)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::get_reserve_proof(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot get reserve proof");
   if (m_wallet->key_on_device())
   {
     fail_msg_writer() << tr("command not supported by HW wallet");
@@ -9208,6 +9367,8 @@ bool simple_wallet::unspent_outputs(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::rescan_blockchain(const std::vector<std::string> &args_)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot rescan");
+
   uint64_t start_height = 0;
   ResetType reset_type = ResetSoft;
 
@@ -9492,6 +9653,7 @@ bool simple_wallet::account(const std::vector<std::string> &args/* = std::vector
   if (command == "new")
   {
     // create a new account and switch to it
+    CHECK_IF_BACKGROUND_SYNCING("cannot create new account");
     std::string label = tools::join(" ", local_args);
     if (label.empty())
       label = tr("(Untitled account)");
@@ -9522,6 +9684,7 @@ bool simple_wallet::account(const std::vector<std::string> &args/* = std::vector
   else if (command == "label" && local_args.size() >= 1)
   {
     // set label of the specified account
+    CHECK_IF_BACKGROUND_SYNCING("cannot modify account");
     uint32_t index_major;
     if (!epee::string_tools::get_xtype_from_string(index_major, local_args[0]))
     {
@@ -9543,6 +9706,7 @@ bool simple_wallet::account(const std::vector<std::string> &args/* = std::vector
   }
   else if (command == "tag" && local_args.size() >= 2)
   {
+    CHECK_IF_BACKGROUND_SYNCING("cannot modify account");
     const std::string tag = local_args[0];
     std::set<uint32_t> account_indices;
     for (size_t i = 1; i < local_args.size(); ++i)
@@ -9567,6 +9731,7 @@ bool simple_wallet::account(const std::vector<std::string> &args/* = std::vector
   }
   else if (command == "untag" && local_args.size() >= 1)
   {
+    CHECK_IF_BACKGROUND_SYNCING("cannot modify account");
     std::set<uint32_t> account_indices;
     for (size_t i = 0; i < local_args.size(); ++i)
     {
@@ -9590,6 +9755,7 @@ bool simple_wallet::account(const std::vector<std::string> &args/* = std::vector
   }
   else if (command == "tag_description" && local_args.size() >= 1)
   {
+    CHECK_IF_BACKGROUND_SYNCING("cannot modify account");
     const std::string tag = local_args[0];
     std::string description;
     if (local_args.size() > 1)
@@ -9709,6 +9875,7 @@ bool simple_wallet::print_address(const std::vector<std::string> &args/* = std::
   }
   else if (local_args[0] == "new")
   {
+    CHECK_IF_BACKGROUND_SYNCING("cannot add address");
     local_args.erase(local_args.begin());
     std::string label;
     if (local_args.size() > 0)
@@ -9719,8 +9886,53 @@ bool simple_wallet::print_address(const std::vector<std::string> &args/* = std::
     print_address_sub(m_wallet->get_num_subaddresses(m_current_subaddress_account) - 1);
     m_wallet->device_show_address(m_current_subaddress_account, m_wallet->get_num_subaddresses(m_current_subaddress_account) - 1, std::nullopt);
   }
+  else if (local_args[0] == "mnew")
+  {
+    CHECK_IF_BACKGROUND_SYNCING("cannot add addresses");
+    local_args.erase(local_args.begin());
+    if (local_args.size() != 1)
+    {
+      fail_msg_writer() << tr("Expected exactly one argument for the amount of new addresses");
+      return true;
+    }
+    uint32_t n;
+    if (!epee::string_tools::get_xtype_from_string(n, local_args[0]))
+    {
+      fail_msg_writer() << tr("failed to parse the amount of new addresses: ") << local_args[0];
+      return true;
+    }
+    if (n > MAX_MNEW_ADDRESSES)
+    {
+      fail_msg_writer() << tr("the amount of new addresses must be lower or equal to ") << MAX_MNEW_ADDRESSES;
+      return true;
+    }
+    for (uint32_t i = 0; i < n; ++i)
+    {
+      m_wallet->add_subaddress(m_current_subaddress_account, tr("(Untitled address)"));
+      print_address_sub(m_wallet->get_num_subaddresses(m_current_subaddress_account) - 1);
+    }
+  }
+  else if (local_args[0] == "one-off")
+  {
+    CHECK_IF_BACKGROUND_SYNCING("cannot add address");
+    local_args.erase(local_args.begin());
+    if (local_args.size() != 2)
+    {
+      fail_msg_writer() << tr("Expected exactly two arguments for index");
+      return true;
+    }
+    uint32_t major, minor;
+    if (!epee::string_tools::get_xtype_from_string(major, local_args[0]) || !epee::string_tools::get_xtype_from_string(minor, local_args[1]))
+    {
+      fail_msg_writer() << tr("failed to parse index: ") << local_args[0] << " " << local_args[1];
+      return true;
+    }
+    m_wallet->create_one_off_subaddress({major, minor});
+    success_msg_writer() << boost::format(tr("Address at %u %u: %s")) % major % minor % m_wallet->get_subaddress_as_str({major, minor});
+  }
   else if (local_args.size() >= 2 && local_args[0] == "label")
   {
+    CHECK_IF_BACKGROUND_SYNCING("cannot modify address");
     if (!epee::string_tools::get_xtype_from_string(index, local_args[1]))
     {
       fail_msg_writer() << tr("failed to parse index: ") << local_args[1];
@@ -9867,6 +10079,7 @@ bool simple_wallet::print_integrated_address(const std::vector<std::string> &arg
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::address_book(const std::vector<std::string> &args/* = std::vector<std::string>()*/)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot get address book");
   if (args.size() == 0)
   {
   }
@@ -9927,6 +10140,8 @@ bool simple_wallet::address_book(const std::vector<std::string> &args/* = std::v
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::set_tx_note(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot set tx note");
+
   if (args.size() == 0)
   {
     PRINT_USAGE(USAGE_SET_TX_NOTE);
@@ -9954,6 +10169,8 @@ bool simple_wallet::set_tx_note(const std::vector<std::string> &args)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::get_tx_note(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot get tx note");
+
   if (args.size() != 1)
   {
     PRINT_USAGE(USAGE_GET_TX_NOTE);
@@ -9978,6 +10195,8 @@ bool simple_wallet::get_tx_note(const std::vector<std::string> &args)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::set_description(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot set description");
+
   // 0 arguments allowed, for setting the description to empty string
 
   std::string description = "";
@@ -9994,6 +10213,8 @@ bool simple_wallet::set_description(const std::vector<std::string> &args)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::get_description(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot get description");
+
   if (args.size() != 0)
   {
     PRINT_USAGE(USAGE_GET_DESCRIPTION);
@@ -10051,7 +10272,9 @@ bool simple_wallet::wallet_info(const std::vector<std::string> &args)
   if (m_wallet->watch_only())
     type = tr("Watch only");
   else if (m_wallet->multisig(&ready, &threshold, &total))
-    type = (fmt::format(tr("{}/{} multisig{}"), threshold, total, (ready ? "" : " (not yet finalized)"))); 
+    type = (fmt::format(tr("{}/{} multisig{}"), threshold, total, (ready ? "" : " (not yet finalized)")));
+  else if (m_wallet->is_background_wallet())
+    type = tr("Background wallet");
   else
     type = tr("Normal");
   message_writer() << tr("Type: ") << type;
@@ -10092,6 +10315,8 @@ bool simple_wallet::sign_string(std::string_view value, const subaddress_index& 
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::sign(const std::vector<std::string> &args)
 {
+  CHECK_IF_BACKGROUND_SYNCING("cannot sign");
+
   if (args.size() != 1 && args.size() != 2)
   {
     PRINT_USAGE(USAGE_SIGN);
@@ -10205,6 +10430,8 @@ bool simple_wallet::export_key_images(const std::vector<std::string> &args)
     fail_msg_writer() << tr("command not supported by HW wallet");
     return true;
   }
+  CHECK_IF_BACKGROUND_SYNCING("cannot export key images");
+
   if (args.size() != 1 && args.size() != 2)
   {
     PRINT_USAGE(USAGE_EXPORT_KEY_IMAGES);
@@ -10250,6 +10477,7 @@ bool simple_wallet::import_key_images(const std::vector<std::string> &args)
     fail_msg_writer() << tr("command not supported by HW wallet");
     return true;
   }
+  CHECK_IF_BACKGROUND_SYNCING("cannot import key images");
   if (!m_wallet->is_trusted_daemon())
   {
     fail_msg_writer() << tr("this command requires a trusted daemon. Enable with --trusted-daemon");
@@ -10358,6 +10586,7 @@ bool simple_wallet::export_outputs(const std::vector<std::string> &args)
     fail_msg_writer() << tr("command not supported by HW wallet");
     return true;
   }
+  CHECK_IF_BACKGROUND_SYNCING("cannot export outputs");
 
   if (args.size() >= 3 || args.empty())
   {
@@ -10407,6 +10636,7 @@ bool simple_wallet::import_outputs(const std::vector<std::string> &args)
     fail_msg_writer() << tr("command not supported by HW wallet");
     return true;
   }
+  CHECK_IF_BACKGROUND_SYNCING("cannot import outputs");
   if (args.size() != 1)
   {
     PRINT_USAGE(USAGE_IMPORT_OUTPUTS);
