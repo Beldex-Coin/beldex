@@ -13038,7 +13038,9 @@ bool wallet2::get_tx_key(const crypto::hash &txid, crypto::secret_key &tx_key, s
   if (tx_key_data.tx_prefix_hash.empty())
   {
     nlohmann::json get_transactions_params{
-      {"txs_hashes", { tools::type_to_hex(txid) }}
+      {"txs_hashes", { tools::type_to_hex(txid) }},
+      {"data", true},
+      {"split", true}
     };
     auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
 
