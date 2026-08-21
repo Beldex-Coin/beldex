@@ -672,16 +672,21 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg)
       auto &value  = quorum[msg.quorum_position];
       if (value) return;
 
-      if (auto const &hash = context.transient.random_value_hashes.wait.data[msg.quorum_position]; hash)
+      auto const &hash = context.transient.random_value_hashes.wait.data[msg.quorum_position];
+      if (!hash)
       {
-        auto derived = blake2b_hash(msg.random_value.value.data, sizeof(msg.random_value.value.data));
-        if (derived != *hash)
-        {
-          MTRACE(log_prefix(context) << "Dropping " << msg_source_string(context, msg)
-                                    << ". Rederived random value hash " << derived << " does not match original hash "
-                                    << *hash);
-          return;
-        }
+        MTRACE(log_prefix(context) << "Dropping " << msg_source_string(context, msg)
+                                  << ". No random value hash was committed for this quorum position");
+        return;
+      }
+
+      auto derived = blake2b_hash(msg.random_value.value.data, sizeof(msg.random_value.value.data));
+      if (derived != *hash)
+      {
+        MTRACE(log_prefix(context) << "Dropping " << msg_source_string(context, msg)
+                                  << ". Rederived random value hash " << derived << " does not match original hash "
+                                  << *hash);
+        return;
       }
 
       value = msg.random_value.value;
@@ -1653,9 +1658,16 @@ round_state send_and_wait_for_signed_blocks(round_context &context, master_nodes
     if (!enforce_validator_participation_and_timeouts(context, stage, node_list, timed_out, all_received))
       return goto_preparing_for_next_round(context);
 
-    // Select signatures randomly so we don't always just take the first N required signatures.
-    // Then sort just the first N required signatures, so signatures are added
-    // to the block in sorted order, but were chosen randomly.
+    // NOTE: Collect the quorum positions that signed, in ascending order, and take the first
+    // POS_BLOCK_REQUIRED_SIGNATURES of them.
+    //
+    // Any subset of the participating validators is equally valid here: verification only
+    // requires exactly N signatures, given in ascending order, from validators set in the
+    // block's participation bitset (see verify_quorum_signatures). Which subset we pick has no
+    // further effect either -- a validator's participation is scored from POS.validator_bitset,
+    // not from the signatures that made it into the block, so leaving a validator out does not
+    // count against it. Quorum positions are themselves re-randomised every block, so taking
+    // the lowest N does not favour any particular master node over time.
     std::array<size_t, master_nodes::POS_QUORUM_NUM_VALIDATORS> indices = {};
     size_t indices_count = 0;
 
@@ -1664,10 +1676,7 @@ round_state send_and_wait_for_signed_blocks(round_context &context, master_nodes
       if (quorum[index])
         indices[indices_count++] = index;
 
-    // Random select from first 'N' POS_BLOCK_REQUIRED_SIGNATURES from indices_count entries.
     assert(indices_count >= master_nodes::POS_BLOCK_REQUIRED_SIGNATURES);
-    std::array<size_t, master_nodes::POS_BLOCK_REQUIRED_SIGNATURES> selected = {};
-    std::sample(indices.begin(), indices.begin() + indices_count, selected.begin(), selected.size(), tools::rng);
 
     // Add Signatures
     cryptonote::block &final_block = context.transient.signed_block.final_block;

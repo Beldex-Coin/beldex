@@ -520,20 +520,34 @@ namespace master_nodes
 
       result = crypto::check_signature(hash, key, vote.signature);
       if (result){
-          /*MDEBUG("Signature accepted for " << vote.type << " voter " << vote.index_in_group << "/" << key
+          MTRACE("Signature accepted for " << vote.type << " voter " << vote.index_in_group << "/" << key
                                            << (vote.type == quorum_type::obligations ? " voting for worker " +
                                                                                        std::to_string(
                                                                                                vote.state_change.worker_index)
                                                                                      : "")
                                  << " at height " << vote.block_height);
-          */
+
           if(vote.type == quorum_type::obligations){
-              //MDEBUG("Signature accepted for " << quorum.workers[vote.state_change.worker_index]);
+              MTRACE("Signature accepted for " << quorum.workers[vote.state_change.worker_index]);
           }
     }
     else {
         vvc.m_signature_not_valid = true;
-        MDEBUG("Signature not accepted for MN " << quorum.workers[vote.state_change.worker_index]);
+
+        // NOTE: `worker_index` only exists on obligation votes -- it is the inactive member of the
+        // vote's union for every other type, so reading it here for e.g. a checkpoint vote both is
+        // UB and yields attacker-controlled bytes taken from the vote's block hash. Checkpoint
+        // quorums also leave `workers` empty, and this path never bounds-checks the index (only the
+        // obligations branch above calls bounds_check_worker_index), so an unguarded read here is an
+        // out-of-bounds access on an empty vector reachable from any peer that sends us a vote.
+        //
+        // Reaching this point on an obligations vote does imply the index was bounds-checked, so
+        // that branch is safe; every other vote type must log via its validator instead.
+        if (vote.type == quorum_type::obligations)
+            MDEBUG("Signature not accepted for MN " << quorum.workers[vote.state_change.worker_index]);
+        else
+            MDEBUG("Signature not accepted for " << vote.type << " voter " << vote.index_in_group
+                                                 << "/" << key << " at height " << vote.block_height);
     }
 
     return result;
