@@ -3061,6 +3061,8 @@ namespace {
     bool r = m_wallet->load_multisig_tx(oxenc::from_hex(req.tx_data_hex), txs, nullptr);
     if (!r)
       throw wallet_rpc_error{error_code::BAD_MULTISIG_TX_DATA, "Failed to parse multisig tx data."};
+    if (txs.m_ptx.empty())
+      throw wallet_rpc_error{error_code::BAD_MULTISIG_TX_DATA, "No multisig tx data."};
 
     std::vector<crypto::hash> txids;
     try
