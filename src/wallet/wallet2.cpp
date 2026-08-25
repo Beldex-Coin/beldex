@@ -13813,7 +13813,7 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
   THROW_WALLET_EXCEPTION_IF(!check_connection(&rpc_version), error::wallet_internal_error, "Failed to connect to daemon: " + get_daemon_address());
   THROW_WALLET_EXCEPTION_IF((rpc_version < rpc::version_t{1, 0}), error::wallet_internal_error, "Daemon RPC version is too old");
 
-  THROW_WALLET_EXCEPTION_IF(tools::starts_with(sig_str, RESERVE_PROOF_MAGIC), error::wallet_internal_error,
+  THROW_WALLET_EXCEPTION_IF(!tools::starts_with(sig_str, RESERVE_PROOF_MAGIC), error::wallet_internal_error,
     "Signature header check error");
   sig_str.remove_prefix(RESERVE_PROOF_MAGIC.size());
 
@@ -14334,6 +14334,7 @@ std::pair<size_t, std::vector<std::pair<crypto::key_image, crypto::signature>>> 
     const transfer_details &td = m_transfers[n];
 
     // get ephemeral public key
+    THROW_WALLET_EXCEPTION_IF(td.m_internal_output_index >= td.m_tx.vout.size(), error::wallet_internal_error, "tx output index out of bounds");
     const cryptonote::tx_out &out = td.m_tx.vout[td.m_internal_output_index];
     THROW_WALLET_EXCEPTION_IF(!std::holds_alternative<txout_to_key>(out.target), error::wallet_internal_error,
         "Output is not txout_to_key");
@@ -14457,6 +14458,7 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
     const crypto::signature &signature = signed_key_images[n].second;
 
     // get ephemeral public key
+    THROW_WALLET_EXCEPTION_IF(td.m_internal_output_index >= td.m_tx.vout.size(), error::wallet_internal_error, "tx output index out of bounds");
     const cryptonote::tx_out &out = td.m_tx.vout[td.m_internal_output_index];
     THROW_WALLET_EXCEPTION_IF(!std::holds_alternative<txout_to_key>(out.target), error::wallet_internal_error,
       "Non txout_to_key output found");
@@ -15290,6 +15292,7 @@ size_t wallet2::import_outputs(const std::pair<size_t, std::vector<tools::wallet
     cryptonote::keypair in_ephemeral;
 
     THROW_WALLET_EXCEPTION_IF(td.m_tx.vout.empty(), error::wallet_internal_error, "tx with no outputs at index " + std::to_string(i + offset));
+    THROW_WALLET_EXCEPTION_IF(td.m_internal_output_index >= td.m_tx.vout.size(), error::wallet_internal_error, "tx output index out of bounds");
     crypto::public_key tx_pub_key;
     if (!try_get_tx_pub_key_using_td(td, tx_pub_key))
     {
