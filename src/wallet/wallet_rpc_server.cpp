@@ -2498,7 +2498,8 @@ namespace tools
       cryptonote::address_parse_info info = extract_account_addr(m_wallet->nettype(), req.address);
       entry.m_address = info.address;
       entry.m_is_subaddress = info.is_subaddress;
-      if (info.has_payment_id)
+      entry.m_has_payment_id = info.has_payment_id;
+      if (entry.m_has_payment_id)
         entry.m_payment_id = info.payment_id;
     }
 
@@ -2768,15 +2769,30 @@ namespace {
     if (!viewkey_string.hex_to_pod(unwrap(unwrap(viewkey))))
       throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to parse view key secret key"};
 
+    crypto::public_key pkey;
+    if (!crypto::secret_key_to_public_key(viewkey, pkey))
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to verify view key secret key"};
+    if (info.address.m_view_public_key != pkey)
+      throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "View key does not match address"};
+
+    crypto::secret_key spendkey;
+    if (!req.spendkey.empty())
+    {
+      epee::wipeable_string spendkey_string = req.spendkey;
+      if (!spendkey_string.hex_to_pod(unwrap(unwrap(spendkey))))
+        throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to parse spend key secret key"};
+
+      if (!crypto::secret_key_to_public_key(spendkey, pkey))
+        throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to verify spend key secret key"};
+      if (info.address.m_spend_public_key != pkey)
+        throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Spend key does not match address"};
+    }
+
     close_wallet(req.autosave_current);
 
     {
       if (!req.spendkey.empty())
       {
-        epee::wipeable_string spendkey_string = req.spendkey;
-        crypto::secret_key spendkey;
-        if (!spendkey_string.hex_to_pod(unwrap(unwrap(spendkey))))
-          throw wallet_rpc_error{error_code::UNKNOWN_ERROR, "Failed to parse spend key secret key"};
         wal->generate(wallet_file, std::move(rc.second).password(), info.address, spendkey, viewkey, false);
         res.info = "Wallet has been generated successfully.";
       }
