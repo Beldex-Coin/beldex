@@ -53,6 +53,7 @@ namespace cryptonote
     state m_state{state_before_handshake};
     std::vector<crypto::hash> m_needed_objects;
     std::unordered_set<crypto::hash> m_requested_objects;
+    std::unordered_set<uint64_t> m_requested_flash_heights;
     std::map<uint64_t, std::pair<crypto::hash, bool>> m_flash_state; // HEIGHT => {CHECKSUM, NEEDED}
     bool m_need_flash_sync{false};
     uint32_t m_drop_count{0}; // How many times we've wanted to drop
