@@ -758,6 +758,29 @@ namespace cryptonote
     const auto it = stc_it ? *stc_it : find_tx_in_sorted_container(txid);
     if (it == m_txs_by_fee_and_receive_time.end())
     {
+      if (!stc_it)
+      {
+        // Not in the sorted container. Usually fully removed, but a tx can be sorted-erased while
+        // still present in the backing store (DB row, key images, counted weight). Check the backend
+        // before returning success so we don't leave orphaned key images behind.
+        txpool_tx_meta_t orphan_meta;
+        if (!m_blockchain.get_txpool_tx_meta(txid, orphan_meta))
+        {
+          MWARNING("remove_tx: tx " << txid << " not in sorted container or backend, treating as already-removed");
+          return true;
+        }
+        cryptonote::blobdata orphan_blob = m_blockchain.get_txpool_tx_blob(txid);
+        cryptonote::transaction_prefix orphan_tx;
+        if (!parse_and_validate_tx_prefix_from_blob(orphan_blob, orphan_tx))
+        {
+          MERROR("remove_tx: tx " << txid << " present in backend but unparseable; leaving for manual cleanup");
+          return false;
+        }
+        m_blockchain.remove_txpool_tx(txid);
+        m_txpool_weight -= orphan_meta.weight;
+        remove_transaction_keyimages(orphan_tx, txid);
+        return true;
+      }
       MERROR("Failed to find tx in txpool sorted list");
       return false;
     }
@@ -1451,6 +1474,7 @@ namespace cryptonote
     auto locks = tools::unique_locks(m_transactions_lock, m_blockchain);
 
     bool ret = false;
+    std::unordered_set<crypto::hash> seen;
     for(const auto& in: tx.vin)
     {
       CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, true);//should never fail
@@ -1460,7 +1484,9 @@ namespace cryptonote
         if (!conflicting)
           return true;
         ret = true;
-        conflicting->insert(conflicting->end(), it->second.begin(), it->second.end());
+        for (const auto &h : it->second)
+          if (seen.insert(h).second)
+            conflicting->push_back(h);
       }
     }
     return ret;
