@@ -85,7 +85,7 @@ namespace nodetool
     }
   }
   //-----------------------------------------------------------------------------------
-  inline bool append_net_address(std::vector<epee::net_utils::network_address> & seed_nodes, std::string const & addr, uint16_t default_port);
+  inline bool append_net_address(std::vector<epee::net_utils::network_address> & seed_nodes, std::string const & addr, uint16_t default_port, bool use_ipv6);
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
   void node_server<t_payload_net_handler>::init_options(boost::program_options::options_description& desc, boost::program_options::options_description& hidden)
@@ -381,7 +381,7 @@ namespace nodetool
         );
 
         std::vector<epee::net_utils::network_address> resolved_addrs;
-        bool r = append_net_address(resolved_addrs, pr_str, default_port);
+        bool r = append_net_address(resolved_addrs, pr_str, default_port, m_use_ipv6);
         CHECK_AND_ASSERT_MES(r, false, "Failed to parse or resolve address from string: " << pr_str);
         for (const epee::net_utils::network_address& addr : resolved_addrs)
         {
@@ -516,10 +516,15 @@ namespace nodetool
     return true;
   }
   //-----------------------------------------------------------------------------------
+  // `use_ipv6` must reflect --p2p-use-ipv6 (default: off). With IPv6 disabled, boosted_tcp_server
+  // ::connect() resolves only as v4, finds nothing for an IPv6 literal, and bails with
+  // MERROR("Failed to resolve ..."). Storing IPv6 peers we can never dial just burns a connection
+  // attempt each round and fills the log with resolve errors, so filter them out here instead.
   inline bool append_net_address(
       std::vector<epee::net_utils::network_address> & seed_nodes
     , std::string const & addr
     , uint16_t default_port
+    , bool use_ipv6
     )
   {
     using namespace boost::asio;
@@ -551,6 +556,7 @@ namespace nodetool
     ip::tcp::resolver::results_type result = resolver.resolve(host, port, boost::asio::ip::tcp::resolver::canonical_name, ec);
     CHECK_AND_ASSERT_MES(!ec, false, "Failed to resolve host name '" << host << "': " << ec.message() << ':' << ec.value());
 
+    size_t added = 0, skipped_v6 = 0;
     auto i = result.begin();
     auto iend = result.end();
     for (; i != iend; ++i)
@@ -560,14 +566,33 @@ namespace nodetool
       {
         epee::net_utils::network_address na{epee::net_utils::ipv4_network_address{boost::asio::detail::socket_ops::host_to_network_long(endpoint.address().to_v4().to_uint()), endpoint.port()}};
         seed_nodes.push_back(na);
+        added++;
         MINFO("Added node: " << na.str());
       }
       else
       {
+        if (!use_ipv6)
+        {
+          skipped_v6++;
+          MINFO("Skipping IPv6 address for " << host << " (" << endpoint.address().to_v6().to_string()
+              << "): IPv6 is disabled, enable it with --p2p-use-ipv6");
+          continue;
+        }
         epee::net_utils::network_address na{epee::net_utils::ipv6_network_address{endpoint.address().to_v6(), endpoint.port()}};
         seed_nodes.push_back(na);
+        added++;
         MINFO("Added node: " << na.str());
       }
+    }
+
+    if (!added)
+    {
+      // Deliberately still a success: two callers turn a false return into a hard startup failure
+      // via CHECK_AND_ASSERT_MES, and an IPv6-only peer on an IPv4-only node is a misconfiguration
+      // to warn about, not a reason to refuse to boot. A genuine resolve failure is already caught
+      // by the error_code check above.
+      MWARNING("Resolved '" << host << "' but added no usable addresses"
+          << (skipped_v6 ? " (all " + std::to_string(skipped_v6) + " result(s) were IPv6; enable --p2p-use-ipv6 to use them)" : ""));
     }
     return true;
   }
@@ -1423,7 +1448,7 @@ namespace nodetool
           for (const auto& full_addr : get_seed_nodes())
           {
             MDEBUG("Seed node: " << full_addr);
-            append_net_address(m_seed_nodes, full_addr, cryptonote::get_config(m_nettype).P2P_DEFAULT_PORT);
+            append_net_address(m_seed_nodes, full_addr, cryptonote::get_config(m_nettype).P2P_DEFAULT_PORT, m_use_ipv6);
           }
           MDEBUG("Number of seed nodes: " << m_seed_nodes.size());
           m_seed_nodes_initialized = true;
@@ -1463,7 +1488,7 @@ namespace nodetool
                 for (const auto &peer: get_seed_nodes(m_nettype))
                 {
                   MDEBUG("Fallback seed node: " << peer);
-                  append_net_address(m_seed_nodes, peer, cryptonote::get_config(m_nettype).P2P_DEFAULT_PORT);
+                  append_net_address(m_seed_nodes, peer, cryptonote::get_config(m_nettype).P2P_DEFAULT_PORT, m_use_ipv6);
                 }
               }
               shlock.lock();
@@ -2317,7 +2342,7 @@ namespace nodetool
         continue;
       }
       std::vector<epee::net_utils::network_address> resolved_addrs;
-      bool r = append_net_address(resolved_addrs, pr_str, default_port);
+      bool r = append_net_address(resolved_addrs, pr_str, default_port, m_use_ipv6);
       CHECK_AND_ASSERT_MES(r, false, "Failed to parse or resolve address from string: " << pr_str);
       for (const epee::net_utils::network_address& addr : resolved_addrs)
       {
