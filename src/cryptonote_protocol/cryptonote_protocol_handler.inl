@@ -145,6 +145,8 @@ namespace cryptonote
       NOTIFY_REQUEST_CHAIN::request r{};
       context.m_needed_objects.clear();
       m_core.get_blockchain_storage().get_short_chain_history(r.block_ids);
+      // handle_response_chain_entry() drops the connection if this isn't set
+      context.m_last_request_time = std::chrono::steady_clock::now();
       MLOG_P2P_MESSAGE("-->>NOTIFY_REQUEST_CHAIN: m_block_ids.size()=" << r.block_ids.size() );
       post_notify<NOTIFY_REQUEST_CHAIN>(r, context);
       MLOG_PEER_STATE("requesting chain");
@@ -164,6 +166,8 @@ namespace cryptonote
       const uint64_t immutable_height = m_core.get_blockchain_storage().get_immutable_height();
       // Delete any irrelevant heights > 0 (the mempool) and <= the immutable height
       context.m_flash_state.erase(context.m_flash_state.lower_bound(1), context.m_flash_state.lower_bound(immutable_height + 1));
+      context.m_flash_heights_requested.erase(context.m_flash_heights_requested.lower_bound(1),
+              context.m_flash_heights_requested.lower_bound(immutable_height + 1));
 
       // We can't validate flashes yet if we are syncing and haven't synced enough blocks to look
       // up the flash quorum.  Set a cutoff at current height plus 10 because flash quorums are
@@ -181,23 +185,34 @@ namespace cryptonote
         // We thought we needed it when we last got some data; check whether we still do:
         auto my_it = my_flash_hashes.find(i.first);
         if (my_it == my_flash_hashes.end() || i.second.first != my_it->second)
+        {
+          // Already asked for; its txes are still in flight so our checksum hasn't caught up yet.
+          // Skipping lets a follow-up request advance to the remainder instead of repeating this batch.
+          if (context.m_flash_heights_requested.count(i.first))
+            continue;
           r.heights.push_back(i.first);
+        }
         else
+        {
           i.second.second = false; // checksum is now equal, don't need it anymore
+          context.m_flash_heights_requested.erase(i.first);
+        }
       }
 
       context.m_need_flash_sync = false;
       if (!r.heights.empty())
       {
-        // Cap the outbound request to the protocol object limit. A peer that enforces
-        // CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT (see handle_request_block_flashes) drops the
-        // connection on an oversized list, so never send more than the limit in one request. Heights
-        // beyond the cap stay flagged in m_flash_state and are re-requested when the peer next
-        // advertises a changed flash set.
+        // Peers drop the connection on an oversized list, so cap it and flag the remainder: an
+        // unchanged advertisement never re-sets m_need_flash_sync, so nothing else would ask for it.
         if (r.heights.size() > CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT)
+        {
           r.heights.resize(CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT);
+          context.m_flash_sync_more_pending = true;
+          MDEBUG(context << "More flash heights needed than fit in one request; deferring the remainder");
+        }
         MLOG_P2P_MESSAGE("-->>NOTIFY_REQUEST_BLOCK_FLASHES: requesting flash tx lists for " << r.heights.size() << " blocks");
         context.m_requested_flash_heights.insert(r.heights.begin(), r.heights.end());
+        context.m_flash_heights_requested.insert(r.heights.begin(), r.heights.end());
         post_notify<NOTIFY_REQUEST_BLOCK_FLASHES>(r, context);
         MLOG_PEER_STATE("requesting block flashes");
       }
@@ -444,6 +459,8 @@ namespace cryptonote
         {
           ctx_it->second.first = hash;
           ctx_it->second.second = true;
+          // New checksum for a height we already asked about: allow it to be requested again.
+          context.m_flash_heights_requested.erase(height);
         }
         else
           continue;
@@ -851,6 +868,8 @@ namespace cryptonote
           context.m_state = cryptonote_connection_context::state_synchronizing;
           NOTIFY_REQUEST_CHAIN::request r{};
           m_core.get_blockchain_storage().get_short_chain_history(r.block_ids);
+          // handle_response_chain_entry() drops the connection if this isn't set
+          context.m_last_request_time = std::chrono::steady_clock::now();
           MLOG_P2P_MESSAGE("-->>NOTIFY_REQUEST_CHAIN: m_block_ids.size()=" << r.block_ids.size() );
           post_notify<NOTIFY_REQUEST_CHAIN>(r, context);
           MLOG_PEER_STATE("requesting chain");
@@ -2563,6 +2582,17 @@ skip:
       return 1;
     }
     context.m_requested_flash_heights.clear();
+
+    // Previous request was capped: ask for the rest. Must follow the clear above, or the
+    // "one request in flight" gate in on_callback() swallows it.
+    if (context.m_flash_sync_more_pending)
+    {
+      context.m_flash_sync_more_pending = false;
+      context.m_need_flash_sync = true;
+      MDEBUG(context << "Requesting the flash heights deferred from the previous capped request");
+      ++context.m_callback_request_count;
+      m_p2p->request_callback(context);
+    }
 
     m_core.get_pool().keep_missing_flashes(arg.txs);
     if (arg.txs.empty())
