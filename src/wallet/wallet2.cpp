@@ -8162,6 +8162,16 @@ bool wallet2::sign_multisig_tx(multisig_tx_set &exported_txs, std::vector<crypto
     for (const auto &source: sources)
       indices.push_back(source.real_output);
 
+    std::unordered_set<rct::key> all_used_L;
+    for (const auto &sig: ptx.multisig_sigs)
+    {
+      for (const auto &L: sig.used_L)
+      {
+        THROW_WALLET_EXCEPTION_IF(!all_used_L.insert(L).second,
+            error::wallet_internal_error, "Duplicate used_L found in multisig signature variants");
+      }
+    }
+
     for (auto &sig: ptx.multisig_sigs)
     {
       if (sig.ignore.find(local_signer) == sig.ignore.end())
@@ -9792,7 +9802,7 @@ void wallet2::light_wallet_get_outs(std::vector<std::vector<tools::wallet2::get_
           break;
         }
       }
-      THROW_WALLET_EXCEPTION_IF(!found_amount , error::wallet_internal_error, "Outputs for amount " + boost::lexical_cast<std::string>(ores.amount_outs[amount_key].amount) + " not found" );
+      THROW_WALLET_EXCEPTION_IF(!found_amount , error::wallet_internal_error, "Outputs for amount " + boost::lexical_cast<std::string>(amount) + " not found" );
 
       LOG_PRINT_L2("Index " << i << "/" << light_wallet_requested_outputs_count << ": idx " << ores.amount_outs[amount_key].outputs[i].global_index << " (real " << td.m_global_output_index << "), unlocked " << "(always in light)" << ", key " << ores.amount_outs[0].outputs[i].public_key);
 
@@ -13038,7 +13048,9 @@ bool wallet2::get_tx_key(const crypto::hash &txid, crypto::secret_key &tx_key, s
   if (tx_key_data.tx_prefix_hash.empty())
   {
     nlohmann::json get_transactions_params{
-      {"txs_hashes", { tools::type_to_hex(txid) }}
+      {"txs_hashes", { tools::type_to_hex(txid) }},
+      {"data", true},
+      {"split", true}
     };
     auto res = m_http_client.json_rpc("get_transactions", get_transactions_params);
 
@@ -13801,7 +13813,7 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
   THROW_WALLET_EXCEPTION_IF(!check_connection(&rpc_version), error::wallet_internal_error, "Failed to connect to daemon: " + get_daemon_address());
   THROW_WALLET_EXCEPTION_IF((rpc_version < rpc::version_t{1, 0}), error::wallet_internal_error, "Daemon RPC version is too old");
 
-  THROW_WALLET_EXCEPTION_IF(tools::starts_with(sig_str, RESERVE_PROOF_MAGIC), error::wallet_internal_error,
+  THROW_WALLET_EXCEPTION_IF(!tools::starts_with(sig_str, RESERVE_PROOF_MAGIC), error::wallet_internal_error,
     "Signature header check error");
   sig_str.remove_prefix(RESERVE_PROOF_MAGIC.size());
 
@@ -14322,6 +14334,7 @@ std::pair<size_t, std::vector<std::pair<crypto::key_image, crypto::signature>>> 
     const transfer_details &td = m_transfers[n];
 
     // get ephemeral public key
+    THROW_WALLET_EXCEPTION_IF(td.m_internal_output_index >= td.m_tx.vout.size(), error::wallet_internal_error, "tx output index out of bounds");
     const cryptonote::tx_out &out = td.m_tx.vout[td.m_internal_output_index];
     THROW_WALLET_EXCEPTION_IF(!std::holds_alternative<txout_to_key>(out.target), error::wallet_internal_error,
         "Output is not txout_to_key");
@@ -14445,6 +14458,7 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
     const crypto::signature &signature = signed_key_images[n].second;
 
     // get ephemeral public key
+    THROW_WALLET_EXCEPTION_IF(td.m_internal_output_index >= td.m_tx.vout.size(), error::wallet_internal_error, "tx output index out of bounds");
     const cryptonote::tx_out &out = td.m_tx.vout[td.m_internal_output_index];
     THROW_WALLET_EXCEPTION_IF(!std::holds_alternative<txout_to_key>(out.target), error::wallet_internal_error,
       "Non txout_to_key output found");
@@ -15278,6 +15292,7 @@ size_t wallet2::import_outputs(const std::pair<size_t, std::vector<tools::wallet
     cryptonote::keypair in_ephemeral;
 
     THROW_WALLET_EXCEPTION_IF(td.m_tx.vout.empty(), error::wallet_internal_error, "tx with no outputs at index " + std::to_string(i + offset));
+    THROW_WALLET_EXCEPTION_IF(td.m_internal_output_index >= td.m_tx.vout.size(), error::wallet_internal_error, "tx output index out of bounds");
     crypto::public_key tx_pub_key;
     if (!try_get_tx_pub_key_using_td(td, tx_pub_key))
     {
@@ -15402,16 +15417,22 @@ crypto::public_key wallet2::get_multisig_signing_public_key(size_t idx) const
   return get_multisig_signing_public_key(get_account().get_multisig_keys()[idx]);
 }
 //----------------------------------------------------------------------------------------------------
-rct::key wallet2::get_multisig_k(size_t idx, const std::unordered_set<rct::key> &used_L) const
+rct::key wallet2::get_multisig_k(size_t idx, const std::unordered_set<rct::key> &used_L)
 {
   CHECK_AND_ASSERT_THROW_MES(m_multisig, "Wallet is not multisig");
   CHECK_AND_ASSERT_THROW_MES(idx < m_transfers.size(), "idx out of range");
-  for (const auto &k: m_transfers[idx].m_multisig_k)
+  auto &ks = m_transfers[idx].m_multisig_k;
+  for (auto it = ks.begin(); it != ks.end(); ++it)
   {
     rct::key L;
-    rct::scalarmultBase(L, k);
+    rct::scalarmultBase(L, *it);
     if (used_L.find(L) != used_L.end())
+    {
+      rct::key k = *it;
+      memwipe(&*it, sizeof(rct::key));
+      ks.erase(it);
       return k;
+    }
   }
   THROW_WALLET_EXCEPTION(tools::error::multisig_export_needed);
   return rct::zero();

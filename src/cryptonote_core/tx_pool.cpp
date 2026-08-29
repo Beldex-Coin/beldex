@@ -268,11 +268,11 @@ namespace cryptonote
         crypto::public_key mnode_key;
         if (!cryptonote::get_master_node_pubkey_from_tx_extra(tx.extra, mnode_key))
           return false;
-      
+
         cryptonote::tx_extra_tx_key_image_unlock unlock;
         if (!cryptonote::get_field_from_tx_extra(tx.extra, unlock))
           return false;
-      
+
         uint64_t block_height = m_blockchain.get_current_blockchain_height();
         if (!m_blockchain.get_master_node_list().is_master_node(mnode_key))
           return false;
@@ -297,7 +297,7 @@ namespace cryptonote
               return false;
             }
           }
-        }      
+        }
       }
     }
 
@@ -758,6 +758,29 @@ namespace cryptonote
     const auto it = stc_it ? *stc_it : find_tx_in_sorted_container(txid);
     if (it == m_txs_by_fee_and_receive_time.end())
     {
+      if (!stc_it)
+      {
+        // Not in the sorted container. Usually fully removed, but a tx can be sorted-erased while
+        // still present in the backing store (DB row, key images, counted weight). Check the backend
+        // before returning success so we don't leave orphaned key images behind.
+        txpool_tx_meta_t orphan_meta;
+        if (!m_blockchain.get_txpool_tx_meta(txid, orphan_meta))
+        {
+          MWARNING("remove_tx: tx " << txid << " not in sorted container or backend, treating as already-removed");
+          return true;
+        }
+        cryptonote::blobdata orphan_blob = m_blockchain.get_txpool_tx_blob(txid);
+        cryptonote::transaction_prefix orphan_tx;
+        if (!parse_and_validate_tx_prefix_from_blob(orphan_blob, orphan_tx))
+        {
+          MERROR("remove_tx: tx " << txid << " present in backend but unparseable; leaving for manual cleanup");
+          return false;
+        }
+        m_blockchain.remove_txpool_tx(txid);
+        m_txpool_weight -= orphan_meta.weight;
+        remove_transaction_keyimages(orphan_tx, txid);
+        return true;
+      }
       MERROR("Failed to find tx in txpool sorted list");
       return false;
     }
@@ -787,7 +810,9 @@ namespace cryptonote
     MINFO("Removing tx " << txid << " from txpool: weight: " << meta->weight << ", fee/byte: " << tx_fee);
     m_blockchain.remove_txpool_tx(txid);
     m_txpool_weight -= meta->weight;
-    remove_transaction_keyimages(tx, txid);
+    if (!remove_transaction_keyimages(tx, txid))
+      MERROR("Failed to remove key images for tx " << txid << " being removed from the txpool; "
+             "the spent key image map may be inconsistent until restart");
     m_txs_by_fee_and_receive_time.erase(it);
 
     return true;
@@ -867,48 +892,77 @@ namespace cryptonote
   //---------------------------------------------------------------------------------
   bool tx_memory_pool::insert_key_images(const transaction_prefix &tx, const crypto::hash &id, bool kept_by_block)
   {
+    std::vector<crypto::key_image> key_images_to_insert;
+    key_images_to_insert.reserve(tx.vin.size());
+
+    std::unordered_set<crypto::key_image> seen_key_images;
+    seen_key_images.reserve(tx.vin.size());
+
     for(const auto& in: tx.vin)
     {
       CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, txin, false);
-      std::unordered_set<crypto::hash>& kei_image_set = m_spent_key_images[txin.k_image];
-      CHECK_AND_ASSERT_MES(kept_by_block || kei_image_set.size() == 0, false, "internal error: kept_by_block=" << kept_by_block
-                                          << ",  kei_image_set.size()=" << kei_image_set.size() << "\ntxin.k_image=" << txin.k_image
-                                          << "\ntx_id=" << id );
-      auto ins_res = kei_image_set.insert(id);
-      CHECK_AND_ASSERT_MES(ins_res.second, false, "internal error: try to insert duplicate iterator in key_image set");
+      CHECK_AND_ASSERT_MES(seen_key_images.insert(txin.k_image).second,
+          false,
+          "duplicate key image in transaction: " << txin.k_image
+          << "\ntx_id=" << id);
+      auto it = m_spent_key_images.find(txin.k_image);
+      if (it != m_spent_key_images.end())
+      {
+        const std::unordered_set<crypto::hash>& kei_image_set = it->second;
+        CHECK_AND_ASSERT_MES(kept_by_block || kei_image_set.size() == 0, false, "internal error: kept_by_block=" << kept_by_block
+                                            << ",  kei_image_set.size()=" << kei_image_set.size() << "\ntxin.k_image=" << txin.k_image
+                                            << "\ntx_id=" << id );
+        CHECK_AND_ASSERT_MES(kei_image_set.count(id) == 0, false, "internal error: try to insert duplicate iterator in key_image set");
+      }
+      key_images_to_insert.push_back(txin.k_image);
     }
+
+    for (const crypto::key_image &k_image : key_images_to_insert)
+      m_spent_key_images[k_image].insert(id);
+
     ++m_cookie;
     return true;
   }
   //---------------------------------------------------------------------------------
-  //FIXME: Can return early before removal of all of the key images.
-  //       At the least, need to make sure that a false return here
-  //       is treated properly.  Should probably not return early, however.
   bool tx_memory_pool::remove_transaction_keyimages(const transaction_prefix& tx, const crypto::hash &actual_hash)
   {
     auto locks = tools::unique_locks(m_transactions_lock, m_blockchain);
 
-    // ND: Speedup
+    std::vector<crypto::key_image> key_images_to_erase;
+    key_images_to_erase.reserve(tx.vin.size());
+
+    std::unordered_set<crypto::key_image> seen_key_images;
+    seen_key_images.reserve(tx.vin.size());
+
     for(const txin_v& vi: tx.vin)
     {
       CHECKED_GET_SPECIFIC_VARIANT(vi, txin_to_key, txin, false);
+
+      CHECK_AND_ASSERT_MES(seen_key_images.insert(txin.k_image).second, false, "duplicate key image in transaction: "
+                                    << txin.k_image << "\ntransaction id = " << actual_hash);
+
       auto it = m_spent_key_images.find(txin.k_image);
       CHECK_AND_ASSERT_MES(it != m_spent_key_images.end(), false, "failed to find transaction input in key images. img=" << txin.k_image
                                     << "\ntransaction id = " << actual_hash);
-      std::unordered_set<crypto::hash>& key_image_set =  it->second;
+      const std::unordered_set<crypto::hash>& key_image_set = it->second;
       CHECK_AND_ASSERT_MES(key_image_set.size(), false, "empty key_image set, img=" << txin.k_image
         << "\ntransaction id = " << actual_hash);
 
-      auto it_in_set = key_image_set.find(actual_hash);
-      CHECK_AND_ASSERT_MES(it_in_set != key_image_set.end(), false, "transaction id not found in key_image set, img=" << txin.k_image
+      CHECK_AND_ASSERT_MES(key_image_set.count(actual_hash), false, "transaction id not found in key_image set, img=" << txin.k_image
         << "\ntransaction id = " << actual_hash);
-      key_image_set.erase(it_in_set);
-      if(!key_image_set.size())
+      key_images_to_erase.push_back(txin.k_image);
+    }
+
+    for (const crypto::key_image &k_image : key_images_to_erase)
+    {
+      auto it = m_spent_key_images.find(k_image);
+      if (it == m_spent_key_images.end())
+        continue;
+      it->second.erase(actual_hash);
+      if (it->second.empty())
       {
-        //it is now empty hash container for this key_image
         m_spent_key_images.erase(it);
       }
-
     }
     ++m_cookie;
     return true;
@@ -961,7 +1015,9 @@ namespace cryptonote
       // remove first, in case this throws, so key images aren't removed
       m_blockchain.remove_txpool_tx(id);
       m_txpool_weight -= tx_weight;
-      remove_transaction_keyimages(tx, id);
+      if (!remove_transaction_keyimages(tx, id))
+        MERROR("Failed to remove key images for tx " << id << " taken from the txpool; "
+               "the spent key image map may be inconsistent until restart");
       lock.commit();
     }
     catch (const std::exception &e)
@@ -1045,7 +1101,9 @@ namespace cryptonote
             // remove first, so we only remove key images if the tx removal succeeds
             m_blockchain.remove_txpool_tx(txid);
             m_txpool_weight -= entry.second;
-            remove_transaction_keyimages(tx, txid);
+            if (!remove_transaction_keyimages(tx, txid))
+              MERROR("Failed to remove key images for stuck tx " << txid << "; "
+                     "the spent key image map may be inconsistent until restart");
           }
         }
         catch (const std::exception &e)
@@ -1292,7 +1350,6 @@ namespace cryptonote
         h.second += i2->second.second;
       }
     }
-    
     return stats;
   }
   //---------------------------------------------------------------------------------
@@ -1451,6 +1508,7 @@ namespace cryptonote
     auto locks = tools::unique_locks(m_transactions_lock, m_blockchain);
 
     bool ret = false;
+    std::unordered_set<crypto::hash> seen;
     for(const auto& in: tx.vin)
     {
       CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, true);//should never fail
@@ -1460,7 +1518,9 @@ namespace cryptonote
         if (!conflicting)
           return true;
         ret = true;
-        conflicting->insert(conflicting->end(), it->second.begin(), it->second.end());
+        for (const auto &h : it->second)
+          if (seen.insert(h).second)
+            conflicting->push_back(h);
       }
     }
     return ret;
@@ -1749,7 +1809,7 @@ end:
     // (otherwise the *block* will fail but validation won't, because validation here won't see the
     // earlier tx has having taken effect, but the block addition will).
     std::unordered_set<crypto::hash> bns_buys;
-  
+
     LOG_PRINT_L2("Filling block template, median weight " << median_weight << ", " << m_txs_by_fee_and_receive_time.size() << " txes in the pool");
 
     LockedTXN lock(m_blockchain);
@@ -1920,7 +1980,9 @@ end:
           // remove tx from db first
           m_blockchain.remove_txpool_tx(txid);
           m_txpool_weight -= get_transaction_weight(tx, txblob.size());
-          remove_transaction_keyimages(tx, txid);
+          if (!remove_transaction_keyimages(tx, txid))
+            MERROR("Failed to remove key images for tx " << txid << "; "
+                   "the spent key image map may be inconsistent until restart");
           auto sorted_it = find_tx_in_sorted_container(txid);
           if (sorted_it == m_txs_by_fee_and_receive_time.end())
           {

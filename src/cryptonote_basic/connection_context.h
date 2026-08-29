@@ -30,6 +30,7 @@
 
 #pragma once
 #include <unordered_set>
+#include <set>
 #include <atomic>
 #include <chrono>
 #include "epee/net/net_utils_base.h"
@@ -53,8 +54,11 @@ namespace cryptonote
     state m_state{state_before_handshake};
     std::vector<crypto::hash> m_needed_objects;
     std::unordered_set<crypto::hash> m_requested_objects;
+    std::unordered_set<uint64_t> m_requested_flash_heights;
     std::map<uint64_t, std::pair<crypto::hash, bool>> m_flash_state; // HEIGHT => {CHECKSUM, NEEDED}
     bool m_need_flash_sync{false};
+    bool m_flash_sync_more_pending{false}; // Last flash request hit the size cap; ask for the rest
+    std::set<uint64_t> m_flash_heights_requested; // Asked for, checksum not yet caught up; don't re-ask
     uint32_t m_drop_count{0}; // How many times we've wanted to drop
     uint64_t m_remote_blockchain_height{0};
     uint64_t m_last_response_height{0};

@@ -145,6 +145,8 @@ namespace cryptonote
       NOTIFY_REQUEST_CHAIN::request r{};
       context.m_needed_objects.clear();
       m_core.get_blockchain_storage().get_short_chain_history(r.block_ids);
+      // handle_response_chain_entry() drops the connection if this isn't set
+      context.m_last_request_time = std::chrono::steady_clock::now();
       MLOG_P2P_MESSAGE("-->>NOTIFY_REQUEST_CHAIN: m_block_ids.size()=" << r.block_ids.size() );
       post_notify<NOTIFY_REQUEST_CHAIN>(r, context);
       MLOG_PEER_STATE("requesting chain");
@@ -156,7 +158,7 @@ namespace cryptonote
     }
 
 
-    if (context.m_need_flash_sync)
+    if (context.m_need_flash_sync && context.m_requested_flash_heights.empty())
     {
       NOTIFY_REQUEST_BLOCK_FLASHES::request r{};
       auto curr_height = m_core.get_current_blockchain_height();
@@ -164,6 +166,8 @@ namespace cryptonote
       const uint64_t immutable_height = m_core.get_blockchain_storage().get_immutable_height();
       // Delete any irrelevant heights > 0 (the mempool) and <= the immutable height
       context.m_flash_state.erase(context.m_flash_state.lower_bound(1), context.m_flash_state.lower_bound(immutable_height + 1));
+      context.m_flash_heights_requested.erase(context.m_flash_heights_requested.lower_bound(1),
+              context.m_flash_heights_requested.lower_bound(immutable_height + 1));
 
       // We can't validate flashes yet if we are syncing and haven't synced enough blocks to look
       // up the flash quorum.  Set a cutoff at current height plus 10 because flash quorums are
@@ -181,15 +185,34 @@ namespace cryptonote
         // We thought we needed it when we last got some data; check whether we still do:
         auto my_it = my_flash_hashes.find(i.first);
         if (my_it == my_flash_hashes.end() || i.second.first != my_it->second)
+        {
+          // Already asked for; its txes are still in flight so our checksum hasn't caught up yet.
+          // Skipping lets a follow-up request advance to the remainder instead of repeating this batch.
+          if (context.m_flash_heights_requested.count(i.first))
+            continue;
           r.heights.push_back(i.first);
+        }
         else
+        {
           i.second.second = false; // checksum is now equal, don't need it anymore
+          context.m_flash_heights_requested.erase(i.first);
+        }
       }
 
       context.m_need_flash_sync = false;
       if (!r.heights.empty())
       {
+        // Peers drop the connection on an oversized list, so cap it and flag the remainder: an
+        // unchanged advertisement never re-sets m_need_flash_sync, so nothing else would ask for it.
+        if (r.heights.size() > CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT)
+        {
+          r.heights.resize(CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT);
+          context.m_flash_sync_more_pending = true;
+          MDEBUG(context << "More flash heights needed than fit in one request; deferring the remainder");
+        }
         MLOG_P2P_MESSAGE("-->>NOTIFY_REQUEST_BLOCK_FLASHES: requesting flash tx lists for " << r.heights.size() << " blocks");
+        context.m_requested_flash_heights.insert(r.heights.begin(), r.heights.end());
+        context.m_flash_heights_requested.insert(r.heights.begin(), r.heights.end());
         post_notify<NOTIFY_REQUEST_BLOCK_FLASHES>(r, context);
         MLOG_PEER_STATE("requesting block flashes");
       }
@@ -436,6 +459,8 @@ namespace cryptonote
         {
           ctx_it->second.first = hash;
           ctx_it->second.second = true;
+          // New checksum for a height we already asked about: allow it to be requested again.
+          context.m_flash_heights_requested.erase(height);
         }
         else
           continue;
@@ -843,6 +868,8 @@ namespace cryptonote
           context.m_state = cryptonote_connection_context::state_synchronizing;
           NOTIFY_REQUEST_CHAIN::request r{};
           m_core.get_blockchain_storage().get_short_chain_history(r.block_ids);
+          // handle_response_chain_entry() drops the connection if this isn't set
+          context.m_last_request_time = std::chrono::steady_clock::now();
           MLOG_P2P_MESSAGE("-->>NOTIFY_REQUEST_CHAIN: m_block_ids.size()=" << r.block_ids.size() );
           post_notify<NOTIFY_REQUEST_CHAIN>(r, context);
           MLOG_PEER_STATE("requesting chain");
@@ -1217,6 +1244,15 @@ namespace cryptonote
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_RESPONSE_GET_BLOCKS (" << arg.blocks.size() << " blocks)");
     MLOG_PEER_STATE("received blocks");
+
+    if (context.m_state != cryptonote_connection_context::state_synchronizing
+        || !context.m_last_request_time
+        || context.m_requested_objects.empty())
+    {
+      LOG_ERROR_CCONTEXT("Received NOTIFY_RESPONSE_GET_BLOCKS without a pending block request, dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
 
     auto request_time = *context.m_last_request_time;
     context.m_last_request_time.reset();
@@ -1848,6 +1884,14 @@ skip:
   template<class t_core>
   int t_cryptonote_protocol_handler<t_core>::handle_request_chain(int command, NOTIFY_REQUEST_CHAIN::request& arg, cryptonote_connection_context& context)
   {
+
+    if (arg.block_ids.size() > CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT)
+    {
+      LOG_ERROR_CCONTEXT("Too many block IDs requested: " << arg.block_ids.size() << " (maximum " << CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT << ")");
+      drop_connection(context, false, false);
+      return 1;
+    }
+
     MLOG_P2P_MESSAGE("Received NOTIFY_REQUEST_CHAIN (" << arg.block_ids.size() << " blocks");
     NOTIFY_RESPONSE_CHAIN_ENTRY::request r;
     if(!m_core.find_blockchain_supplement(arg.block_ids, r))
@@ -2427,6 +2471,15 @@ skip:
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_RESPONSE_CHAIN_ENTRY: m_block_ids.size()=" << arg.m_block_ids.size()
       << ", m_start_height=" << arg.start_height << ", m_total_height=" << arg.total_height);
+
+    if (context.m_state != cryptonote_connection_context::state_synchronizing
+        || !context.m_last_request_time
+        || !context.m_requested_objects.empty())
+    {
+      LOG_ERROR_CCONTEXT("Received NOTIFY_RESPONSE_CHAIN_ENTRY without a pending chain-entry request, dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
     MLOG_PEER_STATE("received chain");
 
     context.m_last_request_time.reset();
@@ -2500,6 +2553,14 @@ skip:
   int t_cryptonote_protocol_handler<t_core>::handle_request_block_flashes(int command, NOTIFY_REQUEST_BLOCK_FLASHES::request& arg, cryptonote_connection_context& context)
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_REQUEST_BLOCK_FLASHES: heights.size()=" << arg.heights.size());
+
+    if (arg.heights.size() > CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT)
+    {
+      LOG_ERROR_CCONTEXT("Too many heights (" << arg.heights.size() << ") in NOTIFY_REQUEST_BLOCK_FLASHES, dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
+
     NOTIFY_RESPONSE_BLOCK_FLASHES::request r;
 
     r.txs = m_core.get_pool().get_mined_flashes({arg.heights.begin(), arg.heights.end()});
@@ -2513,6 +2574,25 @@ skip:
   int t_cryptonote_protocol_handler<t_core>::handle_response_block_flashes(int command, NOTIFY_RESPONSE_BLOCK_FLASHES::request& arg, cryptonote_connection_context& context)
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_RESPONSE_BLOCK_FLASHES: txs.size()=" << arg.txs.size());
+
+    if (context.m_requested_flash_heights.empty())
+    {
+      LOG_ERROR_CCONTEXT("Received NOTIFY_RESPONSE_BLOCK_FLASHES without a pending request, dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
+    context.m_requested_flash_heights.clear();
+
+    // Previous request was capped: ask for the rest. Must follow the clear above, or the
+    // "one request in flight" gate in on_callback() swallows it.
+    if (context.m_flash_sync_more_pending)
+    {
+      context.m_flash_sync_more_pending = false;
+      context.m_need_flash_sync = true;
+      MDEBUG(context << "Requesting the flash heights deferred from the previous capped request");
+      ++context.m_callback_request_count;
+      m_p2p->request_callback(context);
+    }
 
     m_core.get_pool().keep_missing_flashes(arg.txs);
     if (arg.txs.empty())
