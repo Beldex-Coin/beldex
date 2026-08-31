@@ -2370,6 +2370,12 @@ namespace nodetool
       std::vector<epee::net_utils::network_address> resolved_addrs;
       bool r = append_net_address(resolved_addrs, pr_str, default_port, m_use_ipv6);
       CHECK_AND_ASSERT_MES(r, false, "Failed to parse or resolve address from string: " << pr_str);
+      if (resolved_addrs.empty() && std::string_view{arg.name} == arg_p2p_add_exclusive_node.name)
+      {
+        CHECK_AND_ASSERT_MES(false, false,
+            "Exclusive peer resolved but yielded no usable addresses: " << pr_str
+            << " (for example, all results may be IPv6 while IPv6 is disabled)");
+      }
       for (const epee::net_utils::network_address& addr : resolved_addrs)
       {
         container.push_back(addr);
