@@ -449,6 +449,7 @@ namespace cryptonote
         if (it != our_flash_hashes.end() && it->second == hash)
         { // Matches our hash already, great
           context.m_flash_state.erase(height);
+          context.m_flash_heights_requested.erase(height);
           continue;
         }
 
