@@ -322,7 +322,10 @@ bool Blockchain::load_missing_blocks_into_beldex_subsystems()
 
   using clock                   = std::chrono::steady_clock;
   using dseconds                = std::chrono::duration<double>;
-  int64_t constexpr BLOCK_COUNT = 1000;
+  // Chunk size for the rescan. Since the transactions of a whole chunk are now parsed up front and
+  // held at once (rather than one block at a time), this bounds the peak allocation of the scan --
+  // it matters on memory-capped nodes. oxen-core uses 50 for the same reason.
+  int64_t constexpr BLOCK_COUNT = 200;
   auto work_start               = clock::now();
   auto scan_start               = work_start;
   dseconds bns_duration{}, mnl_duration{}, bns_iteration_duration{}, mnl_iteration_duration{}, tx_load_duration{}, tx_load_total{};

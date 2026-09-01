@@ -2195,6 +2195,12 @@ namespace master_nodes
   {
     std::lock_guard lock(m_mn_mutex);
 
+    // We are about to move m_state backwards. Whatever is on disk was written for a chain that has
+    // now been rolled back -- possibly a different fork at the same height -- so clear the
+    // high-water mark, otherwise checkpoint_state()'s guard suppresses every write until the chain
+    // climbs back past it and the stale copy survives to be reloaded on the next start.
+    m_last_stored_height = 0;
+
     uint64_t revert_to_height = height - 1;
     bool reinitialise         = false;
     bool using_archive        = false;
@@ -2215,6 +2221,11 @@ namespace master_nodes
       {
         m_transient.state_history.clear();
         m_transient.state_archive.erase(std::next(it), m_transient.state_archive.end());
+        // The archive we just truncated is still on disk with the detached fork's tail attached.
+        // Mark it dirty so the next full store() rewrites it; otherwise the short-term record
+        // follows the new chain while the long-term record keeps states from the abandoned one,
+        // and load() restores that pair on the next start.
+        m_transient.state_added_to_archive = true;
         using_archive = true;
       }
     }
@@ -2666,7 +2677,7 @@ namespace master_nodes
     return result;
   }
 
-  bool master_node_list::store()
+  bool master_node_list::store(bool include_archive)
   {
     if (!m_blockchain.has_db())
         return false; // Haven't been initialized yet
@@ -2686,12 +2697,18 @@ namespace master_nodes
       serialize_entry->clear();
     }
 
+    // Serialising the long-term archive is the expensive half of this function: it grows without
+    // bound (hundreds of MB on mainnet) and the ostringstream/str()/append sequence transiently
+    // needs several times its size. The periodic checkpoint skips it and leaves the dirty flag set
+    // so the next full store() -- end of rescan, or shutdown -- writes it.
+    const bool write_archive = m_transient.state_added_to_archive && include_archive;
+
     m_transient.cache_short_term_data.quorum_states.reserve(m_transient.old_quorum_states.size());
     for (const quorums_by_height &entry : m_transient.old_quorum_states)
       m_transient.cache_short_term_data.quorum_states.push_back(serialize_quorum_state(hf_version, entry.height, entry.quorums));
 
 
-    if (m_transient.state_added_to_archive)
+    if (write_archive)
     {
       for (auto const &it : m_transient.state_archive)
         m_transient.cache_long_term_data.states.push_back(serialize_master_node_state_object(hf_version, it));
@@ -2713,7 +2730,7 @@ namespace master_nodes
     }
 
     m_transient.cache_data_blob.clear();
-    if (m_transient.state_added_to_archive)
+    if (write_archive)
     {
       serialization::binary_string_archiver ba;
       try {
@@ -2747,8 +2764,9 @@ namespace master_nodes
       }
     }
 
-    m_transient.state_added_to_archive = false;
-    m_last_stored_height               = m_state.height;
+    if (write_archive)
+      m_transient.state_added_to_archive = false; // else stays dirty for the next full store()
+    m_last_stored_height = m_state.height;
     return true;
   }
 
@@ -3120,7 +3138,7 @@ namespace master_nodes
       return; // Nothing new since the last write
 
     uint64_t const height = m_state.height;
-    if (store())
+    if (store(false /*include_archive*/))
       MDEBUG("Checkpointed the master node list at height " << height);
     else
       MWARNING("Failed to checkpoint the master node list at height " << height

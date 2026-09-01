@@ -512,7 +512,11 @@ namespace master_nodes
 
     void set_my_master_node_keys(const master_node_keys *keys);
     void set_quorum_history_storage(uint64_t hist_size); // 0 = none (default), 1 = unlimited, N = # of blocks
-    bool store();
+    /// Persist the master node list. When include_archive is false only the bounded short-term blob
+    /// is written and the long-term archive stays dirty for the next full store(); serialising the
+    /// archive costs minutes and several hundred MB of transient allocation once it has grown, so
+    /// the periodic checkpoint must not pay it.
+    bool store(bool include_archive = true);
 
     //TODO: remove after HF18
     crypto::hash hash_uptime_proof(const cryptonote::NOTIFY_UPTIME_PROOF::request &proof) const;
