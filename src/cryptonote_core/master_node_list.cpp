@@ -2748,6 +2748,7 @@ namespace master_nodes
     }
 
     m_transient.state_added_to_archive = false;
+    m_last_stored_height               = m_state.height;
     return true;
   }
 
@@ -3100,6 +3101,30 @@ namespace master_nodes
       x25519_pkey = derived_x25519_pubkey;
 
     return true;
+  }
+
+  // Persist the master node list if it has advanced since the last write. The list is otherwise
+  // only stored at the end of a rescan and in core::deinit(), so a daemon that dies without a clean
+  // shutdown (SIGKILL, OOM, power loss, an assertion failure) loses every block of state it
+  // accumulated while running. On the next launch load_missing_blocks_into_beldex_subsystems() then
+  // has to replay from wherever the last stored state left off, which for a long-running daemon
+  // means rescanning most of the chain -- slow, and able to fail outright, in which case the daemon
+  // cannot start at all. Checkpointing on a timer bounds that replay to a few blocks.
+  //
+  // Locks the blockchain as well as the list because this runs from the idle thread, off the block
+  // handling path, and store() opens its own write transaction (see cleanup_proofs, same pattern).
+  void master_node_list::checkpoint_state()
+  {
+    auto locks = tools::unique_locks(m_mn_mutex, m_blockchain);
+    if (m_state.height <= m_last_stored_height)
+      return; // Nothing new since the last write
+
+    uint64_t const height = m_state.height;
+    if (store())
+      MDEBUG("Checkpointed the master node list at height " << height);
+    else
+      MWARNING("Failed to checkpoint the master node list at height " << height
+               << "; an unclean shutdown will require a longer rescan on the next start");
   }
 
   void master_node_list::cleanup_proofs()
@@ -3525,6 +3550,7 @@ namespace master_nodes
 
     initialize_x25519_map();
 
+    m_last_stored_height = m_state.height;
     MGINFO("Master node data loaded successfully, height: " << m_state.height);
     MGINFO(m_state.master_nodes_infos.size()
            << " nodes and " << m_transient.state_history.size() << " recent states loaded, " << m_transient.state_archive.size()
@@ -3546,6 +3572,7 @@ namespace master_nodes
     }
 
     m_state.height = hard_fork_begins(m_blockchain.nettype(), hf::hf9_master_nodes).value_or(1) - 1;
+    m_last_stored_height = m_state.height;
   }
 
   size_t master_node_info::total_num_locked_contributions() const

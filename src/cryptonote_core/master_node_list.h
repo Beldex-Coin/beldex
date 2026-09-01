@@ -536,6 +536,10 @@ namespace master_nodes
     // Called every hour to remove proofs for expired MNs from memory and the database.
     void cleanup_proofs();
 
+    /// Write the master node list out if it has advanced since the last store. Called periodically
+    /// from core::on_idle so that an unclean shutdown does not force a full rescan on next start.
+    void checkpoint_state();
+
     // Called via RPC from storage server/belnet to report a ping test result for a remote storage
     // server/belnet.
     //
@@ -712,6 +716,10 @@ namespace master_nodes
     cryptonote::Blockchain&       m_blockchain;
     const master_node_keys      *m_master_node_keys;
     uint64_t                      m_store_quorum_history = 0;
+    // Height at which the master node list was last persisted to the DB. Used to periodically
+    // checkpoint state while at the chain tip so that an unclean exit only costs a short replay
+    // instead of a full rescan from the hf9 height.
+    uint64_t                      m_last_stored_height = 0;
     mutable std::shared_mutex     m_x25519_map_mutex;
 
     /// Maps x25519 pubkeys to registration pubkeys + last block seen value (used for expiry)
