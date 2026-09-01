@@ -376,7 +376,7 @@ bool Blockchain::load_missing_blocks_into_beldex_subsystems()
         try {
           m_master_node_list.block_add(blk, txs, checkpoint_ptr);
         } catch (const std::exception& e) {
-          MFATAL("Unable to process block {} for updating master node list: " << e.what());
+          MFATAL("Unable to process block " << cryptonote::get_block_hash(blk) << " at height " << block_height << " for updating master node list: " << e.what());
           return false;
         }
         mnl_iteration_duration += clock::now() - mnl_start;

@@ -1500,7 +1500,7 @@ namespace master_nodes
 
       if (!quorum)
       {
-        throw std::runtime_error{fmt::format("Failed to get testing quorum checkpoint for {} {}", block_type, cryptonote::get_block_hash(block))};
+        throw std::runtime_error{fmt::format("Failed to get testing quorum checkpoint for {}{}", block_type, tools::type_to_hex(cryptonote::get_block_hash(block)))};
       }
 
       bool failed_checkpoint_verify = !master_nodes::verify_checkpoint(block.major_version, *checkpoint, *quorum);
@@ -1517,7 +1517,7 @@ namespace master_nodes
       }
 
       if (failed_checkpoint_verify)
-        throw std::runtime_error{fmt::format("Master node checkpoint failed verification for {} {}", block_type, cryptonote::get_block_hash(block))};
+        throw std::runtime_error{fmt::format("Master node checkpoint failed verification for {}{}", block_type, tools::type_to_hex(cryptonote::get_block_hash(block)))};
     }
 
     //
@@ -1533,7 +1533,7 @@ namespace master_nodes
         cryptonote::block prev_block;
         if (!find_block_in_db(m_blockchain.get_db(), block.prev_id, prev_block))
         {
-          throw std::runtime_error{fmt::format("Alt block {} references previous block {} not available in DB.",cryptonote::get_block_hash(block), block.prev_id)};
+          throw std::runtime_error{fmt::format("Alt block {} references previous block {} not available in DB.", tools::type_to_hex(cryptonote::get_block_hash(block)), tools::type_to_hex(block.prev_id))};
         }
 
         prev_timestamp = prev_block.timestamp;
@@ -1546,7 +1546,7 @@ namespace master_nodes
 
       if (!POS::get_round_timings(m_blockchain, height, prev_timestamp, timings))
       {
-        throw std::runtime_error{fmt::format("Failed to query the block data for POS timings to validate incoming {} at height {}",block_type, height)};
+        throw std::runtime_error{fmt::format("Failed to query the block data for POS timings to validate incoming {}{} at height {}", block_type, tools::type_to_hex(cryptonote::get_block_hash(block)), height)};
       }
     }
 
@@ -1606,7 +1606,7 @@ namespace master_nodes
     }
 
     if (!result)
-      throw std::runtime_error{fmt::format("Failed to verify block components for incoming {} at height {}",block_type, height)};
+      throw std::runtime_error{fmt::format("Failed to verify block components for incoming {}{} at height {}", block_type, tools::type_to_hex(cryptonote::get_block_hash(block)), height)};
   }
 
   void master_node_list::block_add(const cryptonote::block& block, const std::vector<cryptonote::transaction>& txs, cryptonote::checkpoint_t const *checkpoint)
@@ -2431,7 +2431,7 @@ namespace master_nodes
       quorum POS_quorum = generate_POS_quorum(m_blockchain.nettype(), block_leader.key, hf_version, m_state.active_master_nodes_infos(), entropy, block.POS.round);
       if (!verify_POS_quorum_sizes(POS_quorum))
       {
-        throw std::runtime_error{fmt::format("POS block received but POS has insufficient nodes for quorum, block hash {}, height {} " ,cryptonote::get_block_hash(block),height)};
+        throw std::runtime_error{fmt::format("POS block received but POS has insufficient nodes for quorum, block hash {}, height {} ", tools::type_to_hex(cryptonote::get_block_hash(block)), height)};
       }
 
       block_producer_key = POS_quorum.workers[0];
@@ -2620,7 +2620,7 @@ namespace master_nodes
 
     if (starting_state->block_hash != block.prev_id)
     {
-      throw std::runtime_error{fmt::format("Unexpected state_t's hash: {}, does not match the block prev hash: {}",starting_state->block_hash, block.prev_id)};
+      throw std::runtime_error{fmt::format("Unexpected state_t's hash: {}, does not match the block prev hash: {}", tools::type_to_hex(starting_state->block_hash), tools::type_to_hex(block.prev_id))};
     }
 
     // NOTE: Generate the next Master Node list state from this Alt block.
@@ -3353,6 +3353,7 @@ namespace master_nodes
     reset(false);
     if (!m_blockchain.has_db())
     {
+      LOG_PRINT_L0("Blockchain DB is not available, cannot load master node data");
       return false;
     }
 
@@ -3433,7 +3434,10 @@ namespace master_nodes
 
     // NOTE: Deserialize short term state history
     if (!db.get_master_node_data(blob, false))
+    {
+      LOG_PRINT_L0("No short term master node data stored in the DB, regenerating state");
       return false;
+    }
 
     bytes_loaded += blob.size();
     data_for_serialization data_in = {};
@@ -3445,7 +3449,10 @@ namespace master_nodes
     }
 
     if (data_in.states.empty())
+    {
+      LOG_PRINT_L0("Short term master node data in the DB contains no states, regenerating state");
       return false;
+    }
 
     {
       const uint64_t hist_state_from_height = current_height - m_store_quorum_history;
