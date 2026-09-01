@@ -934,7 +934,7 @@ public:
    *
    * @return the block
    */
-  virtual block get_block_from_height(uint64_t height) const = 0;
+  virtual block get_block_from_height(uint64_t height , size_t* size = nullptr) const = 0;
 
   /**
    * @brief fetch a block's timestamp
