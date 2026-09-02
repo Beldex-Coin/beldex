@@ -748,7 +748,6 @@ namespace master_nodes
       bool                                      state_added_to_archive;
       data_for_serialization                    cache_long_term_data;
       data_for_serialization                    cache_short_term_data;
-      std::string                               cache_data_blob;
     } m_transient = {};
 
     state_t m_state; // NOTE: Not in m_transient due to the non-trivial constructor. We can't blanket initialise using = {}; needs to be reset in ::reset(...) manually

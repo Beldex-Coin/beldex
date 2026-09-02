@@ -2729,40 +2729,49 @@ namespace master_nodes
       m_transient.cache_short_term_data.states.push_back(serialize_master_node_state_object(hf_version, *it, it->height < max_short_term_height /*only_serialize_quorums*/));
     }
 
-    m_transient.cache_data_blob.clear();
-    if (write_archive)
-    {
-      serialization::binary_string_archiver ba;
-      try {
-        serialization::serialize(ba, m_transient.cache_long_term_data);
-      } catch (const std::exception& e) {
-        LOG_ERROR("Failed to store master node info: failed to serialize long term data: " << e.what());
-        return false;
-      }
-      m_transient.cache_data_blob.append(ba.str());
+    // Serialise one cache and hand it to the DB. The archiver owns an ostringstream whose buffer is
+    // as large as the blob, so it is scoped to die before the write rather than being held alive
+    // beside a copy of itself; the blob is moved out rather than appended into a member that would
+    // keep its high-water capacity for the life of the process. On a large long-term archive each
+    // avoided copy is hundreds of MB, which is the difference between fitting in a small container
+    // and swapping.
+    auto write_cache = [this](data_for_serialization &cache, bool long_term, std::string_view what) {
+      auto started = std::chrono::steady_clock::now();
+      std::string blob;
       {
-        auto &db = m_blockchain.get_db();
-        cryptonote::db_wtxn_guard txn_guard{db};
-        db.set_master_node_data(m_transient.cache_data_blob, true /*long_term*/);
-      }
-    }
+        serialization::binary_string_archiver ba;
+        try {
+          serialization::serialize(ba, cache);
+        } catch (const std::exception& e) {
+          LOG_ERROR("Failed to store master node info: failed to serialize " << what << " data: " << e.what());
+          return false;
+        }
+        blob = ba.str();
+      } // archiver, and its copy of the bytes, released here
 
-    m_transient.cache_data_blob.clear();
-    {
-      serialization::binary_string_archiver ba;
-      try {
-        serialization::serialize(ba, m_transient.cache_short_term_data);
-      } catch (const std::exception& e) {
-        LOG_ERROR("Failed to store master node info: failed to serialize short term data: " << e.what());
-        return false;
-      }
-      m_transient.cache_data_blob.append(ba.str());
+      // The serialised objects are no longer needed; release them before the write so the peak is
+      // the blob alone rather than the blob plus everything it was built from.
+      cache.clear();
+      cache.states.shrink_to_fit();
+      cache.quorum_states.shrink_to_fit();
+
+      const size_t bytes = blob.size();
       {
         auto &db = m_blockchain.get_db();
         cryptonote::db_wtxn_guard txn_guard{db};
-        db.set_master_node_data(m_transient.cache_data_blob, false /*long_term*/);
+        db.set_master_node_data(blob, long_term);
       }
-    }
+      MGINFO(fmt::format("Stored {} master node data: {} in {:.2f}s", what,
+                         tools::get_human_readable_bytes(bytes),
+                         std::chrono::duration<double>{std::chrono::steady_clock::now() - started}.count()));
+      return true;
+    };
+
+    if (write_archive && !write_cache(m_transient.cache_long_term_data, true, "long term"))
+      return false;
+
+    if (!write_cache(m_transient.cache_short_term_data, false, "short term"))
+      return false;
 
     if (write_archive)
       m_transient.state_added_to_archive = false; // else stays dirty for the next full store()
