@@ -1500,7 +1500,7 @@ namespace master_nodes
 
       if (!quorum)
       {
-        throw std::runtime_error{fmt::format("Failed to get testing quorum checkpoint for {} {}", block_type, cryptonote::get_block_hash(block))};
+        throw std::runtime_error{fmt::format("Failed to get testing quorum checkpoint for {}{}", block_type, tools::type_to_hex(cryptonote::get_block_hash(block)))};
       }
 
       bool failed_checkpoint_verify = !master_nodes::verify_checkpoint(block.major_version, *checkpoint, *quorum);
@@ -1517,7 +1517,7 @@ namespace master_nodes
       }
 
       if (failed_checkpoint_verify)
-        throw std::runtime_error{fmt::format("Master node checkpoint failed verification for {} {}", block_type, cryptonote::get_block_hash(block))};
+        throw std::runtime_error{fmt::format("Master node checkpoint failed verification for {}{}", block_type, tools::type_to_hex(cryptonote::get_block_hash(block)))};
     }
 
     //
@@ -1533,7 +1533,7 @@ namespace master_nodes
         cryptonote::block prev_block;
         if (!find_block_in_db(m_blockchain.get_db(), block.prev_id, prev_block))
         {
-          throw std::runtime_error{fmt::format("Alt block {} references previous block {} not available in DB.",cryptonote::get_block_hash(block), block.prev_id)};
+          throw std::runtime_error{fmt::format("Alt block {} references previous block {} not available in DB.", tools::type_to_hex(cryptonote::get_block_hash(block)), tools::type_to_hex(block.prev_id))};
         }
 
         prev_timestamp = prev_block.timestamp;
@@ -1546,7 +1546,7 @@ namespace master_nodes
 
       if (!POS::get_round_timings(m_blockchain, height, prev_timestamp, timings))
       {
-        throw std::runtime_error{fmt::format("Failed to query the block data for POS timings to validate incoming {} at height {}",block_type, height)};
+        throw std::runtime_error{fmt::format("Failed to query the block data for POS timings to validate incoming {}{} at height {}", block_type, tools::type_to_hex(cryptonote::get_block_hash(block)), height)};
       }
     }
 
@@ -1606,7 +1606,7 @@ namespace master_nodes
     }
 
     if (!result)
-      throw std::runtime_error{fmt::format("Failed to verify block components for incoming {} at height {}",block_type, height)};
+      throw std::runtime_error{fmt::format("Failed to verify block components for incoming {}{} at height {}", block_type, tools::type_to_hex(cryptonote::get_block_hash(block)), height)};
   }
 
   void master_node_list::block_add(const cryptonote::block& block, const std::vector<cryptonote::transaction>& txs, cryptonote::checkpoint_t const *checkpoint)
@@ -2195,6 +2195,12 @@ namespace master_nodes
   {
     std::lock_guard lock(m_mn_mutex);
 
+    // We are about to move m_state backwards. Whatever is on disk was written for a chain that has
+    // now been rolled back -- possibly a different fork at the same height -- so clear the
+    // high-water mark, otherwise checkpoint_state()'s guard suppresses every write until the chain
+    // climbs back past it and the stale copy survives to be reloaded on the next start.
+    m_last_stored_height = 0;
+
     uint64_t revert_to_height = height - 1;
     bool reinitialise         = false;
     bool using_archive        = false;
@@ -2215,6 +2221,11 @@ namespace master_nodes
       {
         m_transient.state_history.clear();
         m_transient.state_archive.erase(std::next(it), m_transient.state_archive.end());
+        // The archive we just truncated is still on disk with the detached fork's tail attached.
+        // Mark it dirty so the next full store() rewrites it; otherwise the short-term record
+        // follows the new chain while the long-term record keeps states from the abandoned one,
+        // and load() restores that pair on the next start.
+        m_transient.state_added_to_archive = true;
         using_archive = true;
       }
     }
@@ -2431,7 +2442,7 @@ namespace master_nodes
       quorum POS_quorum = generate_POS_quorum(m_blockchain.nettype(), block_leader.key, hf_version, m_state.active_master_nodes_infos(), entropy, block.POS.round);
       if (!verify_POS_quorum_sizes(POS_quorum))
       {
-        throw std::runtime_error{fmt::format("POS block received but POS has insufficient nodes for quorum, block hash {}, height {} " ,cryptonote::get_block_hash(block),height)};
+        throw std::runtime_error{fmt::format("POS block received but POS has insufficient nodes for quorum, block hash {}, height {} ", tools::type_to_hex(cryptonote::get_block_hash(block)), height)};
       }
 
       block_producer_key = POS_quorum.workers[0];
@@ -2620,7 +2631,7 @@ namespace master_nodes
 
     if (starting_state->block_hash != block.prev_id)
     {
-      throw std::runtime_error{fmt::format("Unexpected state_t's hash: {}, does not match the block prev hash: {}",starting_state->block_hash, block.prev_id)};
+      throw std::runtime_error{fmt::format("Unexpected state_t's hash: {}, does not match the block prev hash: {}", tools::type_to_hex(starting_state->block_hash), tools::type_to_hex(block.prev_id))};
     }
 
     // NOTE: Generate the next Master Node list state from this Alt block.
@@ -2666,7 +2677,7 @@ namespace master_nodes
     return result;
   }
 
-  bool master_node_list::store()
+  bool master_node_list::store(bool include_archive)
   {
     if (!m_blockchain.has_db())
         return false; // Haven't been initialized yet
@@ -2686,12 +2697,18 @@ namespace master_nodes
       serialize_entry->clear();
     }
 
+    // Serialising the long-term archive is the expensive half of this function: it grows without
+    // bound (hundreds of MB on mainnet) and the ostringstream/str()/append sequence transiently
+    // needs several times its size. The periodic checkpoint skips it and leaves the dirty flag set
+    // so the next full store() -- end of rescan, or shutdown -- writes it.
+    const bool write_archive = m_transient.state_added_to_archive && include_archive;
+
     m_transient.cache_short_term_data.quorum_states.reserve(m_transient.old_quorum_states.size());
     for (const quorums_by_height &entry : m_transient.old_quorum_states)
       m_transient.cache_short_term_data.quorum_states.push_back(serialize_quorum_state(hf_version, entry.height, entry.quorums));
 
 
-    if (m_transient.state_added_to_archive)
+    if (write_archive)
     {
       for (auto const &it : m_transient.state_archive)
         m_transient.cache_long_term_data.states.push_back(serialize_master_node_state_object(hf_version, it));
@@ -2712,42 +2729,53 @@ namespace master_nodes
       m_transient.cache_short_term_data.states.push_back(serialize_master_node_state_object(hf_version, *it, it->height < max_short_term_height /*only_serialize_quorums*/));
     }
 
-    m_transient.cache_data_blob.clear();
-    if (m_transient.state_added_to_archive)
-    {
-      serialization::binary_string_archiver ba;
-      try {
-        serialization::serialize(ba, m_transient.cache_long_term_data);
-      } catch (const std::exception& e) {
-        LOG_ERROR("Failed to store master node info: failed to serialize long term data: " << e.what());
-        return false;
-      }
-      m_transient.cache_data_blob.append(ba.str());
+    // Serialise one cache and hand it to the DB. The archiver owns an ostringstream whose buffer is
+    // as large as the blob, so it is scoped to die before the write rather than being held alive
+    // beside a copy of itself; the blob is moved out rather than appended into a member that would
+    // keep its high-water capacity for the life of the process. On a large long-term archive each
+    // avoided copy is hundreds of MB, which is the difference between fitting in a small container
+    // and swapping.
+    auto write_cache = [this](data_for_serialization &cache, bool long_term, std::string_view what) {
+      auto started = std::chrono::steady_clock::now();
+      std::string blob;
+      {
+        serialization::binary_string_archiver ba;
+        try {
+          serialization::serialize(ba, cache);
+        } catch (const std::exception& e) {
+          LOG_ERROR("Failed to store master node info: failed to serialize " << what << " data: " << e.what());
+          return false;
+        }
+        blob = ba.str();
+      } // archiver, and its copy of the bytes, released here
+
+      // The serialised objects are no longer needed; release them before the write so the peak is
+      // the blob alone rather than the blob plus everything it was built from.
+      cache.clear();
+      cache.states.shrink_to_fit();
+      cache.quorum_states.shrink_to_fit();
+
+      const size_t bytes = blob.size();
       {
         auto &db = m_blockchain.get_db();
         cryptonote::db_wtxn_guard txn_guard{db};
-        db.set_master_node_data(m_transient.cache_data_blob, true /*long_term*/);
+        db.set_master_node_data(blob, long_term);
       }
-    }
+      MGINFO(fmt::format("Stored {} master node data: {} in {:.2f}s", what,
+                         tools::get_human_readable_bytes(bytes),
+                         std::chrono::duration<double>{std::chrono::steady_clock::now() - started}.count()));
+      return true;
+    };
 
-    m_transient.cache_data_blob.clear();
-    {
-      serialization::binary_string_archiver ba;
-      try {
-        serialization::serialize(ba, m_transient.cache_short_term_data);
-      } catch (const std::exception& e) {
-        LOG_ERROR("Failed to store master node info: failed to serialize short term data: " << e.what());
-        return false;
-      }
-      m_transient.cache_data_blob.append(ba.str());
-      {
-        auto &db = m_blockchain.get_db();
-        cryptonote::db_wtxn_guard txn_guard{db};
-        db.set_master_node_data(m_transient.cache_data_blob, false /*long_term*/);
-      }
-    }
+    if (write_archive && !write_cache(m_transient.cache_long_term_data, true, "long term"))
+      return false;
 
-    m_transient.state_added_to_archive = false;
+    if (!write_cache(m_transient.cache_short_term_data, false, "short term"))
+      return false;
+
+    if (write_archive)
+      m_transient.state_added_to_archive = false; // else stays dirty for the next full store()
+    m_last_stored_height = m_state.height;
     return true;
   }
 
@@ -3102,6 +3130,30 @@ namespace master_nodes
     return true;
   }
 
+  // Persist the master node list if it has advanced since the last write. The list is otherwise
+  // only stored at the end of a rescan and in core::deinit(), so a daemon that dies without a clean
+  // shutdown (SIGKILL, OOM, power loss, an assertion failure) loses every block of state it
+  // accumulated while running. On the next launch load_missing_blocks_into_beldex_subsystems() then
+  // has to replay from wherever the last stored state left off, which for a long-running daemon
+  // means rescanning most of the chain -- slow, and able to fail outright, in which case the daemon
+  // cannot start at all. Checkpointing on a timer bounds that replay to a few blocks.
+  //
+  // Locks the blockchain as well as the list because this runs from the idle thread, off the block
+  // handling path, and store() opens its own write transaction (see cleanup_proofs, same pattern).
+  void master_node_list::checkpoint_state()
+  {
+    auto locks = tools::unique_locks(m_mn_mutex, m_blockchain);
+    if (m_state.height <= m_last_stored_height)
+      return; // Nothing new since the last write
+
+    uint64_t const height = m_state.height;
+    if (store(false /*include_archive*/))
+      MDEBUG("Checkpointed the master node list at height " << height);
+    else
+      MWARNING("Failed to checkpoint the master node list at height " << height
+               << "; an unclean shutdown will require a longer rescan on the next start");
+  }
+
   void master_node_list::cleanup_proofs()
   {
     MDEBUG("Cleaning up expired MN proofs");
@@ -3353,6 +3405,7 @@ namespace master_nodes
     reset(false);
     if (!m_blockchain.has_db())
     {
+      LOG_PRINT_L0("Blockchain DB is not available, cannot load master node data");
       return false;
     }
 
@@ -3433,7 +3486,10 @@ namespace master_nodes
 
     // NOTE: Deserialize short term state history
     if (!db.get_master_node_data(blob, false))
+    {
+      LOG_PRINT_L0("No short term master node data stored in the DB, regenerating state");
       return false;
+    }
 
     bytes_loaded += blob.size();
     data_for_serialization data_in = {};
@@ -3445,7 +3501,10 @@ namespace master_nodes
     }
 
     if (data_in.states.empty())
+    {
+      LOG_PRINT_L0("Short term master node data in the DB contains no states, regenerating state");
       return false;
+    }
 
     {
       const uint64_t hist_state_from_height = current_height - m_store_quorum_history;
@@ -3518,6 +3577,7 @@ namespace master_nodes
 
     initialize_x25519_map();
 
+    m_last_stored_height = m_state.height;
     MGINFO("Master node data loaded successfully, height: " << m_state.height);
     MGINFO(m_state.master_nodes_infos.size()
            << " nodes and " << m_transient.state_history.size() << " recent states loaded, " << m_transient.state_archive.size()
@@ -3539,6 +3599,7 @@ namespace master_nodes
     }
 
     m_state.height = hard_fork_begins(m_blockchain.nettype(), hf::hf9_master_nodes).value_or(1) - 1;
+    m_last_stored_height = m_state.height;
   }
 
   size_t master_node_info::total_num_locked_contributions() const

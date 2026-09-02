@@ -2431,6 +2431,7 @@ namespace cryptonote
     m_check_disk_space_interval.do_call([this] { return check_disk_space(); });
     m_block_rate_interval.do_call([this] { return check_block_rate(); });
     m_mn_proof_cleanup_interval.do_call([&mnl=m_master_node_list] { mnl.cleanup_proofs(); return true; });
+    m_mn_list_store_interval.do_call([&mnl=m_master_node_list] { mnl.checkpoint_state(); return true; });
 
     std::chrono::seconds lifetime{time(nullptr) - get_start_time()};
     if (m_master_node && lifetime > get_net_config().UPTIME_PROOF_STARTUP_DELAY) // Give us some time to connect to peers before sending uptimes
