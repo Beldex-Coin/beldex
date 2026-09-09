@@ -1178,6 +1178,7 @@ namespace cryptonote
      tools::periodic_task m_blockchain_pruning_interval{5h}; //!< interval for incremental blockchain pruning
      tools::periodic_task m_master_node_vote_relayer{2min, false};
      tools::periodic_task m_mn_proof_cleanup_interval{1h, false};
+     tools::periodic_task m_mn_list_store_interval{5min, false}; //!< interval for checkpointing the master node list so an unclean exit doesn't force a full rescan
      tools::periodic_task m_systemd_notify_interval{10s};
 
      std::atomic<bool> m_starter_message_showed; //!< has the "daemon will sync now" message been shown?

@@ -743,6 +743,7 @@ namespace cryptonote
     bool get_split_transactions_blobs(const std::vector<crypto::hash>& txs_ids, std::vector<std::tuple<crypto::hash, cryptonote::blobdata, crypto::hash, cryptonote::blobdata>>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
     bool get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<transaction>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
 
+
     /**
      * @brief looks up transactions based on a list of transaction hashes and returns the block
      * height in which they were mined, or 0 if not found on the blockchain.
@@ -1032,6 +1033,15 @@ namespace cryptonote
 
 #ifndef IN_UNIT_TESTS
   private:
+
+    /**
+     * @brief Non-locking form of get_transactions.
+     *
+     * The caller must already hold the blockchain lock. Private on purpose: a non-locking accessor
+     * is easy to call from the wrong place, and the locking get_transactions() is the entry point
+     * everything outside Blockchain should use.
+     */
+    bool _get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<transaction>& txs, std::unordered_set<crypto::hash>* missed_txs = nullptr) const;
 #endif
 
     struct block_pow_verified

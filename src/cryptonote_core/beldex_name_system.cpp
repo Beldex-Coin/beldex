@@ -1799,6 +1799,10 @@ scoped_db_transaction::~scoped_db_transaction()
 enum struct db_version { v0, v1_track_updates, v2_full_rows };
 auto constexpr DB_VERSION = db_version::v2_full_rows;
 
+// How often, in blocks, we persist our progress into the settings table even when the block held no
+// BNS transaction.  See add_block() for why we don't only save on BNS blocks.
+constexpr uint64_t SETTINGS_SAVE_INTERVAL = 1000;
+
 constexpr auto EXPIRATION = " (expiration_height >= ?) "sv;
 
 } // anon. namespace
@@ -1951,6 +1955,10 @@ AND NOT EXISTS   (SELECT * FROM mappings WHERE owner.id = mappings.backup_owner_
     uint64_t bns_height   = 0;
     crypto::hash bns_hash = blockchain->get_tail_id(bns_height);
 
+    // The real chain tip, kept aside because bns_height/bns_hash get reassigned below.
+    uint64_t const chain_height   = bns_height;
+    crypto::hash const chain_hash = bns_hash;
+
     // Try support out of date BNS databases by checking if the stored
     // settings->[top_hash|top_height] match what we expect. If they match, we
     // don't drop the DB but will load the missing blocks in a later step.
@@ -1973,6 +1981,38 @@ AND NOT EXISTS   (SELECT * FROM mappings WHERE owner.id = mappings.backup_owner_
       this->last_processed_hash   = settings.top_hash;
       assert(settings.version == static_cast<int>(DB_VERSION));
     }
+    else if (settings.top_height > chain_height)
+    {
+      // We're ahead of the blockchain rather than diverged from it: the blockchain db lost its most
+      // recent blocks while our own writes survived.  That is the expected outcome of a hard kill,
+      // since --db-sync-mode defaults to async (so lmdb buffers writes) while we commit through a
+      // WAL.  What we have on the chain is a prefix of what we already processed, so we can discard
+      // the mappings above the chain tip -- exactly what a reorg does -- and let the caller rescan
+      // the short remainder, instead of dropping every mapping and rebuilding from the HF18 height.
+      MWARNING("BNS db is ahead of the blockchain (bns height " << settings.top_height << ", chain height "
+               << chain_height << "); rolling BNS back to the chain tip rather than rebuilding it");
+
+      scoped_db_transaction db_transaction(*this);
+      if (!db_transaction) return false;
+
+      if (!prune_db(chain_height + 1))
+      {
+        MERROR("Failed to roll the BNS db back to height " << chain_height);
+        return false;
+      }
+
+      this->last_processed_height = chain_height;
+      this->last_processed_hash   = chain_hash;
+      if (!save_settings(last_processed_height, last_processed_hash, static_cast<int>(DB_VERSION)))
+      {
+        MERROR("Failed to save BNS settings after rolling back to height " << chain_height);
+        return false;
+      }
+
+      db_transaction.commit = true;
+    }
+    // TODO: Remove this fallback once the BNS rollback/recovery logic has
+    // been verified in production. This else should no longer be reachable.
     else
     {
       // Otherwise we've got something unrecoverable: a top_hash + top_height that are different
@@ -2224,10 +2264,15 @@ bool name_system_db::add_block(const cryptonote::block &block, const std::vector
 
   last_processed_height = height;
   last_processed_hash   = cryptonote::get_block_hash(block);
-  if (bns_parsed_from_block)
+
+  // Record our progress whenever the block carried BNS data, and periodically even when it didn't.
+  // Without the periodic save the on-disk height only advances on the (rare) blocks containing a BNS
+  // tx, so an unclean shutdown rewinds us to the last such block -- potentially hundreds of
+  // thousands of blocks back -- and init() has to rescan all of it.
+  if (bns_parsed_from_block || height % SETTINGS_SAVE_INTERVAL == 0)
   {
     save_settings(last_processed_height, last_processed_hash, static_cast<int>(DB_VERSION));
-    db_transaction.commit = bns_parsed_from_block;
+    db_transaction.commit = true;
   }
   return true;
 }

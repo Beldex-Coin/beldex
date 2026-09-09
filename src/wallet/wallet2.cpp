@@ -3692,7 +3692,7 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
           generate_genesis(b);
           m_blockchain.clear();
           m_blockchain.push_back(get_block_hash(b));
-          m_cached_height++;
+          m_cached_height = m_blockchain.size();
           short_chain_history.clear();
           get_short_chain_history(short_chain_history);
           fast_refresh(stop_height, blocks_start_height, short_chain_history, true);
