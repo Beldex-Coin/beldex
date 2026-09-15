@@ -1719,12 +1719,38 @@ namespace nodetool
   template<class t_payload_net_handler>
   bool node_server<t_payload_net_handler>::idle_worker()
   {
+    close_peerlist_only_connections();
     m_peer_handshake_idle_maker_interval.do_call([this] { return peer_sync_idle_maker(); });
     m_connections_maker_interval.do_call([this] { return connections_maker(); });
     m_gray_peerlist_housekeeping_interval.do_call([this] { return gray_peerlist_housekeeping(); });
     m_peerlist_store_interval.do_call([this] { return store_config(); });
     m_incoming_connections_interval.do_call([this] { return check_incoming_connections(); });
     return true;
+  }
+  //-----------------------------------------------------------------------------------
+  // Drop the connections that handle_handshake() answered with a peerlist while we were at our
+  // inbound limit. By the time we get here the reply has been queued and written, so close() takes
+  // its graceful path (or the peer has already hung up itself, which is what a peerlist-only
+  // requester does anyway -- closing an already-dead connection is harmless).
+  template<class t_payload_net_handler>
+  void node_server<t_payload_net_handler>::close_peerlist_only_connections()
+  {
+    decltype(m_peerlist_only_conns) conns;
+    {
+      std::lock_guard lock{m_peerlist_only_conns_mutex};
+      if (m_peerlist_only_conns.empty())
+        return;
+      conns.swap(m_peerlist_only_conns);
+    }
+
+    for (const auto& [addr, conn_id] : conns)
+    {
+      auto zone = m_network_zones.find(addr.get_zone());
+      if (zone == m_network_zones.end())
+        continue;
+      MDEBUG("Closing peerlist-only connection to " << addr.str());
+      zone->second.m_net_server.get_config_object().close(conn_id);
+    }
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
@@ -2163,8 +2189,25 @@ namespace nodetool
 
     if (zone.m_current_number_of_in_peers >= zone.m_config.m_net_config.max_in_connection_count) // in peers limit
     {
-      LOG_PRINT_CCONTEXT_L0( "COMMAND_HANDSHAKE came, but already have max incoming connections, so dropping this one.");
-      drop_connection(context);
+      // We cannot take this peer on, but handing out a peerlist costs us one round trip and is the
+      // whole reason a bootstrapping node dials us in the first place -- a seed that refuses even
+      // that leaves new nodes unable to find anyone. So fill in the peerlist reply and drop the
+      // connection once it has been written (see m_peerlist_only_conns: closing here would discard
+      // the response). We deliberately skip everything that would adopt this peer: no peer_id
+      // association, no pingback, no peerlist insertion, and no process_payload_sync_data, so an
+      // untrusted peer we are about to hang up on cannot influence our sync state.
+      LOG_PRINT_CCONTEXT_L0("COMMAND_HANDSHAKE came, but already have max incoming connections ("
+          << zone.m_current_number_of_in_peers << "/" << zone.m_config.m_net_config.max_in_connection_count
+          << "); replying with a peerlist then dropping this one");
+
+      zone.m_peerlist.get_peerlist_head(rsp.local_peerlist_new, true);
+      get_local_node_data(rsp.node_data, zone);
+      m_payload_handler.get_payload_sync_data(rsp.payload_data);
+
+      {
+        std::lock_guard lock{m_peerlist_only_conns_mutex};
+        m_peerlist_only_conns.emplace_back(context.m_remote_address, context.m_connection_id);
+      }
       return 1;
     }
     LOG_PRINT_CC_L0(context,"process_payload_sync_data");

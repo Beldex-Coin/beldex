@@ -358,6 +358,7 @@ namespace nodetool
     bool set_rate_down_limit(const boost::program_options::variables_map& vm, int64_t limit);
     bool set_rate_limit(const boost::program_options::variables_map& vm, int64_t limit);
 
+    void close_peerlist_only_connections();
     bool has_too_many_connections(const epee::net_utils::network_address &address);
     size_t get_incoming_connections_count();
     size_t get_incoming_connections_count(network_zone&);
@@ -411,6 +412,13 @@ namespace nodetool
     tools::periodic_task m_peerlist_store_interval{30min};
     tools::periodic_task m_gray_peerlist_housekeeping_interval{1min};
     tools::periodic_task m_incoming_connections_interval{1h};
+
+    // Connections that were handshaked purely to hand out a peerlist because we are at our inbound
+    // limit. They cannot be closed from handle_handshake(): connection::close() only defers the
+    // shutdown when the send queue is already non-empty, and the handshake response is queued after
+    // the handler returns, so closing there discards the reply. Closed from idle_worker() instead.
+    std::mutex m_peerlist_only_conns_mutex;
+    std::vector<std::pair<epee::net_utils::network_address, epee::connection_id_t>> m_peerlist_only_conns;
 
     std::list<epee::net_utils::network_address>   m_priority_peers;
     std::vector<epee::net_utils::network_address> m_exclusive_peers;
