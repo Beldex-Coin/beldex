@@ -594,6 +594,61 @@ TEST_F(WalletTest1, WalletRefresh)
 //     ASSERT_TRUE(wmgr->closeWallet(wallet1));
 // }
 
+TEST_F(WalletTest1, SweepAll)
+{
+    ASSERT_TRUE(fs::exists(CURRENT_SRC_WALLET + ".keys"))
+        << "Missing source wallet keys: " << CURRENT_SRC_WALLET << ".keys";
+    if (!CURRENT_DST_WALLET.empty()) {
+        ASSERT_TRUE(fs::exists(CURRENT_DST_WALLET + ".keys"))
+            << "Missing destination wallet keys: " << CURRENT_DST_WALLET << ".keys";
+    }
+    auto close_wallet = [this](Wallet::Wallet *wallet) {
+        // The source is explicitly stored after a successful sweep.
+        if (wallet) wmgr->closeWallet(wallet, false);
+    };
+    std::unique_ptr<Wallet::Wallet, decltype(close_wallet)> wallet(
+        wmgr->openWallet(CURRENT_SRC_WALLET, TESTNET_WALLET_PASS,
+                         Wallet::NetworkType::TESTNET), close_wallet);
+    ASSERT_NE(wallet.get(), nullptr);
+    ASSERT_TRUE(wallet->good()) << wallet->status().second;
+    ASSERT_TRUE(wallet->init(TESTNET_DAEMON_ADDRESS, 0));
+    ASSERT_TRUE(wallet->refresh());
+    ASSERT_GT(wallet->unlockedBalance(0), 0u);
+
+    std::string destination = wallet->mainAddress();
+    if (!CURRENT_DST_WALLET.empty() && CURRENT_DST_WALLET != CURRENT_SRC_WALLET) {
+        std::unique_ptr<Wallet::Wallet, decltype(close_wallet)> recipient(
+            wmgr->openWallet(CURRENT_DST_WALLET, TESTNET_WALLET_PASS,
+                             Wallet::NetworkType::TESTNET), close_wallet);
+        ASSERT_NE(recipient.get(), nullptr);
+        ASSERT_TRUE(recipient->good()) << recipient->status().second;
+        destination = recipient->mainAddress();
+    }
+
+    auto dispose_tx = [&wallet](Wallet::PendingTransaction *tx) {
+        if (tx) wallet->disposeTransaction(tx);
+    };
+    // Equivalent to CLI: sweep_all index=all unimportant [destination].
+    // An absent amount sweeps all spendable outputs in account 0.
+    constexpr uint32_t priority = 1; // unimportant (non-flash)
+    std::unique_ptr<Wallet::PendingTransaction, decltype(dispose_tx)> tx(
+        wallet->createTransaction(destination, std::nullopt, priority, 0, {}),
+        dispose_tx);
+    ASSERT_NE(tx.get(), nullptr);
+    ASSERT_TRUE(tx->good()) << tx->status().second;
+    ASSERT_GT(tx->amount(), 0u);
+    ASSERT_GT(tx->fee(), 0u);
+    const auto txids = tx->txid();
+    std::cout << "Sweeping from " << CURRENT_SRC_WALLET
+              << " to " << destination
+              << ": amount=" << Wallet::Wallet::displayAmount(tx->amount())
+              << ", fee=" << Wallet::Wallet::displayAmount(tx->fee()) << std::endl;
+    ASSERT_TRUE(tx->commit("", false, false)) << tx->status().second;
+    for (const auto &txid : txids)
+        std::cout << "Submitted sweep transaction: " << txid << std::endl;
+    ASSERT_TRUE(wallet->store(CURRENT_SRC_WALLET)) << wallet->status().second;
+}
+
 TEST_F(WalletTest1, BnsBuyTransaction)
 {
     //TODO=Beldex_bns have to check more conditions also the wallet_listener check
@@ -1591,7 +1646,7 @@ int main(int argc, char** argv)
 
     CURRENT_SRC_WALLET = TESTNET_WALLET5_NAME;
     CURRENT_DST_WALLET = TESTNET_WALLET1_NAME;
-
+    
     ::testing::InitGoogleTest(&argc, argv);
     Wallet::WalletManagerFactory::setLogLevel(Wallet::WalletManagerFactory::LogLevel_Max);
     return RUN_ALL_TESTS();
