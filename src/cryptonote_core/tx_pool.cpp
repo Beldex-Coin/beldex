@@ -263,7 +263,7 @@ namespace cryptonote
 
     if(tx.type == txtype::key_image_unlock)
     {
-      if(hf_version  >= hf::hf18_bns)
+      if(!opts.kept_by_block && hf_version  >= hf::hf18_bns)
       {
         crypto::public_key mnode_key;
         if (!cryptonote::get_master_node_pubkey_from_tx_extra(tx.extra, mnode_key))
@@ -274,7 +274,7 @@ namespace cryptonote
           return false;
 
         uint64_t block_height = m_blockchain.get_current_blockchain_height();
-        if (!m_blockchain.get_master_node_list().is_master_node(mnode_key))
+        if (!m_blockchain.get_master_node_list().is_master_node(mnode_key, /*require_active=*/false))
           return false;
         const master_nodes::master_node_info &node_info = m_blockchain.get_master_node_list().get_master_node_details(mnode_key);
 
