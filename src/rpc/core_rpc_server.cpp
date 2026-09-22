@@ -372,6 +372,7 @@ namespace cryptonote::rpc {
     auto db_size = db.get_database_size();
     info.response["database_size"] = context.admin ? db_size : round_up(db_size, 1'000'000'000);
     info.response["version"]       = context.admin ? BELDEX_VERSION_FULL : std::to_string(BELDEX_VERSION[0]);
+    info.response["release_codename"] = BELDEX_RELEASE_NAME;
     info.response["status_line"]   = context.admin ? m_core.get_status_string() :
       "v" + std::to_string(BELDEX_VERSION[0]) + "; Height: " + std::to_string(height);
 

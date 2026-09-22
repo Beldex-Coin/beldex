@@ -564,6 +564,7 @@ namespace cryptonote::rpc {
   /// - `version` -- Current version of this daemon, as a string.  For a public node this will just be
   ///   the major and minor version (e.g. "9"); for an admin rpc endpoint this will return the full
   ///   version (e.g. "9.2.1").
+  /// - `release_codename` -- Release codename of this daemon build (e.g. "Obscura").
   /// - `status_line` -- A short one-line summary string of the node (requires an admin/unrestricted
   ///   connection for most details)
   ///
