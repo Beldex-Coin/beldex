@@ -966,6 +966,13 @@ namespace cryptonote
   {
     MTRACE("Received NOTIFY_NEW_MASTER_NODE_VOTE (" << arg.votes.size() << " txes)");
 
+    if (arg.votes.size() > CURRENCY_PROTOCOL_MAX_VOTES_COUNT)
+    {
+      LOG_ERROR_CCONTEXT("Too many votes (" << arg.votes.size() << ") in NOTIFY_NEW_MASTER_NODE_VOTE (max " << CURRENCY_PROTOCOL_MAX_VOTES_COUNT << "), dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
+
     if(context.m_state != cryptonote_connection_context::state_normal)
       return 1;
 
@@ -1008,6 +1015,13 @@ namespace cryptonote
   int t_cryptonote_protocol_handler<t_core>::handle_request_fluffy_missing_tx(int command, NOTIFY_REQUEST_FLUFFY_MISSING_TX::request& arg, cryptonote_connection_context& context)
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_REQUEST_FLUFFY_MISSING_TX (" << arg.missing_tx_indices.size() << " txes), block hash " << arg.block_hash);
+
+    if (arg.missing_tx_indices.size() > CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT)
+    {
+      LOG_ERROR_CCONTEXT("Too many missing_tx_indices (" << arg.missing_tx_indices.size() << "), dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
 
     std::vector<std::pair<cryptonote::blobdata, block>> local_blocks;
     std::vector<cryptonote::blobdata> local_txs;
@@ -1109,6 +1123,13 @@ namespace cryptonote
   int t_cryptonote_protocol_handler<t_core>::handle_notify_new_transactions(int command, NOTIFY_NEW_TRANSACTIONS::request& arg, cryptonote_connection_context& context)
   {
     MLOG_P2P_MESSAGE("Received NOTIFY_NEW_TRANSACTIONS (" << arg.txs.size() << " txes w/ " << arg.flashes.size() << " flashes)");
+
+    if (arg.txs.size() > CURRENCY_PROTOCOL_MAX_TXS_REQUEST_COUNT || arg.flashes.size() > CURRENCY_PROTOCOL_MAX_FLASHES_COUNT)
+    {
+      LOG_ERROR_CCONTEXT("Oversized NOTIFY_NEW_TRANSACTIONS (txs=" << arg.txs.size() << ", flashes=" << arg.flashes.size() << "), dropping connection");
+      drop_connection(context, false, false);
+      return 1;
+    }
     for (const auto &blob: arg.txs)
       MLOGIF_P2P_MESSAGE(cryptonote::transaction tx; crypto::hash hash; bool ret = cryptonote::parse_and_validate_tx_from_blob(blob, tx, hash);, ret, "Including transaction " << hash);
 
