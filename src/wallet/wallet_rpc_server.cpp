@@ -1362,7 +1362,10 @@ namespace tools
 
         for (size_t s = 0; s < cd.sources.size(); ++s)
         {
-          desc.amount_in += cd.sources[s].amount;
+          uint64_t new_amount_in = desc.amount_in + cd.sources[s].amount;
+          if (new_amount_in < desc.amount_in)
+            throw wallet_rpc_error{error_code::BAD_UNSIGNED_TX_DATA, "amount_in overflow"};
+          desc.amount_in = new_amount_in;
           size_t ring_size = cd.sources[s].outputs.size();
           if (ring_size < desc.ring_size)
             desc.ring_size = ring_size;
@@ -1377,8 +1380,16 @@ namespace tools
           if (i == dests.end())
             dests.insert(std::make_pair(entry.addr, std::make_pair(address, entry.amount)));
           else
-            i->second.second += entry.amount;
-          desc.amount_out += entry.amount;
+          {
+            uint64_t new_dest_amount = i->second.second + entry.amount;
+            if (new_dest_amount < i->second.second)
+              throw wallet_rpc_error{error_code::BAD_UNSIGNED_TX_DATA, "Destination amount overflow"};
+            i->second.second = new_dest_amount;
+          }
+          uint64_t new_amount_out = desc.amount_out + entry.amount;
+          if (new_amount_out < desc.amount_out)
+            throw wallet_rpc_error{error_code::BAD_UNSIGNED_TX_DATA, "amount_out overflow"};
+          desc.amount_out = new_amount_out;
         }
         if (cd.change_dts.amount > 0)
         {
@@ -1395,7 +1406,10 @@ namespace tools
             if (memcmp(&cd.change_dts.addr, &cdn.change_dts.addr, sizeof(cd.change_dts.addr)))
               throw wallet_rpc_error{error_code::BAD_UNSIGNED_TX_DATA, "Change goes to more than one address"};
           }
-          desc.change_amount += cd.change_dts.amount;
+          uint64_t new_change_amount = desc.change_amount + cd.change_dts.amount;
+          if (new_change_amount < desc.change_amount)
+            throw wallet_rpc_error{error_code::BAD_UNSIGNED_TX_DATA, "change_amount overflow"};
+          desc.change_amount = new_change_amount;
           it->second.second -= cd.change_dts.amount;
           if (it->second.second == 0)
             dests.erase(cd.change_dts.addr);
@@ -1419,6 +1433,8 @@ namespace tools
           desc.change_address = get_account_address_as_str(m_wallet->nettype(), cd0.subaddr_account > 0, cd0.change_dts.addr);
         }
 
+        if (desc.amount_in < desc.amount_out)
+          throw wallet_rpc_error{error_code::BAD_UNSIGNED_TX_DATA, "amount_in < amount_out"};
         desc.fee = desc.amount_in - desc.amount_out;
         desc.unlock_time = cd.unlock_time;
         desc.extra = oxenc::to_hex(cd.extra.begin(), cd.extra.end());
@@ -2485,7 +2501,7 @@ namespace tools
   EDIT_ADDRESS_BOOK_ENTRY::response wallet_rpc_server::invoke(EDIT_ADDRESS_BOOK_ENTRY::request&& req)
   {
     require_open();
-    
+
     CHECK_IF_BACKGROUND_SYNCING();
     const auto ab = m_wallet->get_address_book();
     if (req.index >= ab.size())

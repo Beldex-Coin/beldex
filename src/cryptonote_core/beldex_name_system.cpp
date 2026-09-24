@@ -976,14 +976,14 @@ bool mapping_value::validate(cryptonote::network_type nettype, mapping_type type
   }
   else if(type == mapping_type::eth_addr)
   {
+    if (check_condition(value.size() < 2 || !tools::starts_with(value, "0x"), reason, "BNS type=eth_addr, specifies mapping from name -> eth addr where the addr is not prefixed with 0x, given eth addr=", value))
+      return false;
+
     std::string_view value_eth = value.substr(2);
     if(check_condition(value_eth.size() != 2*ETH_ADDR_BINARY_LENGTH, reason, "The value=", value, " is not the required ", 2*ETH_ADDR_BINARY_LENGTH, "-character hex string eth address, length=", value.size()))
       return false;
-    
-    if (check_condition(!oxenc::is_hex(value_eth), reason, ", specifies name -> value mapping where the value is not a hex string given value="))
-      return false;
 
-    if (check_condition(!tools::starts_with(value, "0x"), reason, "BNS type=eth_addr, specifies mapping from name -> ed25519 key where the key is not prefixed with 0x, given ed25519=", value))
+    if (check_condition(!oxenc::is_hex(value_eth), reason, ", specifies name -> value mapping where the value is not a hex string given value="))
       return false;
 
     if (blob) // NOTE: Given blob, write the binary output
@@ -1012,7 +1012,6 @@ bool mapping_value::validate(cryptonote::network_type nettype, mapping_type type
       blob->len = value.size() / 2;
       assert(blob->len <= blob->buffer.size());
       oxenc::from_hex(value.begin(), value.end(), blob->buffer.begin());
-
     }
   }
 

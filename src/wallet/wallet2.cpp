@@ -7593,6 +7593,8 @@ bool wallet2::parse_unsigned_tx_from_str(std::string_view s, unsigned_tx_set &ex
     LOG_PRINT_L0("Bad magic from unsigned tx");
     return false;
   }
+  if (s.size() <= UNSIGNED_TX_PREFIX_NOVER.size())
+    throw std::out_of_range("Empty unsigned tx");
   s.remove_prefix(UNSIGNED_TX_PREFIX_NOVER.size());
   const char version = s[0];
   s = s.substr(1);
@@ -7877,6 +7879,8 @@ bool wallet2::parse_tx_from_str(std::string_view s, std::vector<tools::wallet2::
     LOG_PRINT_L0("Bad magic from signed transaction");
     return false;
   }
+  if (s.size() <= SIGNED_TX_PREFIX_NOVER.size())
+    throw std::out_of_range("Empty signed tx");
   s.remove_prefix(SIGNED_TX_PREFIX_NOVER.size());
   const char version = s[0];
   s.remove_prefix(1);
@@ -13849,7 +13853,7 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
 
   // fetch txes from daemon
   nlohmann::json get_transactions_params{
-    {"txs_hashes", {std::move(txids_hex)}},
+    {"txs_hashes", std::move(txids_hex)},
     {"data",true}
   };
   auto gettx_res = m_http_client.json_rpc("get_transactions", get_transactions_params);
@@ -13866,11 +13870,13 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
   THROW_WALLET_EXCEPTION_IF(kispent_res["spent_status"].size() != proofs.size(),
     error::wallet_internal_error, "Failed to get key image spent status from daemon");
 
+  std::unordered_set<crypto::key_image> seen_key_images;
   total = spent = 0;
   for (size_t i = 0; i < proofs.size(); ++i)
   {
     const reserve_proof_entry& proof = proofs[i];
-    THROW_WALLET_EXCEPTION_IF(gettx_res["txs"][i]["in_pool"].get<bool>(), error::wallet_internal_error, "Tx is unconfirmed");
+    THROW_WALLET_EXCEPTION_IF(!seen_key_images.insert(proof.key_image).second, error::wallet_internal_error, "Duplicate key image in reserve proof");
+    THROW_WALLET_EXCEPTION_IF(gettx_res["txs"][i].value("in_pool", false), error::wallet_internal_error, "Tx is unconfirmed");
 
     cryptonote::transaction tx;
     crypto::hash tx_hash;
@@ -13881,8 +13887,9 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
 
     THROW_WALLET_EXCEPTION_IF(proof.index_in_tx >= tx.vout.size(), error::wallet_internal_error, "index_in_tx is out of bound");
 
-    const cryptonote::txout_to_key* const out_key = std::get_if<cryptonote::txout_to_key>(std::addressof(tx.vout[proof.index_in_tx].target));
-    THROW_WALLET_EXCEPTION_IF(!out_key, error::wallet_internal_error, "Output key wasn't found");
+    crypto::public_key out_key_pub = crypto::null_pkey;
+    if (const cryptonote::txout_to_key* ok = std::get_if<cryptonote::txout_to_key>(&tx.vout[proof.index_in_tx].target))
+      out_key_pub = ok->key;
 
     // TODO(beldex): We should make a catch-all function that gets all the public
     // keys out into an array and iterate through all insteaad of multiple code
@@ -13929,7 +13936,7 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
       return false;
 
     // check signature for key image
-    ok = crypto::check_key_image_signature(proof.key_image, out_key->key, proof.key_image_sig);
+    ok = crypto::check_key_image_signature(proof.key_image, out_key_pub, proof.key_image_sig);
     if (!ok)
       return false;
 
@@ -13937,7 +13944,7 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
     crypto::key_derivation derivation;
     THROW_WALLET_EXCEPTION_IF(!crypto::generate_key_derivation(proof.shared_secret, rct::rct2sk(rct::I), derivation), error::wallet_internal_error, "Failed to generate key derivation");
     crypto::public_key subaddr_spendkey;
-    crypto::derive_subaddress_public_key(out_key->key, derivation, proof.index_in_tx, subaddr_spendkey);
+    crypto::derive_subaddress_public_key(out_key_pub, derivation, proof.index_in_tx, subaddr_spendkey);
     THROW_WALLET_EXCEPTION_IF(subaddr_spendkeys.count(subaddr_spendkey) == 0, error::wallet_internal_error,
       "The address doesn't seem to have received the fund");
 
@@ -13953,7 +13960,7 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
       amount = rct::h2d(ecdh_info.amount);
     }
     total += amount;
-    if (kispent_res["spent_status"][i])
+    if (kispent_res["spent_status"][i].get<uint64_t>() != 0)
       spent += amount;
   }
 
