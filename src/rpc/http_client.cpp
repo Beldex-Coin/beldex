@@ -122,6 +122,9 @@ void http_client::set_https_cainfo(std::string cainfo_bundle_path) {
 
 
 void http_client::copy_params_from(const http_client& other) {
+  if (this == &other)
+    return;
+
   std::unique_lock lock{params_mutex, std::defer_lock};
   std::shared_lock olock{other.params_mutex, std::defer_lock};
   std::lock(lock, olock);
@@ -129,6 +132,8 @@ void http_client::copy_params_from(const http_client& other) {
   base_url = other.base_url;
   timeout = other.timeout;
   auth = other.auth;
+  apply_timeout = true;
+  apply_auth = true;
 }
 
 nlohmann::json http_client::json_rpc(std::string_view method, std::optional<nlohmann::json> params) {
