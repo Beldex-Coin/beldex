@@ -203,3 +203,15 @@ TEST(wipeable_string, parse_hexstr)
   ASSERT_TRUE((s = epee::wipeable_string("414243").parse_hexstr()) != std::nullopt);
   ASSERT_EQ(*s, epee::wipeable_string("ABC"));
 }
+
+TEST(wipeable_string, to_string)
+{
+  // Converting a wipeable_string to a string defeats the purpose of wipeable_string,
+  // but nice to know this works
+  std::string str;
+  {
+    epee::wipeable_string wipeable_str("foo");
+    str = std::string(wipeable_str.data(), wipeable_str.size());
+  }
+  ASSERT_TRUE(str == std::string("foo"));
+}

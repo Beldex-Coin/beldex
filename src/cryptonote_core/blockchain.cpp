@@ -53,6 +53,9 @@
 #include "epee/int-util.h"
 #include "epee/time_helper.h"
 #include "epee/string_tools.h"
+#include <atomic>
+#include <limits>
+
 #include "common/threadpool.h"
 #include "common/boost_serialization_helper.h"
 #include "epee/warnings.h"
@@ -302,6 +305,11 @@ uint64_t Blockchain::get_current_blockchain_height(bool lock) const
 //------------------------------------------------------------------
 bool Blockchain::load_missing_blocks_into_beldex_subsystems()
 {
+  // Held for the whole scan: the tx deserialisation below runs on the thread pool and uses the
+  // non-locking _get_transactions, which requires that nothing mutates the chain meanwhile.
+  // m_blockchain_lock is recursive, so this is safe when a caller already holds it.
+  std::unique_lock lock{*this};
+
   uint64_t const mnl_height   = std::max(hard_fork_begins(m_nettype, hf::hf9_master_nodes).value_or(0), m_master_node_list.height() + 1);
   uint64_t const bns_height   = std::max(hard_fork_begins(m_nettype, hf::hf18_bns).value_or(0), m_bns_db.height() + 1);
   uint64_t const end_height   = m_db->height();
@@ -314,10 +322,13 @@ bool Blockchain::load_missing_blocks_into_beldex_subsystems()
 
   using clock                   = std::chrono::steady_clock;
   using dseconds                = std::chrono::duration<double>;
-  int64_t constexpr BLOCK_COUNT = 1000;
+  // Chunk size for the rescan. Since the transactions of a whole chunk are now parsed up front and
+  // held at once (rather than one block at a time), this bounds the peak allocation of the scan --
+  // it matters on memory-capped nodes. oxen-core uses 50 for the same reason.
+  int64_t constexpr BLOCK_COUNT = 200;
   auto work_start               = clock::now();
   auto scan_start               = work_start;
-  dseconds bns_duration{}, mnl_duration{}, bns_iteration_duration{}, mnl_iteration_duration{};
+  dseconds bns_duration{}, mnl_duration{}, bns_iteration_duration{}, mnl_iteration_duration{}, tx_load_duration{}, tx_load_total{};
 
   for (int64_t block_count = total_blocks,
                index       = 0;
@@ -328,11 +339,12 @@ bool Blockchain::load_missing_blocks_into_beldex_subsystems()
     if (duration >= 10s)
     {
       m_master_node_list.store();
-      MGINFO(fmt::format("... scanning height {} ({:.3f}s) (mnl: {:.3f}s, bns: {:.3f}s)",
+      MGINFO(fmt::format("... scanning height {} ({:.3f}s) (mnl: {:.3f}s, bns: {:.3f}s, txs: {:.3f}s)",
             start_height + (index * BLOCK_COUNT),
             duration.count(),
             mnl_iteration_duration.count(),
-            bns_iteration_duration.count()));
+            bns_iteration_duration.count(),
+            tx_load_duration.count()));
 #ifdef ENABLE_SYSTEMD
       // Tell systemd that we're doing something so that it should let us continue starting up
       // (giving us 120s until we have to send the next notification):
@@ -342,7 +354,7 @@ bool Blockchain::load_missing_blocks_into_beldex_subsystems()
 
       bns_duration += bns_iteration_duration;
       mnl_duration += mnl_iteration_duration;
-      bns_iteration_duration = mnl_iteration_duration = {};
+      bns_iteration_duration = mnl_iteration_duration = tx_load_duration = {};
     }
 
     std::vector<cryptonote::block> blocks;
@@ -353,16 +365,50 @@ bool Blockchain::load_missing_blocks_into_beldex_subsystems()
       return false;
     }
 
-    for (cryptonote::block const &blk : blocks)
+    // Deserialising the transactions for a chunk dominates the scan and is independent per block,
+    // so do it across the thread pool while the subsystem updates below stay strictly sequential.
+    // _get_transactions is the non-locking form: we already hold the blockchain lock for the whole
+    // scan, and LMDB hands each thread its own read transaction.
+    std::vector<std::vector<cryptonote::transaction>> chunk_txs(blocks.size());
     {
-      uint64_t block_height = get_block_height(blk);
-
-      std::vector<cryptonote::transaction> txs;
-      if (!get_transactions(blk.tx_hashes, txs))
+      auto tx_load_start = clock::now();
+      // Record which block failed, not just that one did: this aborts daemon startup, and the
+      // block identity is what tells an operator whether they are looking at a pruned or a
+      // corrupted database. Workers race to claim the slot; the lowest index wins so the message
+      // names the earliest failure rather than whichever thread finished first.
+      constexpr size_t NO_FAILURE = std::numeric_limits<size_t>::max();
+      std::atomic<size_t> failed_index{NO_FAILURE};
+      tools::threadpool& tpool = tools::threadpool::getInstance();
+      tools::threadpool::waiter waiter;
+      for (size_t blk_index = 0; blk_index < blocks.size(); blk_index++)
       {
-        MERROR("Unable to get transactions for block for updating BNS DB: " << cryptonote::get_block_hash(blk));
+        tpool.submit(&waiter, [this, blk_index, &blocks, &chunk_txs, &failed_index]() {
+          if (_get_transactions(blocks[blk_index].tx_hashes, chunk_txs[blk_index]))
+            return;
+          size_t previous = failed_index.load(std::memory_order_relaxed);
+          while (blk_index < previous &&
+                 !failed_index.compare_exchange_weak(previous, blk_index, std::memory_order_relaxed))
+            ; // retry: another worker claimed it first
+        });
+      }
+      waiter.wait(&tpool);
+      if (size_t failed = failed_index.load(); failed != NO_FAILURE)
+      {
+        cryptonote::block const &blk = blocks[failed];
+        MERROR("Unable to get transactions for block " << cryptonote::get_block_hash(blk)
+               << " at height " << get_block_height(blk) << " while updating beldex subsystems");
         return false;
       }
+      auto tx_load_elapsed = dseconds{clock::now() - tx_load_start};
+      tx_load_duration += tx_load_elapsed;
+      tx_load_total    += tx_load_elapsed;
+    }
+
+    for (size_t blk_index = 0; blk_index < blocks.size(); blk_index++)
+    {
+      cryptonote::block const &blk = blocks[blk_index];
+      uint64_t block_height = get_block_height(blk);
+      std::vector<cryptonote::transaction> &txs = chunk_txs[blk_index];
 
       if (block_height >= mnl_height)
       {
@@ -376,7 +422,7 @@ bool Blockchain::load_missing_blocks_into_beldex_subsystems()
         try {
           m_master_node_list.block_add(blk, txs, checkpoint_ptr);
         } catch (const std::exception& e) {
-          MFATAL("Unable to process block {} for updating master node list: " << e.what());
+          MFATAL("Unable to process block " << cryptonote::get_block_hash(blk) << " at height " << block_height << " for updating master node list: " << e.what());
           return false;
         }
         mnl_iteration_duration += clock::now() - mnl_start;
@@ -397,8 +443,8 @@ bool Blockchain::load_missing_blocks_into_beldex_subsystems()
 
   if (total_blocks > 1)
   {
-    MGINFO(fmt::format("Done recalculating beldex subsystems in {:.2f}s ({:.2f}s mnl; {:.2f}s bns)",
-          dseconds{clock::now() - scan_start}.count(), mnl_duration.count(), bns_duration.count()));
+    MGINFO(fmt::format("Done recalculating beldex subsystems in {:.2f}s ({:.2f}s mnl; {:.2f}s bns; {:.2f}s tx load)",
+          dseconds{clock::now() - scan_start}.count(), mnl_duration.count(), bns_duration.count(), tx_load_total.count()));
   }
 
   if (total_blocks > 0)
@@ -2731,7 +2777,15 @@ bool Blockchain::get_transactions(const std::vector<crypto::hash>& txs_ids, std:
 {
   LOG_PRINT_L3("Blockchain::" << __func__);
   std::unique_lock lock{*this};
-
+  return _get_transactions(txs_ids, txs, missed_txs);
+}
+//------------------------------------------------------------------
+// Non-locking version of get_transactions. The caller must already hold the blockchain lock (or
+// otherwise guarantee that nothing is mutating the chain). This exists so that transactions can be
+// deserialised from several threads at once during a subsystem rescan: the LMDB layer gives each
+// thread its own read transaction, but taking the blockchain lock per call would serialise them.
+bool Blockchain::_get_transactions(const std::vector<crypto::hash>& txs_ids, std::vector<transaction>& txs, std::unordered_set<crypto::hash>* missed_txs) const
+{
   txs.reserve(txs_ids.size());
   cryptonote::blobdata tx;
   for (const auto& tx_hash : txs_ids)

@@ -672,16 +672,21 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg)
       auto &value  = quorum[msg.quorum_position];
       if (value) return;
 
-      if (auto const &hash = context.transient.random_value_hashes.wait.data[msg.quorum_position]; hash)
+      auto const &hash = context.transient.random_value_hashes.wait.data[msg.quorum_position];
+      if (!hash)
       {
-        auto derived = blake2b_hash(msg.random_value.value.data, sizeof(msg.random_value.value.data));
-        if (derived != *hash)
-        {
-          MTRACE(log_prefix(context) << "Dropping " << msg_source_string(context, msg)
-                                    << ". Rederived random value hash " << derived << " does not match original hash "
-                                    << *hash);
-          return;
-        }
+        MTRACE(log_prefix(context) << "Dropping " << msg_source_string(context, msg)
+                                  << ". No random value hash was committed for this quorum position");
+        return;
+      }
+
+      auto derived = blake2b_hash(msg.random_value.value.data, sizeof(msg.random_value.value.data));
+      if (derived != *hash)
+      {
+        MTRACE(log_prefix(context) << "Dropping " << msg_source_string(context, msg)
+                                  << ". Rederived random value hash " << derived << " does not match original hash "
+                                  << *hash);
+        return;
       }
 
       value = msg.random_value.value;
@@ -1044,13 +1049,27 @@ round_state goto_wait_for_next_block_and_clear_round_data(round_context &context
   return round_state::wait_for_next_block;
 }
 
+// Returns true if the blockchain's top block differs from the tip cached in
+// the round context — either because a new block arrived (height changed) or
+// because a same-height reorg replaced the top block (hash changed at the
+// same height).
+static bool chain_top_changed(round_context const &context, cryptonote::Blockchain const &blockchain)
+{
+  uint64_t const chain_height = blockchain.get_current_blockchain_height(true /*lock*/);
+  if (context.wait_for_next_block.height != chain_height)
+    return true;
+  return context.wait_for_next_block.top_hash != blockchain.get_block_id_by_height(chain_height - 1);
+}
+
 round_state wait_for_next_block(uint64_t hf17_height, round_context &context, cryptonote::Blockchain const &blockchain)
 {
   //
-  // NOTE: If already processing POS for height, wait for next height
+  // NOTE: If already processing POS for height, wait for next height. The top 
+  // hash is compared too (not just the height) so that a same-height reorg
+  // re-arms the round context against the new tip
   //
   uint64_t chain_height = blockchain.get_current_blockchain_height(true /*lock*/);
-  if (context.wait_for_next_block.height == chain_height)
+  if (!chain_top_changed(context, blockchain))
   {
     for (static uint64_t last_height = 0; last_height != chain_height; last_height = chain_height)
       MDEBUG(log_prefix(context) << "Network is currently producing block " << chain_height << ", waiting until next block");
@@ -1119,9 +1138,9 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
       return goto_wait_for_next_block_and_clear_round_data(context);
     }
 
-    // Also check if the blockchain has changed, in which case we stop and
-    // restart POS stages.
-    if (context.wait_for_next_block.height != blockchain.get_current_blockchain_height(true /*lock*/))
+    // Also check if the blockchain has changed (new block, or same-height
+    // reorg), in which case we stop and restart POS stages.
+    if (chain_top_changed(context, blockchain))
       return goto_wait_for_next_block_and_clear_round_data(context);
 
     // 'queue_for_next_round' is set when an intermediate POS stage has failed
@@ -1161,6 +1180,11 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
   }
 
   std::vector<crypto::hash> const entropy = master_nodes::get_POS_entropy_for_next_block(blockchain.get_db(), context.wait_for_next_block.top_hash, context.prepare_for_round.round);
+  if (entropy.empty())
+  {
+    MDEBUG(log_prefix(context) << "Unable to prepare POS quorum for height " << context.wait_for_next_block.height << " because quorum entropy is unavailable; waiting for the next block");
+    return goto_wait_for_next_block_and_clear_round_data(context);
+  }
   auto const active_node_list             = blockchain.get_master_node_list().active_master_nodes_infos();
   auto hf_version                         = blockchain.get_network_version();
   crypto::public_key const &block_leader  = blockchain.get_master_node_list().get_block_leader().key;
@@ -1212,10 +1236,9 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
 
 round_state wait_for_round(round_context &context, cryptonote::Blockchain const &blockchain)
 {
-  const auto curr_height = blockchain.get_current_blockchain_height(true /*lock*/);
-  if (context.wait_for_next_block.height != curr_height)
+  if (chain_top_changed(context, blockchain))
   {
-    MTRACE(log_prefix(context) << "Block height changed whilst waiting for round " << +context.prepare_for_round.round << ", restarting POS stages");
+    MTRACE(log_prefix(context) << "Chain tip changed whilst waiting for round " << +context.prepare_for_round.round << ", restarting POS stages");
     return goto_wait_for_next_block_and_clear_round_data(context);
   }
 
@@ -1231,7 +1254,7 @@ round_state wait_for_round(round_context &context, cryptonote::Blockchain const 
   // For testing purposes: we apply possible random non-response and random delays to half of all
   // blocks; we go in batches of 10: 10 maybe-faulty blocks followed by 10 well-behaved blocks.
   // (Faulty blocks have an odd second-last height digit).
-  if (curr_height % 20 >= 10)
+  if (context.wait_for_next_block.height % 20 >= 10)
   {
     size_t faulty_chance = tools::uniform_distribution_portable(tools::rng, 100);
     if (faulty_chance < 10)
@@ -1635,9 +1658,16 @@ round_state send_and_wait_for_signed_blocks(round_context &context, master_nodes
     if (!enforce_validator_participation_and_timeouts(context, stage, node_list, timed_out, all_received))
       return goto_preparing_for_next_round(context);
 
-    // Select signatures randomly so we don't always just take the first N required signatures.
-    // Then sort just the first N required signatures, so signatures are added
-    // to the block in sorted order, but were chosen randomly.
+    // NOTE: Collect the quorum positions that signed, in ascending order, and take the first
+    // POS_BLOCK_REQUIRED_SIGNATURES of them.
+    //
+    // Any subset of the participating validators is equally valid here: verification only
+    // requires exactly N signatures, given in ascending order, from validators set in the
+    // block's participation bitset (see verify_quorum_signatures). Which subset we pick has no
+    // further effect either -- a validator's participation is scored from POS.validator_bitset,
+    // not from the signatures that made it into the block, so leaving a validator out does not
+    // count against it. Quorum positions are themselves re-randomised every block, so taking
+    // the lowest N does not favour any particular master node over time.
     std::array<size_t, master_nodes::POS_QUORUM_NUM_VALIDATORS> indices = {};
     size_t indices_count = 0;
 
@@ -1646,10 +1676,7 @@ round_state send_and_wait_for_signed_blocks(round_context &context, master_nodes
       if (quorum[index])
         indices[indices_count++] = index;
 
-    // Random select from first 'N' POS_BLOCK_REQUIRED_SIGNATURES from indices_count entries.
     assert(indices_count >= master_nodes::POS_BLOCK_REQUIRED_SIGNATURES);
-    std::array<size_t, master_nodes::POS_BLOCK_REQUIRED_SIGNATURES> selected = {};
-    std::sample(indices.begin(), indices.begin() + indices_count, selected.begin(), selected.size(), tools::rng);
 
     // Add Signatures
     cryptonote::block &final_block = context.transient.signed_block.final_block;

@@ -100,7 +100,7 @@ struct mapping_value
 
   // Makes a copy of *this, calls decrypt() on it, and returns it.  Unlike decrypt(), this call
   // leaves `*this` encrypted and instead returns an decrypted copy.
-  mapping_value make_decrypted(std::string_view name, const crypto::hash* name_hash = nullptr) const;
+  mapping_value make_decrypted(std::string_view name, mapping_type type, const crypto::hash* name_hash = nullptr) const;
 
   std::optional<cryptonote::address_parse_info> get_wallet_address_info() const;
 

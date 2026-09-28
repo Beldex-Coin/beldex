@@ -84,6 +84,10 @@ class DaemonGetInfoTest():
         assert 'height' in res.keys()
         assert res.height >= 1
 
+        # release codename should be provided as a non-empty string
+        assert 'release_codename' in res.keys()
+        assert isinstance(res.release_codename, str)
+        assert res.release_codename
 
 if __name__ == '__main__':
     DaemonGetInfoTest().run_test()

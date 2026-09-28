@@ -374,6 +374,7 @@ namespace cryptonote::rpc {
     auto db_size = db.get_database_size();
     info.response["database_size"] = context.admin ? db_size : round_up(db_size, 1'000'000'000);
     info.response["version"]       = context.admin ? BELDEX_VERSION_FULL : std::to_string(BELDEX_VERSION[0]);
+    info.response["release_codename"] = BELDEX_RELEASE_NAME;
     info.response["status_line"]   = context.admin ? m_core.get_status_string() :
       "v" + std::to_string(BELDEX_VERSION[0]) + "; Height: " + std::to_string(height);
 
@@ -910,9 +911,13 @@ namespace cryptonote::rpc {
       void operator()(const tx_extra_security_signature& x) { set("security_sig", tools::type_to_hex(x.m_security_signature)); }
       void operator()(const tx_extra_master_node_register& x) {
         json reservations{};
-        for (size_t i = 0; i < x.m_portions.size(); i++)
-          reservations[get_account_address_as_str(nettype, false, {x.m_public_spend_keys[i], x.m_public_view_keys[i]})]
-            = microportion(x.m_portions[i]);
+        if (x.m_public_spend_keys.size() == x.m_public_view_keys.size()
+            && x.m_public_spend_keys.size() == x.m_portions.size())
+        {
+          for (size_t i = 0; i < x.m_portions.size(); i++)
+            reservations[get_account_address_as_str(nettype, false, {x.m_public_spend_keys[i], x.m_public_view_keys[i]})]
+              = microportion(x.m_portions[i]);
+        }
         set("mn_registration", json{
           {"fee", microportion(x.m_portions_for_operator)},
           {"expiry", x.m_expiration_timestamp},
@@ -3848,10 +3853,8 @@ namespace cryptonote::rpc {
     // ---------------------------------------------------------------------------------------------
     if (req.encrypted_value.size() % 2 != 0)
       throw rpc_error{ERROR_INVALID_VALUE_LENGTH, "Value length not divisible by 2, length=" + std::to_string(req.encrypted_value.size())};
-
-    if ((req.encrypted_value.size() >= (bns::mapping_value::BUFFER_SIZE * 2)) && !(req.type =="wallet"))
-      throw rpc_error{ERROR_INVALID_VALUE_LENGTH, "Value too long to decrypt=" + req.encrypted_value};
-
+    if (req.encrypted_value.size() > bns::mapping_value::BUFFER_SIZE * 2)
+       throw rpc_error{ERROR_INVALID_VALUE_LENGTH, "Value too long to decrypt"};
     if (!oxenc::is_hex(req.encrypted_value))
       throw rpc_error{ERROR_INVALID_VALUE_LENGTH, "Value is not hex=" + req.encrypted_value};
 

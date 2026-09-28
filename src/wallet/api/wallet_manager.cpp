@@ -225,7 +225,7 @@ bool WalletManagerImpl::connected(uint32_t* version) {
     try {
         auto res = m_http_client.json_rpc("get_version");
         if (version)
-            *version = res["version"];
+            *version = res["version"].get<uint32_t>();
         return true;
     } catch (...) {
     }
@@ -252,6 +252,16 @@ uint64_t WalletManagerImpl::blockchainTargetHeight()
     if (!res)
         return 0;
     return std::max(res["target_height"].get<uint64_t>(), res["height"].get<uint64_t>());
+}
+
+EXPORT
+uint64_t WalletManagerImpl::networkDifficulty()
+{
+    auto res = get_info(m_http_client);
+    if (!res)
+        return 0;
+
+    return res["difficulty"].get<uint64_t>();
 }
 
 EXPORT
@@ -287,6 +297,11 @@ void WalletManagerFactory::setLogCategories(const std::string &categories)
     mlog_set_log(categories.c_str());
 }
 
-
+EXPORT
+bool WalletManagerImpl::setProxy(const std::string &address)
+{
+    m_http_client.set_proxy(address);
+    return true;
+}
 
 }

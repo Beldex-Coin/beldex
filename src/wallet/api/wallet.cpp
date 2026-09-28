@@ -52,11 +52,40 @@
 #include <sstream>
 #include <unordered_map>
 #include <thread>
+#include "epee/scope_leaver.h"
 
 using namespace cryptonote;
 
 #undef BELDEX_DEFAULT_LOG_CATEGORY
 #define BELDEX_DEFAULT_LOG_CATEGORY "WalletAPI"
+
+#define LOCK_REFRESH() \
+    bool refresh_enabled = m_refreshEnabled; \
+    m_refreshEnabled = false; \
+    wallet()->stop(); \
+    m_refreshCV.notify_one(); \
+    std::scoped_lock lock(m_refreshMutex, m_refreshMutex2); \
+    auto scope_exit_handler = epee::misc_utils::create_scope_leave_handler_shared([&](){ \
+        /* m_refreshMutex is still locked here */ \
+        if (refresh_enabled) \
+            startRefresh(); \
+    })
+
+#define PRE_VALIDATE_BACKGROUND_SYNC() \
+  do \
+  { \
+    clearStatus(); \
+    if (wallet()->key_on_device()) \
+    { \
+        setStatusError(tr("HW wallet cannot use background sync")); \
+        return false; \
+    } \
+    if (wallet()->watch_only()) \
+    { \
+        setStatusError(tr("View only wallet cannot use background sync")); \
+        return false; \
+    } \
+  } while (0)
 
 namespace Wallet {
 
@@ -828,6 +857,8 @@ bool WalletImpl::close(bool store)
 EXPORT
 std::string WalletImpl::seed() const
 {
+    if (checkBackgroundSync("cannot get seed"))
+        return std::string();
     epee::wipeable_string seed;
     if (m_wallet_ptr)
         wallet()->get_seed(seed);
@@ -843,6 +874,8 @@ std::string WalletImpl::getSeedLanguage() const
 EXPORT
 void WalletImpl::setSeedLanguage(const std::string &arg)
 {
+    if (checkBackgroundSync("cannot set seed language"))
+        return;
     wallet()->set_seed_language(arg);
 }
 
@@ -860,6 +893,8 @@ bool WalletImpl::good() const {
 EXPORT
 bool WalletImpl::setPassword(const std::string &password)
 {
+    if (checkBackgroundSync("cannot change password"))
+        return false;
     clearStatus();
     try {
         auto w=wallet();
@@ -869,6 +904,12 @@ bool WalletImpl::setPassword(const std::string &password)
         setStatusError(e.what());
     }
     return good();
+}
+
+EXPORT
+const std::string& WalletImpl::getPassword() const
+{
+    return m_password;
 }
 
 EXPORT
@@ -952,6 +993,12 @@ std::string WalletImpl::path() const
 }
 
 EXPORT
+void WalletImpl::stop()
+{
+    wallet()->stop();
+}
+
+EXPORT
 bool WalletImpl::store(std::string_view path_)
 {
     auto path = fs::u8path(path_);
@@ -1028,6 +1075,8 @@ bool WalletImpl::lightWalletImportWalletRequest(std::string &payment_id, uint64_
 EXPORT
 void WalletImpl::setRefreshFromBlockHeight(uint64_t refresh_from_block_height)
 {
+    if (checkBackgroundSync("cannot change refresh height"))
+        return;
     wallet()->set_refresh_from_block_height(refresh_from_block_height);
 }
 
@@ -1100,10 +1149,10 @@ std::vector<stakeInfo>* WalletImpl::listCurrentStakes() const
         {
             if(contributor["address"] == address){
                 auto &info = stakes->emplace_back();
-                info.mn_pubkey = node_info["master_node_pubkey"];
-                info.stake = contributor["amount"];
+                info.mn_pubkey = node_info["master_node_pubkey"].get<std::string>();
+                info.stake = contributor["amount"].get<uint64_t>();
                 if(node_info["requested_unlock_height"] !=0)
-                    info.unlock_height = node_info["requested_unlock_height"];
+                    info.unlock_height = node_info["requested_unlock_height"].get<uint64_t>();
                 info.decommissioned = !node_info["active"] && node_info["funded"];
                 info.awaiting = !node_info["funded"];
             }
@@ -1221,6 +1270,8 @@ bool WalletImpl::isRefreshing(std::chrono::milliseconds max_wait) {
 EXPORT
 bool WalletImpl::rescanBlockchain()
 {
+    if (checkBackgroundSync("cannot rescan blockchain"))
+        return false;
     clearStatus();
     m_refreshShouldRescan = true;
     doRefresh();
@@ -1230,6 +1281,8 @@ bool WalletImpl::rescanBlockchain()
 EXPORT
 void WalletImpl::rescanBlockchainAsync()
 {
+    if (checkBackgroundSync("cannot rescan blockchain"))
+        return;
     m_refreshShouldRescan = true;
     refreshAsync();
 }
@@ -1256,7 +1309,7 @@ UnsignedTransaction* WalletImpl::loadUnsignedTx(std::string_view unsigned_filena
   auto unsigned_filename = fs::u8path(unsigned_filename_);
   clearStatus();
   UnsignedTransactionImpl* transaction = new UnsignedTransactionImpl(*this);
-  if (!wallet()->load_unsigned_tx(unsigned_filename, transaction->m_unsigned_tx_set)){
+  if (checkBackgroundSync("cannot load tx") || !wallet()->load_unsigned_tx(unsigned_filename, transaction->m_unsigned_tx_set)){
     setStatusError(tr("Failed to load unsigned transactions"));
     transaction->m_status = {UnsignedTransaction::Status::Status_Error, status().second};
 
@@ -1278,6 +1331,8 @@ EXPORT
 bool WalletImpl::submitTransaction(std::string_view filename_) {
   auto fileName = fs::u8path(filename_);
   clearStatus();
+  if (checkBackgroundSync("cannot submit tx"))
+    return false;
   std::unique_ptr<PendingTransactionImpl> transaction(new PendingTransactionImpl(*this));
 
   bool r = wallet()->load_tx(fileName, transaction->m_pending_tx);
@@ -1304,6 +1359,8 @@ bool WalletImpl::exportKeyImages(std::string_view filename_)
     setStatusError(tr("Wallet is view only"));
     return false;
   }
+  if (checkBackgroundSync("cannot export key images"))
+    return false;
 
   try
   {
@@ -1325,6 +1382,8 @@ bool WalletImpl::exportKeyImages(std::string_view filename_)
 EXPORT
 bool WalletImpl::importKeyImages(std::string_view filename_)
 {
+  if (checkBackgroundSync("cannot import key images"))
+    return false;
   auto filename = fs::u8path(filename_);
   if (!trustedDaemon()) {
     setStatusError(tr("Key images can only be imported with a trusted daemon"));
@@ -1348,8 +1407,161 @@ bool WalletImpl::importKeyImages(std::string_view filename_)
 }
 
 EXPORT
+bool WalletImpl::exportOutputs(const std::string &filename, bool all)
+{
+    if (checkBackgroundSync("cannot export outputs"))
+        return false;
+    if (wallet()->key_on_device())
+    {
+        setStatusError(std::string(tr("Not supported on HW wallets.")) + filename);
+        return false;
+    }
+
+    try
+    {
+        const fs::path filename_ = fs::u8path(filename);
+        std::string data = wallet()->export_outputs_to_str(all);
+        bool r = tools::dump_file(filename_, data);
+        if (!r)
+        {
+            LOG_ERROR("Failed to save file " << filename);
+            setStatusError(std::string(tr("Failed to save file: ")) + filename);
+            return false;
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Error exporting outputs: " << e.what());
+        setStatusError(std::string(tr("Error exporting outputs: ")) + e.what());
+        return false;
+    }
+
+    LOG_PRINT_L2("Outputs exported to " << filename);
+    return true;
+}
+
+EXPORT
+bool WalletImpl::importOutputs(const std::string &filename)
+{
+    if (checkBackgroundSync("cannot import outputs"))
+        return false;
+    if (wallet()->key_on_device())
+    {
+        setStatusError(std::string(tr("Not supported on HW wallets.")) + filename);
+        return false;
+    }
+
+    const fs::path filename_ = fs::u8path(filename);
+
+    std::string data;
+    bool r = tools::slurp_file(filename_, data);
+    if (!r)
+    {
+        LOG_ERROR("Failed to read file: " << filename);
+        setStatusError(std::string(tr("Failed to read file: ")) + filename);
+        return false;
+    }
+
+    try
+    {
+        size_t n_outputs = wallet()->import_outputs_from_str(data);
+        LOG_PRINT_L2(std::to_string(n_outputs) << " outputs imported");
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Failed to import outputs: " << e.what());
+        setStatusError(std::string(tr("Failed to import outputs: ")) + e.what());
+        return false;
+    }
+
+    return true;
+}
+
+EXPORT
+bool WalletImpl::setupBackgroundSync(const Wallet::BackgroundSyncType background_sync_type, const std::string &wallet_password, const std::optional<std::string> &background_cache_password)
+{
+    try
+    {
+        PRE_VALIDATE_BACKGROUND_SYNC();
+
+        tools::wallet2::BackgroundSyncType bgs_type;
+        switch (background_sync_type)
+        {
+            case Wallet::BackgroundSync_Off: bgs_type = tools::wallet2::BackgroundSyncOff; break;
+            case Wallet::BackgroundSync_ReusePassword: bgs_type = tools::wallet2::BackgroundSyncReusePassword; break;
+            case Wallet::BackgroundSync_CustomPassword: bgs_type = tools::wallet2::BackgroundSyncCustomPassword; break;
+            default: setStatusError(tr("Unknown background sync type")); return false;
+        }
+
+        std::optional<epee::wipeable_string> bgc_password = background_cache_password
+            ? std::optional<epee::wipeable_string>(*background_cache_password)
+            : std::nullopt;
+
+        LOCK_REFRESH();
+        wallet()->setup_background_sync(bgs_type, wallet_password, bgc_password);
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Failed to setup background sync: " << e.what());
+        setStatusError(std::string(tr("Failed to setup background sync: ")) + e.what());
+        return false;
+    }
+    return true;
+}
+
+EXPORT
+Wallet::BackgroundSyncType WalletImpl::getBackgroundSyncType() const
+{
+    switch (wallet()->background_sync_type())
+    {
+        case tools::wallet2::BackgroundSyncOff: return Wallet::BackgroundSync_Off;
+        case tools::wallet2::BackgroundSyncReusePassword: return Wallet::BackgroundSync_ReusePassword;
+        case tools::wallet2::BackgroundSyncCustomPassword: return Wallet::BackgroundSync_CustomPassword;
+        default: setStatusError(tr("Unknown background sync type")); return Wallet::BackgroundSync_Off;
+    }
+}
+
+EXPORT
+bool WalletImpl::startBackgroundSync()
+{
+    try
+    {
+        PRE_VALIDATE_BACKGROUND_SYNC();
+        LOCK_REFRESH();
+        wallet()->start_background_sync();
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Failed to start background sync: " << e.what());
+        setStatusError(std::string(tr("Failed to start background sync: ")) + e.what());
+        return false;
+    }
+    return true;
+}
+
+EXPORT
+bool WalletImpl::stopBackgroundSync(const std::string &wallet_password)
+{
+    try
+    {
+        PRE_VALIDATE_BACKGROUND_SYNC();
+        LOCK_REFRESH();
+        wallet()->stop_background_sync(epee::wipeable_string(wallet_password));
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Failed to stop background sync: " << e.what());
+        setStatusError(std::string(tr("Failed to stop background sync: ")) + e.what());
+        return false;
+    }
+    return true;
+}
+
+EXPORT
 void WalletImpl::addSubaddressAccount(const std::string& label)
 {
+    if (checkBackgroundSync("cannot add account"))
+        return;
     wallet()->add_subaddress_account(label);
 }
 EXPORT
@@ -1365,11 +1577,15 @@ size_t WalletImpl::numSubaddresses(uint32_t accountIndex) const
 EXPORT
 void WalletImpl::addSubaddress(uint32_t accountIndex, const std::string& label)
 {
+    if (checkBackgroundSync("cannot add subbaddress"))
+        return;
     wallet()->add_subaddress(accountIndex, label);
 }
 EXPORT
 std::string WalletImpl::getSubaddressLabel(uint32_t accountIndex, uint32_t addressIndex) const
 {
+    if (checkBackgroundSync("cannot get subbaddress label"))
+        return "";
     try
     {
         return wallet()->get_subaddress_label({accountIndex, addressIndex});
@@ -1384,6 +1600,8 @@ std::string WalletImpl::getSubaddressLabel(uint32_t accountIndex, uint32_t addre
 EXPORT
 void WalletImpl::setSubaddressLabel(uint32_t accountIndex, uint32_t addressIndex, const std::string &label)
 {
+    if (checkBackgroundSync("cannot set subbaddress label"))
+        return;
     try
     {
         return wallet()->set_subaddress_label({accountIndex, addressIndex}, label);
@@ -1404,12 +1622,18 @@ MultisigState WalletImpl::multisig(LockedWallet& w) {
 
 EXPORT
 MultisigState WalletImpl::multisig() const {
+    MultisigState state;
+    if (checkBackgroundSync("cannot use multisig"))
+        return state;
+
     auto w=wallet();
     return multisig(w);
 }
 
 EXPORT
 std::string WalletImpl::getMultisigInfo() const {
+    if (checkBackgroundSync("cannot use multisig"))
+        return std::string();
     try {
         clearStatus();
         return wallet()->get_multisig_info();
@@ -1423,6 +1647,8 @@ std::string WalletImpl::getMultisigInfo() const {
 
 EXPORT
 std::string WalletImpl::makeMultisig(const std::vector<std::string>& info, uint32_t threshold) {
+    if (checkBackgroundSync("cannot make multisig"))
+        return std::string();
     try {
         clearStatus();
         auto w = wallet();
@@ -1587,6 +1813,9 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std:
     PendingTransactionImpl * transaction = new PendingTransactionImpl(*this);
 
     do {
+        if (checkBackgroundSync("cannot create transactions"))
+            break;
+
         std::vector<uint8_t> extra;
         std::string extra_nonce;
         std::vector<cryptonote::tx_destination_entry> dsts;
@@ -2304,7 +2533,7 @@ std::vector<bnsInfo>* WalletImpl::MyBns() const
     {
         std::string_view name;
         std::string value_bchat, value_wallet, value_belnet, value_eth;
-        if (auto got = cache.find(entry["name_hash"]); got != cache.end())
+        if (auto got = cache.find(entry["name_hash"].get<std::string>()); got != cache.end())
         {
             name = got->second.name;
             auto decrypt_value = [&](std::string_view key, bns::mapping_type type, std::string& out) {
@@ -2328,24 +2557,32 @@ std::vector<bnsInfo>* WalletImpl::MyBns() const
         }
 
         auto &info = my_bns->emplace_back();
-        info.name_hash = entry["name_hash"];
+        info.name_hash = entry["name_hash"].get<std::string>();
         info.name = name.empty() ? "(none)" : std::string(name);
         info.value_bchat = value_bchat.empty() ? "(none)" : value_bchat;
         info.value_wallet = value_wallet.empty() ? "(none)" : value_wallet;
         info.value_belnet = value_belnet.empty() ? "(none)" : value_belnet;
         info.value_eth_addr = value_eth.empty() ? "(none)" : value_eth;
-        info.owner = entry["owner"];
+        info.owner = entry["owner"].get<std::string>();
         if (entry.contains("backup_owner") && !entry["backup_owner"].is_null())
-            info.backup_owner =  entry["backup_owner"];
+            info.backup_owner = entry["backup_owner"].get<std::string>();
         else
             info.backup_owner = "(none)";
-        info.update_height = entry["update_height"];
-        info.expiration_height = entry["expiration_height"];
+        info.update_height = entry["update_height"].get<uint64_t>();
+        info.expiration_height = entry["expiration_height"].get<uint64_t>();
     
-        info.encrypted_bchat_value = entry["encrypted_bchat_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_bchat_value"];
-        info.encrypted_wallet_value = entry["encrypted_wallet_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_wallet_value"];
-        info.encrypted_belnet_value = entry["encrypted_belnet_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_belnet_value"];
-        info.encrypted_eth_addr_value = entry["encrypted_eth_addr_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_eth_addr_value"];
+        auto get_optional_string = [&entry](const char *key) {
+            auto it = entry.find(key);
+            if (it == entry.end() || !it->is_string())
+                return std::string("(none)");
+            const auto &value = it->get_ref<const std::string &>();
+            return value.empty() ? std::string("(none)") : value;
+        };
+        info.encrypted_bchat_value = get_optional_string("encrypted_bchat_value");
+        info.encrypted_wallet_value = get_optional_string("encrypted_wallet_value");
+        info.encrypted_belnet_value = get_optional_string("encrypted_belnet_value");
+        info.encrypted_eth_addr_value = get_optional_string("encrypted_eth_addr_value");
+
     }
     return my_bns;
 }
@@ -2481,8 +2718,24 @@ void WalletImpl::setListener(WalletListener *l)
 }
 
 EXPORT
+uint32_t WalletImpl::defaultMixin() const
+{
+    return wallet()->default_mixin();
+}
+
+EXPORT
+void WalletImpl::setDefaultMixin(uint32_t arg)
+{
+    if (checkBackgroundSync("cannot set default mixin"))
+        return;
+    wallet()->default_mixin(arg);
+}
+
+EXPORT
 bool WalletImpl::setCacheAttribute(const std::string &key, const std::string &val)
 {
+    if (checkBackgroundSync("cannot set cache attribute"))
+        return false;
     wallet()->set_attribute(key, val);
     return true;
 }
@@ -2498,6 +2751,8 @@ std::string WalletImpl::getCacheAttribute(const std::string &key) const
 EXPORT
 bool WalletImpl::setUserNote(const std::string &txid, const std::string &note)
 {
+    if (checkBackgroundSync("cannot set user note"))
+        return false;
     crypto::hash htxid;
     if(!tools::hex_to_type(txid, htxid))
       return false;
@@ -2509,6 +2764,8 @@ bool WalletImpl::setUserNote(const std::string &txid, const std::string &note)
 EXPORT
 std::string WalletImpl::getUserNote(const std::string &txid) const
 {
+    if (checkBackgroundSync("cannot get user note"))
+        return "";
     crypto::hash htxid;
     if(!tools::hex_to_type(txid, htxid))
       return "";
@@ -2519,6 +2776,9 @@ std::string WalletImpl::getUserNote(const std::string &txid) const
 EXPORT
 std::string WalletImpl::getTxKey(const std::string &txid_str) const
 {
+    if (checkBackgroundSync("cannot get tx key"))
+        return "";
+
     crypto::hash txid;
     if(!tools::hex_to_type(txid_str, txid))
     {
@@ -2602,6 +2862,9 @@ bool WalletImpl::checkTxKey(const std::string &txid_str, std::string_view tx_key
 EXPORT
 std::string WalletImpl::getTxProof(const std::string &txid_str, const std::string &address_str, const std::string &message) const
 {
+    if (checkBackgroundSync("cannot get tx proof"))
+        return "";
+
     crypto::hash txid;
     if (!tools::hex_to_type(txid_str, txid))
     {
@@ -2660,6 +2923,9 @@ bool WalletImpl::checkTxProof(const std::string &txid_str, const std::string &ad
 
 EXPORT
 std::string WalletImpl::getSpendProof(const std::string &txid_str, const std::string &message) const {
+    if (checkBackgroundSync("cannot get spend proof"))
+        return "";
+
     crypto::hash txid;
     if(!tools::hex_to_type(txid_str, txid))
     {
@@ -2704,6 +2970,9 @@ bool WalletImpl::checkSpendProof(const std::string &txid_str, const std::string 
 
 EXPORT
 std::string WalletImpl::getReserveProof(bool all, uint32_t account_index, uint64_t amount, const std::string &message) const {
+    if (checkBackgroundSync("cannot get reserve proof"))
+        return "";
+
     try
     {
         clearStatus();
@@ -2752,6 +3021,8 @@ bool WalletImpl::checkReserveProof(const std::string &address, const std::string
 EXPORT
 std::string WalletImpl::signMessage(const std::string &message)
 {
+  if (checkBackgroundSync("cannot sign message"))
+    return "";
   return wallet()->sign(message);
 }
 
@@ -2845,9 +3116,31 @@ bool WalletImpl::trustedDaemon() const
 }
 
 EXPORT
+bool WalletImpl::setProxy(const std::string &address)
+{
+    return wallet()->set_proxy(address);
+}
+
+EXPORT
 bool WalletImpl::watchOnly() const
 {
     return wallet()->watch_only();
+}
+
+EXPORT
+bool WalletImpl::isDeterministic() const
+{
+    return wallet()->is_deterministic();
+}
+
+bool WalletImpl::isBackgroundSyncing() const
+{
+    return wallet()->is_background_syncing();
+}
+
+bool WalletImpl::isBackgroundWallet() const
+{
+    return wallet()->is_background_wallet();
 }
 
 EXPORT
@@ -2926,9 +3219,7 @@ void WalletImpl::doRefresh()
                 if(rescan)
                     w->rescan_blockchain(false);
                 w->refresh(trustedDaemon());
-                if (!m_synchronized) {
-                    m_synchronized = true;
-                }
+                m_synchronized = wallet()->is_synced();
                 // assuming if we have empty history, it wasn't initialized yet
                 // for further history changes client need to update history in
                 // "on_money_received" and "on_money_sent" callbacks
@@ -3041,6 +3332,24 @@ bool WalletImpl::doInit(const std::string &daemon_address, uint64_t upper_transa
 }
 
 EXPORT
+bool WalletImpl::checkBackgroundSync(const std::string &message) const
+{
+    clearStatus();
+    if (wallet()->is_background_wallet())
+    {
+        LOG_ERROR("Background wallets " + message);
+        setStatusError(tr("Background wallets ") + message);
+        return true;
+    }
+    if (wallet()->is_background_syncing())
+    {
+        LOG_ERROR(message + " while background syncing");
+        setStatusError(message + tr(" while background syncing. Stop background syncing first."));
+        return true;
+    }
+    return false;
+}
+EXPORT
 bool WalletImpl::parse_uri(const std::string &uri, std::string &address, std::string &payment_id, uint64_t &amount, std::string &tx_description, std::string &recipient_name, std::vector<std::string> &unknown_parameters, std::string &error)
 {
     return m_wallet_ptr->parse_uri(uri, address, payment_id, amount, tx_description, recipient_name, unknown_parameters, error);
@@ -3056,6 +3365,8 @@ EXPORT
 bool WalletImpl::rescanSpent()
 {
   clearStatus();
+  if (checkBackgroundSync("cannot rescan spent"))
+    return false;
   if (!trustedDaemon()) {
     setStatusError(tr("Rescan spent can only be used with a trusted daemon"));
     return false;
@@ -3070,6 +3381,17 @@ bool WalletImpl::rescanSpent()
   return true;
 }
 
+EXPORT
+void WalletImpl::setOffline(bool offline)
+{
+    wallet()->set_offline(offline);
+}
+
+EXPORT
+bool WalletImpl::isOffline() const
+{
+    return wallet()->is_offline();
+}
 
 EXPORT
 void WalletImpl::hardForkInfo(uint8_t &version, uint64_t &earliest_height) const
@@ -3368,4 +3690,35 @@ void WalletImpl::deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex,
 
     wallet()->device_show_address(accountIndex, addressIndex, payment_id_param);
 }
+
+EXPORT
+bool WalletImpl::reconnectDevice()
+{
+    clearStatus();
+
+    bool r;
+    try {
+        r = wallet()->reconnect_device();
+    }
+    catch (const std::exception &e) {
+        LOG_ERROR(__FUNCTION__ << " error: " << e.what());
+        setStatusError(e.what());
+        return false;
+    }
+
+    return r;
+}
+
+EXPORT
+uint64_t WalletImpl::getBytesReceived()
+{
+    return wallet()->get_bytes_received();
+}
+
+EXPORT
+uint64_t WalletImpl::getBytesSent()
+{
+    return wallet()->get_bytes_sent();
+}
+
 } // namespace

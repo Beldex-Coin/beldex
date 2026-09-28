@@ -49,6 +49,7 @@ TransactionInfoImpl::TransactionInfoImpl()
       , m_is_bns(false)
       , m_is_coin_burn(false)
       , m_pending(false)
+      , m_coinbase(false)
       , m_failed(false)
       , m_reward_type(reward_type::unspecified)
       , m_amount(0)
@@ -111,6 +112,12 @@ bool TransactionInfoImpl::isFailed() const
 }
 
 EXPORT
+bool TransactionInfoImpl::isCoinbase() const
+{
+    return m_coinbase;
+}
+
+EXPORT
 uint64_t TransactionInfoImpl::amount() const
 {
     return m_amount;
@@ -126,6 +133,12 @@ EXPORT
 uint64_t TransactionInfoImpl::blockHeight() const
 {
     return m_blockheight;
+}
+
+EXPORT
+std::string TransactionInfoImpl::description() const
+{
+    return m_description;
 }
 
 EXPORT
