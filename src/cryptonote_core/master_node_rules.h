@@ -19,10 +19,22 @@ namespace master_nodes {
   inline constexpr size_t POS_QUORUM_NUM_VALIDATORS     = 7;
   inline constexpr size_t POS_BLOCK_REQUIRED_SIGNATURES = 6;  // A block must have exactly N signatures to be considered properly
 #else
-  inline constexpr auto POS_ROUND_TIME                                   = 40s;
-  inline constexpr auto POS_WAIT_FOR_VRF_PROOF_DURATION                  = 20s;
-  inline constexpr auto POS_WAIT_FOR_VRF_BLOCK_TEMPLATE_DURATION         = 10s;
-  inline constexpr auto POS_WAIT_FOR_VRF_SIGNED_BLOCK                    = 10s;
+  // NOTE: These are *failure* deadlines, not the expected duration of a stage.
+  // Every VRF stage closes as soon as it has the evidence it needs; a stage that
+  // runs to its deadline means the round is degraded and will be retried.
+  inline constexpr auto POS_ROUND_TIME                                   = 15s;
+  inline constexpr auto POS_WAIT_FOR_VRF_PROOF_DURATION                  = 5s;
+  inline constexpr auto POS_WAIT_FOR_VRF_BLOCK_TEMPLATE_DURATION         = 5s;
+  inline constexpr auto POS_WAIT_FOR_VRF_SIGNED_BLOCK                    = 5s;
+
+  // Proof collection cannot be closed by an "all proofs received" check: VRF
+  // sortition means only ~POS_VRF_EXPECTED_SELECTED of the active nodes ever
+  // broadcast a proof, so the network does not know how many to expect. Instead
+  // collection closes once a usable committee is present and no new proof has
+  // arrived for the quiet period, floored by a minimum collection window so a
+  // node that hears one proof early does not lock in a one-node committee.
+  inline constexpr auto POS_WAIT_FOR_VRF_PROOF_QUIET_PERIOD              = 400ms;
+  inline constexpr auto POS_WAIT_FOR_VRF_PROOF_MIN_DURATION              = 1s;
   // inline constexpr auto POS_WAIT_FOR_HANDSHAKES_DURATION                 = 10s;
   // inline constexpr auto POS_WAIT_FOR_OTHER_VALIDATOR_HANDSHAKES_DURATION = 10s;
   // inline constexpr auto POS_WAIT_FOR_BLOCK_TEMPLATE_DURATION             = 10s;
@@ -33,6 +45,10 @@ namespace master_nodes {
   inline constexpr size_t POS_QUORUM_NUM_VALIDATORS     = 11;
   inline constexpr size_t POS_BLOCK_REQUIRED_SIGNATURES = 5;  // A block must have exactly N signatures to be considered properly
   inline constexpr size_t POS_VRF_QUORUM_NUM_VALIDATORS = 7;
+
+  // 'tau' in the sortition threshold y/2^|y| <= tau/W: the expected number of
+  // nodes that pass VRF selection out of W active master nodes.
+  inline constexpr double POS_VRF_EXPECTED_SELECTED     = 9.0;
 #endif
 
   inline constexpr auto POS_MIN_TARGET_BLOCK_TIME = cryptonote::TARGET_BLOCK_TIME - 15s;

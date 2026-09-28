@@ -27,6 +27,10 @@
 # STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+# Experimental consensus primitives; no daemon call sites or activation rules yet.
+add_library(pos_single_vote pos_single_vote.cpp pos_vrf.cpp)
+target_link_libraries(pos_single_vote PUBLIC cncrypto)
+
 add_library(cryptonote_core
   blockchain.cpp
   cryptonote_core.cpp
@@ -54,6 +58,7 @@ target_link_libraries(cryptonote_core
     checkpoints
     sqlite3
   PRIVATE
+    pos_single_vote
     Boost::program_options
     systemd
     extra)
@@ -62,4 +67,3 @@ if(PER_BLOCK_CHECKPOINT)
   target_compile_definitions(cryptonote_core PUBLIC PER_BLOCK_CHECKPOINT)
   target_link_libraries(cryptonote_core PUBLIC blocks)
 endif()
-

@@ -44,7 +44,13 @@ enum struct round_state
 
   send_vrf_signed_blocks,
   wait_for_vrf_signed_blocks,
-  
+
+  // Nodes that VRF sortition did not select still have to carry the round's
+  // gossip. This state keeps them relaying until the round ends. It must sort
+  // after every other VRF state so that the 'msg_received_early' comparisons
+  // treat VRF messages as in-stage rather than queueing them.
+  relay_for_vrf_round,
+
   wait_for_round,
 
   send_and_wait_for_handshakes,
@@ -79,6 +85,8 @@ constexpr std::string_view round_state_string(round_state state)
 
     case round_state::send_vrf_signed_blocks: return "Send Vrf signed blocks"sv;
     case round_state::wait_for_vrf_signed_blocks: return "Wait For Vrf signed blocks"sv;
+
+    case round_state::relay_for_vrf_round: return "Relay For VRF Round"sv;
 
     case round_state::wait_for_round: return "Wait For Round"sv;
 
@@ -140,6 +148,8 @@ struct POS_VRF_wait_stage
 
   uint16_t msgs_received = 0;   // Number of unique MN messages received
   POS::time_point end_time;     // Time at which the stage ends
+  POS::time_point start_time;   // Time at which we entered the stage
+  POS::time_point last_msg_time; // Time the most recent unique message was accepted
 };
 
 template <typename T>
@@ -480,18 +490,13 @@ bool msg_signature_check(POS::message const &msg, crypto::hash const &top_block_
 
     case POS::message_type::vrf_block_template:
     {
-      if(context.prepare_vrf_quorum.quorum.workers.empty()){
-        MDEBUG(log_prefix(context) << "The VRF quorum workers size is" << context.prepare_vrf_quorum.quorum.workers.size());
-        return false;
-      }
-
-      key = &context.prepare_vrf_quorum.quorum.workers[0];
-      MGINFO_MAGENTA("EXPECTED KEY " << context.prepare_vrf_quorum.quorum.workers[0] << " RECEIVED KEY " << msg.vrf_block_template.key << " with msg.quorum_position " << msg.quorum_position);
-      if(*key != msg.vrf_block_template.key){
-        MDEBUG(log_prefix(context) << "Expected block template from " << key <<" , but received " << msg.vrf_block_template.key);
-        return false;
-      }
-      // key = &msg.vrf_block_template.key;
+      // NOTE: Authenticate the template against the key that claims to have
+      // sent it, NOT against our locally computed winner. Two nodes can see
+      // different proof sets and so compute a different workers[0]; rejecting
+      // here on that basis stops the template being relayed at all and stalls
+      // the round for every node behind us. Whether this sender is the winner
+      // is a local decision, made in wait_for_vrf_block_template().
+      key = &msg.vrf_block_template.key;
       if (msg.quorum_position != 0)
       {
         if (error) stream << log_prefix(context) << "Quorum position " << msg.quorum_position << " in VRF POS message indexes oob for " << POS::message_type_string(msg.type);
@@ -590,6 +595,23 @@ void handle_messages_received_early_for(POS_wait_stage &stage, void *quorumnet_s
   }
 }
 
+// Serialising a full block to JSON is expensive and the logging macros evaluate
+// their stream arguments regardless of the active log level, so the dumps on the
+// block production path have to be guarded explicitly.
+#define POS_LOG_BLOCK(level, expr)                                                   \
+  do {                                                                               \
+    if (ELPP->vRegistry()->allowed(el::Level::level, BELDEX_DEFAULT_LOG_CATEGORY))   \
+      expr;                                                                          \
+  } while (0)
+
+// True when 'key' is one of the VRF candidates we verified for this round, i.e.
+// the elected producer or one of the committee validators.
+bool vrf_quorum_contains(master_nodes::quorum const &quorum, crypto::public_key const &key)
+{
+  return std::find(quorum.workers.begin(), quorum.workers.end(), key) != quorum.workers.end() ||
+         std::find(quorum.validators.begin(), quorum.validators.end(), key) != quorum.validators.end();
+}
+
 void handle_messages_received_early_for_vrf_proof(POS_VRF_wait_stage &stage, void *quorumnet_state, cryptonote::Blockchain const &blockchain)
 {
   if (!stage.queue.size())
@@ -656,7 +678,7 @@ bool enforce_validator_participation_and_timeouts(round_context const &context,
 void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool all_mn)
 {
   MGINFO_GREEN(log_prefix(context) << "Handle message called....: " << message_type_string(msg.type));
-  if (context.state < round_state::wait_for_round && context.state != round_state::send_and_wait_for_vrf_proofs && context.state != round_state::wait_for_vrf_block_template && context.state != round_state::send_vrf_signed_blocks && context.state != round_state::wait_for_vrf_signed_blocks)
+  if (context.state < round_state::wait_for_round && context.state != round_state::send_and_wait_for_vrf_proofs && context.state != round_state::wait_for_vrf_block_template && context.state != round_state::send_vrf_signed_blocks && context.state != round_state::wait_for_vrf_signed_blocks && context.state != round_state::relay_for_vrf_round)
   {
     // TODO(doyle): Handle this better.
     // We are not ready for any messages because we haven't prepared for a round
@@ -860,8 +882,15 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
 
     case POS::message_type::vrf_block_template:
     {
-      MGINFO_MAGENTA("CASE for VRF BLOCK TEMPLATE add into my context");
-      if (vrf_stage->msgs_received == 1)
+      MTRACE(log_prefix(context) << "Adding VRF block template into our context");
+
+      auto& blocks = context.transient.wait_for_vrf_block_template.blocks;
+
+      // Collect templates from every candidate we consider eligible, not just
+      // the first one to arrive: if our locally computed winner never sends
+      // one we can still fall back to the best template we did receive instead
+      // of losing the whole round. Bounded by the committee size.
+      if (blocks.size() > master_nodes::POS_VRF_QUORUM_NUM_VALIDATORS)
         return;
 
       cryptonote::block block = {};
@@ -885,16 +914,22 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
       }
 
       if(context.prepare_vrf_quorum.participant == mn_type::producer && msg.vrf_block_template.key != context.prepare_vrf_quorum.quorum.workers[0]){
-        MGINFO_RED(log_prefix(context) << "Received VRF block from other producer " << msg.vrf_block_template.key << " so It will not transfer to other nodes");
+        MDEBUG(log_prefix(context) << "Received VRF block from other producer " << msg.vrf_block_template.key << " so It will not transfer to other nodes");
         return;
       }
 
-      auto& blocks = context.transient.wait_for_vrf_block_template.blocks;
-
-      auto it = blocks.find(msg.vrf_block_template.key);
+      // Only accept templates from a node whose VRF proof we verified in
+      // prepare_vrf_quorum(). That bounds this map to the sampled committee and
+      // guarantees we hold the proof needed to score the sender below.
+      if (!vrf_quorum_contains(context.prepare_vrf_quorum.quorum, msg.vrf_block_template.key))
+      {
+        MDEBUG(log_prefix(context) << "Received VRF block template from " << msg.vrf_block_template.key
+                                   << " which is not a verified VRF candidate in our view, dropping");
+        return;
+      }
 
       //check the key is present or not.
-      if (it != blocks.end()) {
+      if (blocks.count(msg.vrf_block_template.key)) {
           return;
       }
 
@@ -1051,6 +1086,9 @@ void POS::handle_message(void *quorumnet_state, POS::message const &msg, bool al
   if(vrf_stage != nullptr)
   {
     vrf_stage->msgs_received++;
+    // Used by send_and_wait_for_vrf_proofs to close collection once the arrival
+    // stream goes quiet, instead of always running to the stage deadline.
+    vrf_stage->last_msg_time = POS::clock::now();
   }
 
   if (quorumnet_state){
@@ -1395,8 +1433,8 @@ round_state wait_for_next_block(uint64_t hf17_height, round_context &context, cr
   // NOTE: If already processing POS for height, wait for next height
   //
   uint64_t chain_height = blockchain.get_current_blockchain_height(true /*lock*/);
-  MGINFO_CYAN(log_prefix(context) << "chain_height : " << chain_height);
-  MGINFO_CYAN(log_prefix(context) << "context.wait_for_next_block.height : " << context.wait_for_next_block.height);
+  MTRACE(log_prefix(context) << "chain_height : " << chain_height
+                             << ", context.wait_for_next_block.height : " << context.wait_for_next_block.height);
   if (context.wait_for_next_block.height == chain_height)
   {
     for (static uint64_t last_height = 0; last_height != chain_height; last_height = chain_height)
@@ -1499,8 +1537,9 @@ round_state prepare_for_round(round_context &context, master_nodes::master_node_
   {
     using namespace master_nodes;
     context.prepare_for_round.start_time                          = context.wait_for_next_block.round_0_start_time                + (context.prepare_for_round.round * POS_ROUND_TIME);
+    context.transient.vrf_proof.wait.stage.start_time             = context.prepare_for_round.start_time;
     context.transient.vrf_proof.wait.stage.end_time               = context.prepare_for_round.start_time                          + POS_WAIT_FOR_VRF_PROOF_DURATION;
-    context.transient.wait_for_vrf_block_template.stage.end_time  = context.transient.vrf_proof.wait.stage.end_time               + POS_WAIT_FOR_VRF_BLOCK_TEMPLATE_DURATION;       
+    context.transient.wait_for_vrf_block_template.stage.end_time  = context.transient.vrf_proof.wait.stage.end_time               + POS_WAIT_FOR_VRF_BLOCK_TEMPLATE_DURATION;
     context.transient.send_and_wait_for_vrf_signed_block.wait.stage.end_time = context.transient.wait_for_vrf_block_template.stage.end_time + POS_WAIT_FOR_VRF_SIGNED_BLOCK;
   }
 
@@ -1613,24 +1652,31 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
       }
 
       // verify with threshold
-      auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
-      double W = static_cast<double>(activeList.size());
-      double tau = 9.0;
+      double W = static_cast<double>(blockchain.get_master_node_list().active_master_nodes_infos().size());
+      double tau = master_nodes::POS_VRF_EXPECTED_SELECTED;
 
       bool isValid = verify_vrf_output_with_threshold(output, tau, W);
       if(!isValid)
       {
-        MGINFO_YELLOW(log_prefix(context) << "Doesn't passed the threshold condition so back to next round" << key.pub);
-        return goto_preparing_for_next_round(context);
+        // NOTE: Sortition did not select us. We must NOT leave the round here.
+        // Proofs, templates and signatures reach the committee by gossip over
+        // the whole master node set, and handle_message() drops anything whose
+        // round does not match ours. Jumping to round+1 at this point turns
+        // every unselected node -- roughly (W - tau)/W of the network -- into a
+        // black hole for this round's traffic, which starves the committee of
+        // proofs and makes the round fail and retry a full POS_ROUND_TIME
+        // later. Stay in the round as a relay instead; we simply publish no
+        // proof of our own and so cannot be elected.
+        MDEBUG(log_prefix(context) << "Not selected by VRF sortition for this round, relaying only: " << key.pub);
       }
+      else
+      {
+        msg.vrf_proof.proof = context.transient.vrf_proof.send.data;
+        msg.vrf_proof.key = key.pub;
 
-      // MGINFO_GREEN(log_prefix(context) << "Output from the VRF proof:" << output);
-      msg.vrf_proof.proof = context.transient.vrf_proof.send.data;
-      msg.vrf_proof.key = key.pub;
-      // MGINFO_GREEN(log_prefix(context) << "Length of proof array: "<< std::strlen(reinterpret_cast<const char*>(msg.vrf_proof.proof.data)));
-
-      crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
-      handle_message(quorumnet_state, msg, true); // Add our own. We receive our own msg for the first time which also triggers us to relay.
+        crypto::generate_signature(msg_signature_hash(context.wait_for_next_block.top_hash, msg), key.pub, key.key, msg.signature);
+        handle_message(quorumnet_state, msg, true); // Add our own. We receive our own msg for the first time which also triggers us to relay.
+      }
     }
 
     //
@@ -1640,30 +1686,37 @@ round_state send_and_wait_for_vrf_proofs(round_context &context, void *quorumnet
     POS_VRF_wait_stage const &stage = context.transient.vrf_proof.wait.stage;
 
     auto const &quorum            = context.transient.vrf_proof.wait.proofs;
-    bool const timed_out          = POS::clock::now() >= stage.end_time;
-        
-    auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
-    bool const all_handshakes     = activeList.size() == quorum.size();
-    
-    if (all_handshakes || timed_out)
+    auto const now                = POS::clock::now();
+    bool const timed_out          = now >= stage.end_time;
+
+    // NOTE: There is no "all proofs received" condition available here. VRF
+    // sortition means only about POS_VRF_EXPECTED_SELECTED of the W active
+    // master nodes ever publish a proof, so comparing the number received
+    // against the size of the active list never matches and the stage always
+    // ran to its deadline -- a fixed, unconditional POS_WAIT_FOR_VRF_PROOF_
+    // DURATION added to every block.
+    //
+    // Close instead on evidence: once we hold enough candidates to form a
+    // committee and the arrival stream has been quiet for the grace period,
+    // more waiting buys nothing. The minimum window keeps a node that hears one
+    // proof immediately from locking in a one-node committee.
+    size_t const min_candidates = master_nodes::POS_BLOCK_REQUIRED_SIGNATURES + 1 /*producer*/;
+    bool const enough_candidates = quorum.size() >= min_candidates;
+    bool const min_window_elapsed =
+        now >= stage.start_time + master_nodes::POS_WAIT_FOR_VRF_PROOF_MIN_DURATION;
+    bool const arrivals_quiet =
+        stage.last_msg_time != POS::time_point{} &&
+        now >= stage.last_msg_time + master_nodes::POS_WAIT_FOR_VRF_PROOF_QUIET_PERIOD;
+
+    if (timed_out || (enough_candidates && min_window_elapsed && arrivals_quiet))
     {
-      MGINFO_GREEN(log_prefix(context) <<"active size : " << activeList.size() << " proof received size : " << quorum.size());
-
-      std::time_t vrf_proof_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
-      MGINFO_BLUE("vrf_proof_time_t.end_time : " << std::put_time(std::gmtime(&vrf_proof_time_t), "%F %T"));
-  
-      std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
-      MGINFO_BLUE("now_c (VRF): " << std::put_time(std::gmtime(&now_c), "%F %T"));
-
-      bool missing_handshakes = timed_out && !all_handshakes;
-      MGINFO_GREEN(log_prefix(context) << "Collected masternodes proofs ");
+      MGINFO_GREEN(log_prefix(context) << "Collected " << quorum.size() << " VRF proofs in "
+                                       << tools::friendly_duration(now - stage.start_time)
+                                       << (timed_out ? " (stage deadline reached)" : " (arrivals quiet)"));
       return round_state::prepare_vrf_quorum;
     }
-    else
-    {
-      MDEBUG(log_prefix(context) << "Again called send_and_wait_for_vrf_proofs ");
-      return round_state::send_and_wait_for_vrf_proofs;
-    }
+
+    return round_state::send_and_wait_for_vrf_proofs;
 
   }
 
@@ -1676,7 +1729,16 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
 
   MGINFO_MAGENTA(log_prefix(context) << "Received proof quorum size : " << quorum.size());
   std::vector<std::pair<crypto::public_key, std::array<unsigned char, 64>>> vrf_quorum_candidates;
-  
+
+  // Hoisted: active_master_nodes_infos() copies the whole active master node
+  // list, so calling it per proof made this loop O(proofs * active nodes).
+  double const W   = static_cast<double>(blockchain.get_master_node_list().active_master_nodes_infos().size());
+  double const tau = master_nodes::POS_VRF_EXPECTED_SELECTED;
+
+  // Likewise the round's alpha is fixed for the whole loop.
+  const crypto::hash alpha = generate_hash_alpha(context.wait_for_next_block.top_hash, context.prepare_for_round.round);
+  const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+
   for (const auto &[pubkey, proof]  : quorum)
   {
     if(!proof.has_value())
@@ -1685,18 +1747,7 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
       continue;
     }
 
-    MGINFO_MAGENTA(log_prefix(context) << "Public Key: " << pubkey);
-
-    // verify the proof and findout output
-    
-    // get the alpha value from the previous two blocks
-    const crypto::hash& alpha = generate_hash_alpha(context.wait_for_next_block.top_hash, context.prepare_for_round.round);
-
-    // MGINFO_YELLOW(log_prefix(context) << "context.wait_for_next_block.top_hash: " << context.wait_for_next_block.top_hash);
-    // MGINFO_YELLOW(log_prefix(context) << " context.prepare_for_round.round: " << static_cast<int>(context.prepare_for_round.round));
-    // MGINFO_YELLOW(log_prefix(context) << "alpha Key: " << alpha);
-
-    const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+    MTRACE(log_prefix(context) << "Public Key: " << pubkey);
 
     unsigned char pk[32];
     std::memcpy(pk, pubkey.data, sizeof(pk));
@@ -1710,10 +1761,6 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
     }
 
     // verify with threshold
-    auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
-    double W = static_cast<double>(activeList.size());
-    double tau = 9.0;
-
     bool isValid = verify_vrf_output_with_threshold(output, tau, W);
     if(!isValid)
     {
@@ -1735,8 +1782,13 @@ round_state prepare_vrf_quorum(round_context &context, master_nodes::master_node
 
   if (context.prepare_vrf_quorum.quorum.workers.empty() || context.prepare_vrf_quorum.quorum.validators.size() < master_nodes::POS_BLOCK_REQUIRED_SIGNATURES)
   {
-    MGINFO_RED(log_prefix(context) << "VRF Quorum is either empty or No eligible participants. Skipping current VRF round.");
-    return goto_preparing_for_next_round(context);
+    // We cannot take part, but other nodes may have seen more proofs than we
+    // did and still be running this round. Keep relaying for them rather than
+    // skipping ahead and dropping their traffic.
+    MGINFO_RED(log_prefix(context) << "VRF Quorum is either empty or has no eligible participants ("
+                                   << context.prepare_vrf_quorum.quorum.validators.size()
+                                   << " validators). Relaying only for this round.");
+    return round_state::relay_for_vrf_round;
   }
 
   if (context.prepare_vrf_quorum.quorum.validators.size() > master_nodes::POS_VRF_QUORUM_NUM_VALIDATORS) {
@@ -1785,13 +1837,11 @@ round_state wait_for_vrf_round(round_context &context, cryptonote::Blockchain co
     return goto_wait_for_next_block_and_clear_round_data(context);
   }
 
-  auto start_time = context.transient.vrf_proof.wait.stage.end_time;
-  if (auto now = POS::clock::now(); now < start_time)
-  {
-    for (static uint64_t last_height = 0; last_height != context.wait_for_next_block.height; last_height = context.wait_for_next_block.height)
-      MTRACE(log_prefix(context) << "Waiting for vrf round " << +context.prepare_for_round.round << " to start in " << tools::friendly_duration(start_time - now));
-    return round_state::wait_for_vrf_round;
-  }
+  // NOTE: Deliberately no barrier on vrf_proof.wait.stage.end_time here. The
+  // proof stage has already decided it is finished (either it closed early on
+  // evidence or it hit its deadline); blocking again until the deadline made
+  // the early close dead code and charged every block the full
+  // POS_WAIT_FOR_VRF_PROOF_DURATION regardless of how fast proofs arrived.
 
   if (context.prepare_vrf_quorum.participant == mn_type::validator)
   {
@@ -1805,10 +1855,30 @@ round_state wait_for_vrf_round(round_context &context, cryptonote::Blockchain co
   }
   else
   {
-    MGINFO_GREEN(log_prefix(context) << "Non-participant for VRF round, waiting for the next POS round");
+    MGINFO_GREEN(log_prefix(context) << "Non-participant for VRF round, relaying quorum traffic until the round ends");
+    return round_state::relay_for_vrf_round;
+  }
+
+}
+
+// Nodes that sortition did not select stay here for the remainder of the round.
+// They produce nothing, but handle_message() will accept and re-gossip the
+// round's templates and signatures while we are in this state, which is what
+// keeps the committee's messages flowing across a network where most nodes are
+// not on the committee. We leave as soon as the block lands or the round's last
+// stage deadline passes.
+round_state relay_for_vrf_round(round_context &context, cryptonote::Blockchain const &blockchain)
+{
+  if (context.wait_for_next_block.height != blockchain.get_current_blockchain_height(true /*lock*/))
+    return goto_wait_for_next_block_and_clear_round_data(context);
+
+  if (POS::clock::now() >= context.transient.send_and_wait_for_vrf_signed_block.wait.stage.end_time)
+  {
+    MDEBUG(log_prefix(context) << "Round ended without a block reaching us, preparing for the next round");
     return goto_preparing_for_next_round(context);
   }
 
+  return round_state::relay_for_vrf_round;
 }
 
 round_state send_vrf_block_template(round_context &context, void *quorumnet_state, master_nodes::master_node_keys const &key, cryptonote::Blockchain &blockchain)
@@ -1865,7 +1935,8 @@ round_state send_vrf_block_template(round_context &context, void *quorumnet_stat
   // context.transient.send_and_wait_for_vrf_signed_block.wait.signature[key.pub] = std::nullopt;
 
   // Send
-  MGINFO_MAGENTA(log_prefix(context) << "Sending block template from producer (us) to validators.\n" << cryptonote::obj_to_json_str(block));
+  MGINFO_MAGENTA(log_prefix(context) << "Sending block template from producer (us) to validators.");
+  POS_LOG_BLOCK(Trace, MTRACE(log_prefix(context) << "Block template: " << cryptonote::obj_to_json_str(block)));
   cryptonote::quorumnet_POS_relay_message_to_quorum(quorumnet_state, msg, context.prepare_vrf_quorum.quorum, true /*block_producer*/);
   // return goto_preparing_for_next_round(context);
   return round_state::wait_for_vrf_signed_blocks;
@@ -1878,95 +1949,78 @@ round_state wait_for_vrf_block_template(round_context &context, master_nodes::ma
   POS_VRF_wait_stage const &stage = context.transient.wait_for_vrf_block_template.stage;
 
   assert(context.prepare_vrf_quorum.participant == mn_type::validator);
-  bool timed_out = POS::clock::now() >= stage.end_time;
-  bool received = stage.msgs_received == 1;
-  if (timed_out || received)
+
+  auto const &blocks = context.transient.wait_for_vrf_block_template.blocks;
+  crypto::public_key const &expected_worker = context.prepare_vrf_quorum.quorum.workers[0];
+
+  // Close as soon as the producer we elected has delivered; only fall back to
+  // whatever else arrived once the stage deadline is reached.
+  bool const timed_out       = POS::clock::now() >= stage.end_time;
+  auto const expected_it     = blocks.find(expected_worker);
+  bool const have_expected   = expected_it != blocks.end() && expected_it->second;
+
+  if (timed_out || have_expected)
   {
-    std::time_t block_template_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
-    MGINFO_BLUE("block_template.end_time : " << std::put_time(std::gmtime(&block_template_time_t), "%F %T"));
-  
-    std::time_t now_c = std::chrono::system_clock::to_time_t(POS::clock::now());
-    MGINFO_BLUE("now_c (block_template): " << std::put_time(std::gmtime(&now_c), "%F %T"));
-
-    if (received)
+    if (have_expected || !blocks.empty())
     {
-      MGINFO_MAGENTA(log_prefix(context) << "Total VRF block received from producers : " << stage.msgs_received);
-      // get the alpha value from the previous two blocks
-      const crypto::hash& alpha = generate_hash_alpha(context.wait_for_next_block.top_hash, context.prepare_for_round.round);
-      const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+      // Prefer the producer we elected. If it never delivered (offline, or its
+      // proof did not reach us in time) fall back to the best-scoring template
+      // we did receive rather than losing the round: every sender in this map
+      // has already had its VRF proof verified against the round's threshold in
+      // prepare_vrf_quorum(), and all of them rank candidates by the same VRF
+      // output, so validators that share our view converge on the same choice.
+      // This is same-round recovery, not a guarantee of agreement.
+      crypto::public_key const *winner = nullptr;
+      std::array<unsigned char, 64> best_output{};
 
-      // verify with threshold
-      auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
-      double W = static_cast<double>(activeList.size());
-      double tau = 9.0;
-      
-      // Get output for the current worker
-      unsigned char curr_worker_pk[32];
-      std::memcpy(curr_worker_pk, context.prepare_vrf_quorum.quorum.workers[0].data, sizeof(curr_worker_pk));
-
-      unsigned char curr_worker_output[64];
-
-      int err = vrf_verify(curr_worker_output, 
-                                curr_worker_pk, 
-                                context.transient.vrf_proof.wait.proofs[context.prepare_vrf_quorum.quorum.workers[0]].value().data, 
-                                alpha_bytes, sizeof(crypto::hash));
-      if (err != 0) {
-        MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << context.prepare_vrf_quorum.quorum.workers[0]);
-        return goto_preparing_for_next_round(context); // need to add proper logic for the failed scenario
-      }
-
-      crypto::public_key &original_worker = context.prepare_vrf_quorum.quorum.workers[0];
-      // for(const auto &[pubkey, blockProof] : context.transient.wait_for_vrf_block_template.blocks)
-      // {
-      //   if (blockProof) {
-      //     const auto &block = blockProof->block;
-      //     const auto &proof = blockProof->proof;
-
-      //     // Use `pubkey`, `block`, and `proof` here
-
-      //     if (pubkey != context.prepare_vrf_quorum.quorum.workers[0]){
-      //       // get the outPut and checks with the current owner and replace if it is less then the current owner output
-      //       unsigned char pk[32];
-      //       std::memcpy(pk, pubkey.data, sizeof(pk));
-
-      //       unsigned char output[64];
-
-      //       int err = vrf_verify(output, pk, proof.data, alpha_bytes, sizeof(crypto::hash));
-      //       if (err != 0) {
-      //         MGINFO_RED(log_prefix(context) << "Proof verification is failed for : " << pubkey);
-      //         continue;
-      //       }
-
-      //       bool isValid = verify_vrf_output_with_threshold(output, tau, W);
-      //       if(!isValid)
-      //       {
-      //         MDEBUG(log_prefix(context) << "doesn't passed the threshold condition " << pubkey);
-      //         continue;
-      //       }
-
-      //       // Keep original worker[0] intact
-      //       if (std::memcmp(output, curr_worker_output, sizeof(output)) < 0) {
-      //         MGINFO_MAGENTA(log_prefix(context) << "Valid VRF block received from new producer : " << pubkey);
-                            
-      //         // Add old worker to validators
-      //         context.prepare_vrf_quorum.quorum.validators.emplace_back(original_worker);
-      //         original_worker = pubkey;
-      //         std::memcpy(curr_worker_output, output, sizeof(curr_worker_output));
-      //       }
-      //     }
-      //   }
-      // }
-
-      if (const auto& blockProofOpt = context.transient.wait_for_vrf_block_template.blocks[original_worker]; blockProofOpt)
+      if (have_expected)
       {
-        // auto& [block, proof] = *blockProofOpt;
-        // cryptonote::block block = blockProofOpt->block;
-        context.transient.wait_for_vrf_block_template.block = blockProofOpt->block;
-
-        context.transient.send_and_wait_for_vrf_signed_block.final_block = blockProofOpt->block;
-        MGINFO_MAGENTA(log_prefix(context) << "Final VRF block locked from winning producer: "<< original_worker);
-        MGINFO_MAGENTA(log_prefix(context) << "Final VRF block content: " << cryptonote::obj_to_json_str(context.transient.wait_for_vrf_block_template.block));
+        winner = &expected_worker;
       }
+      else
+      {
+        const crypto::hash alpha = generate_hash_alpha(context.wait_for_next_block.top_hash, context.prepare_for_round.round);
+        const unsigned char* alpha_bytes = reinterpret_cast<const unsigned char*>(alpha.data);
+
+        for (auto const &[pubkey, block_proof] : blocks)
+        {
+          if (!block_proof)
+            continue;
+
+          unsigned char pk[32];
+          std::memcpy(pk, pubkey.data, sizeof(pk));
+
+          std::array<unsigned char, 64> output{};
+          if (vrf_verify(output.data(), pk, block_proof->proof.data, alpha_bytes, sizeof(crypto::hash)) != 0)
+          {
+            MDEBUG(log_prefix(context) << "Proof verification failed for fallback producer " << pubkey);
+            continue;
+          }
+
+          if (!winner || output < best_output)
+          {
+            winner      = &pubkey;
+            best_output = output;
+          }
+        }
+      }
+
+      if (!winner)
+      {
+        MGINFO_RED(log_prefix(context) << "No usable VRF block template received, waiting until next round");
+        return goto_preparing_for_next_round(context);
+      }
+
+      if (!have_expected)
+        MGINFO_YELLOW(log_prefix(context) << "Elected producer " << expected_worker
+                                          << " did not deliver; falling back to " << *winner);
+
+      auto const &block_proof = blocks.at(*winner);
+      context.transient.wait_for_vrf_block_template.block              = block_proof->block;
+      context.transient.send_and_wait_for_vrf_signed_block.final_block = block_proof->block;
+      MGINFO_MAGENTA(log_prefix(context) << "Final VRF block locked from winning producer: " << *winner);
+      POS_LOG_BLOCK(Trace, MTRACE(log_prefix(context) << "Final VRF block content: " << cryptonote::obj_to_json_str(context.transient.wait_for_vrf_block_template.block)));
+
       return round_state::send_vrf_signed_blocks;
     }
     else
@@ -1986,6 +2040,15 @@ round_state send_vrf_signed_blocks(round_context &context, master_nodes::master_
 
   if (context.transient.send_and_wait_for_vrf_signed_block.send.one_time_only())
   {
+    // Guard: previously, if no template matched our elected producer we still
+    // reached this point and signed a default-constructed block. The producer
+    // then rejected that signature, and enough such signatures cost the round.
+    if (context.transient.wait_for_vrf_block_template.block.miner_tx.vin.empty())
+    {
+      MGINFO_RED(log_prefix(context) << "No VRF block template was locked in, refusing to sign");
+      return goto_preparing_for_next_round(context);
+    }
+
     context.transient.send_and_wait_for_vrf_signed_block.final_block = std::move(context.transient.wait_for_vrf_block_template.block);
     cryptonote::block &final_block             = context.transient.send_and_wait_for_vrf_signed_block.final_block;
 
@@ -2049,10 +2112,28 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
   
   POS_VRF_wait_stage const &stage = context.transient.send_and_wait_for_vrf_signed_block.wait.stage;
 
-  bool max_received = context.transient.send_and_wait_for_vrf_signed_block.wait.signature.size() == master_nodes::POS_VRF_QUORUM_NUM_VALIDATORS;
-  bool timed_out = POS::clock::now() >= stage.end_time;
+  auto const &quorum_vrf_proofs = context.transient.vrf_proof.wait.proofs;
+  auto const &quorum_vrf_block_signature = context.transient.send_and_wait_for_vrf_signed_block.wait.signature;
 
-  if(timed_out || max_received){
+  // Count only signatures we can actually include in the block. Waiting for
+  // every validator delays production when the required signatures are already
+  // available, and can force smaller quorums to wait until the deadline.
+  std::vector<crypto::public_key> availablePubkey;
+  availablePubkey.reserve(quorum_vrf_block_signature.size());
+  for (const auto &[pubkey, signature] : quorum_vrf_block_signature)
+  {
+    if (pubkey == key.pub || !signature)
+      continue;
+
+    auto it_proof = quorum_vrf_proofs.find(pubkey);
+    if (it_proof != quorum_vrf_proofs.end() && it_proof->second)
+      availablePubkey.push_back(pubkey);
+  }
+
+  bool const enough_received = availablePubkey.size() >= master_nodes::POS_BLOCK_REQUIRED_SIGNATURES;
+  bool const timed_out = POS::clock::now() >= stage.end_time;
+
+  if(timed_out || enough_received){
     std::time_t vrf_signed_blocks_time_t = std::chrono::system_clock::to_time_t(stage.end_time);
     MGINFO_BLUE("vrf_signed_blocks.end_time : " << std::put_time(std::gmtime(&vrf_signed_blocks_time_t), "%F %T"));
   
@@ -2061,34 +2142,8 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
 
     MGINFO_MAGENTA(log_prefix(context) <<"Size of the signatures: " << context.transient.send_and_wait_for_vrf_signed_block.wait.signature.size());
 
-    // Collect proofs and signatures
-    auto const &quorum_vrf_proofs = context.transient.vrf_proof.wait.proofs;
-    auto const &quorum_vrf_block_signature = context.transient.send_and_wait_for_vrf_signed_block.wait.signature;
-
-    std::vector<crypto::public_key> availablePubkey;
-    availablePubkey.reserve(quorum_vrf_block_signature.size());
-
-    // Collect all pubkeys that have both proof + signature
-    for (const auto &[pubkey, signature] : quorum_vrf_block_signature)
-    {
-        if(pubkey == key.pub)
-        {
-          MGINFO_MAGENTA(log_prefix(context) << "Don't add my signature into block if i am a producer\n");
-          continue;
-        }
-        MGINFO_MAGENTA(log_prefix(context) << "pubkey: " << pubkey 
-                                           << ", has signature: " << *signature);
-
-        auto it_proof = quorum_vrf_proofs.find(pubkey);
-        if (it_proof != quorum_vrf_proofs.end() && it_proof->second)
-        {
-          MGINFO_MAGENTA(log_prefix(context) << "proof: " << *it_proof->second);
-          availablePubkey.push_back(pubkey);
-        }
-    }
-
     // Check quorum size
-    if (availablePubkey.size() < master_nodes::POS_BLOCK_REQUIRED_SIGNATURES)
+    if (!enough_received)
     {
         MGINFO_RED("Not enough pubkeys with valid proof + signature. Found: "
                    << availablePubkey.size() << " required: "
@@ -2131,9 +2186,8 @@ round_state wait_for_vrf_signed_blocks(round_context &context, master_nodes::mas
 
     // Log final block
     MGINFO_YELLOW(log_prefix(context)
-           << "final_block.vrf_signatures.size(): " << final_block.vrf_signatures.size()
-           << "\nFinal VRF signed block:\n"
-           << cryptonote::obj_to_json_str(final_block));
+           << "final_block.vrf_signatures.size(): " << final_block.vrf_signatures.size());
+    POS_LOG_BLOCK(Trace, MTRACE(log_prefix(context) << "Final VRF signed block:\n" << cryptonote::obj_to_json_str(final_block)));
     // {
     //    auto activeList               = blockchain.get_master_node_list().active_master_nodes_infos();
     //   // get the alpha value from the previous two blocks
@@ -2757,6 +2811,10 @@ void POS::main(void *quorumnet_state, cryptonote::core &core)
       
       case round_state::wait_for_vrf_signed_blocks:
         context.state = wait_for_vrf_signed_blocks(context, node_list, quorumnet_state, key, blockchain, core);
+        break;
+
+      case round_state::relay_for_vrf_round:
+        context.state = relay_for_vrf_round(context, blockchain);
         break;
 
       case round_state::wait_for_round:

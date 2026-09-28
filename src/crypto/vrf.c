@@ -20,6 +20,8 @@ void bytesToHexString(const unsigned char *bytes, char *hex_str, size_t size) {
 // using GMP (GNU Multiple Precision Arithmetic Library) functions (gmp.h) for handling large integers.
 // Let l = |beta|
 // Compute fraction = y / 2^l
+// 'fraction' must already be mpf_init'd by the caller, who also owns clearing
+// it. This function used to mpf_init it again, leaking the caller's allocation.
 void compute_fraction(unsigned char beta[64], mpf_t fraction) {
     mpz_t y, denominator;
     mpf_t denom_float;
@@ -31,13 +33,16 @@ void compute_fraction(unsigned char beta[64], mpf_t fraction) {
     
     mpz_init(y);
     mpz_init(denominator);
-    mpf_init(fraction);
     mpf_init(denom_float);
 
-	
+
     // Convert hex string to big integer
     if (mpz_set_str(y, hex_str, 16) != 0) {
         fprintf(stderr, "Error converting hex string to integer\n");
+        mpz_clear(y);
+        mpz_clear(denominator);
+        mpf_clear(denom_float);
+        mpf_set_ui(fraction, 1);  // Out of range: never passes the threshold.
         return;
     }
 
@@ -472,12 +477,12 @@ int verify_vrf_output_and_get_fraction(unsigned char output[64],
 	// gmp_printf("Threshold: %.50Ff\n", threshold);
 
 	// Compare local_fraction with threshold
-	if (mpf_cmp(local_fraction, threshold) > 0) {
-		// printf("Fraction is greater than %.12f\n", p);
-		return 1;
-	} 
+	int const above_threshold = mpf_cmp(local_fraction, threshold) > 0;
 
-	return 0;
+	mpf_clear(local_fraction);
+	mpf_clear(threshold);
+
+	return above_threshold ? 1 : 0;
 }
 
 // verify the outout of the vrf beta with the threshld: y/2^|y| < taw/W
@@ -506,12 +511,14 @@ bool verify_vrf_output_with_threshold(unsigned char output[64],
 	// gmp_printf("Threshold: %.50Ff\n", threshold);
 
 	// Compare fraction with threshold
-	if (mpf_cmp(fraction, threshold) > 0) {
-		// printf("Fraction is greater than %.12f\n", p);
-		return false;
-	} 
+	int const above_threshold = mpf_cmp(fraction, threshold) > 0;
 
-	return true;
+	// Both operands are heap allocated by GMP; leaking them here leaked once per
+	// proof per round on every node.
+	mpf_clear(fraction);
+	mpf_clear(threshold);
+
+	return above_threshold ? false : true;
 }
 
 // int 

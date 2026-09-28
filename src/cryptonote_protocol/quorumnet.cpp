@@ -93,10 +93,6 @@ struct QnetState {
     // FIXME:
     //std::chrono::steady_clock::time_point last_flash_cleanup = std::chrono::steady_clock::now();
 
-    std::mutex POS_message_queue_mutex;
-    std::condition_variable POS_message_queue_cv;
-    std::queue<POS::message> POS_message_queue;
-
     QnetState(cryptonote::core &core) : core{core} {}
 
     static QnetState &from(void* obj) {
@@ -1683,26 +1679,16 @@ void POS_relay_message_to_quorum(void *self, POS::message const &msg, master_nod
 
 
   auto &qnet = QnetState::from(self);
-  if (block_producer)
-  {
-    master_nodes::quorum const *quorum_ptr = &quorum;
-    auto destinations = peer_prepare_relay_to_quorum_subset(qnet.core, &quorum_ptr, &quorum_ptr + 1, 4 /*num_peers*/);
-    peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
-  }
-  else if (msg.type == POS::message_type::vrf_block_template && msg.type == POS::message_type::vrf_signed_block && quorum.validators.size() < 7)
+  if (block_producer || msg.type == POS::message_type::vrf_block_template)
   {
     master_nodes::quorum const *quorum_ptr = &quorum;
     auto destinations = peer_prepare_relay_to_quorum_subset(qnet.core, &quorum_ptr, &quorum_ptr + 1, quorum.validators.size() /*num_peers*/);
     peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
   }
-  else if (msg.type == POS::message_type::vrf_block_template && msg.type == POS::message_type::vrf_signed_block && quorum.validators.size() > 20)
-  {
-    master_nodes::quorum const *quorum_ptr = &quorum;
-    auto destinations = peer_prepare_relay_to_quorum_subset(qnet.core, &quorum_ptr, &quorum_ptr + 1, 4 /*num_peers*/);
-    peer_relay_to_prepared_destinations(qnet.core, destinations, command, bt_serialize(data));
-  }
   else
   {
+    // VRF signatures are sent with a worker-only quorum. Use the relay path
+    // that includes the producer; the subset helper selects validators only.
     // MGINFO_MAGENTA("POS pear list creation start...: "<< command);
     MGINFO_BLUE("Quorum size : " <<  quorum.workers.size() + quorum.validators.size());
     peer_info peer_list{qnet,
@@ -1780,6 +1766,7 @@ void handle_POS_VRF_proof(Message& m, QnetState& qnet) {
   qnet.omq.job(
     [&qnet, data = std::move(msg)]() {
       POS::handle_message(&qnet, data, true);
+      POS::main(&qnet, qnet.core);
     },
     qnet.core.POS_thread_id()
   );
@@ -1804,7 +1791,7 @@ void handle_POS_participation_bit_or_bitset(Message &m, QnetState& qnet, bool bi
       throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
   }
 
-  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); POS::main(&qnet, qnet.core); }, qnet.core.POS_thread_id());
 }
 
 void handle_vrf_POS_block_template(Message &m, QnetState &qnet)
@@ -1840,7 +1827,7 @@ void handle_vrf_POS_block_template(Message &m, QnetState &qnet)
   }
 
   MGINFO_MAGENTA("HANDLE VRF POS BLOCK TEMPLATE from " << msg.vrf_block_template.key);
-  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); POS::main(&qnet, qnet.core); }, qnet.core.POS_thread_id());
 }
 
 void handle_vrf_POS_signed_block(Message &m, QnetState &qnet)
@@ -1869,7 +1856,7 @@ void handle_vrf_POS_signed_block(Message &m, QnetState &qnet)
   }
 
 //   MGINFO_MAGENTA("HANDLE VRF POS BLOCK SIGNATURE from " << msg.vrf_signed_block.key);
-  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); POS::main(&qnet, qnet.core); }, qnet.core.POS_thread_id());
 }
 
 void handle_POS_block_template(Message &m, QnetState &qnet)
@@ -1886,7 +1873,7 @@ void handle_POS_block_template(Message &m, QnetState &qnet)
   else
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
 
-  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); POS::main(&qnet, qnet.core); }, qnet.core.POS_thread_id());
 }
 
 void handle_POS_random_value_hash(Message &m, QnetState &qnet)
@@ -1909,7 +1896,7 @@ void handle_POS_random_value_hash(Message &m, QnetState &qnet)
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
   }
 
-  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); POS::main(&qnet, qnet.core); }, qnet.core.POS_thread_id());
 }
 
 void handle_POS_random_value(Message &m, QnetState &qnet)
@@ -1930,7 +1917,7 @@ void handle_POS_random_value(Message &m, QnetState &qnet)
     throw std::invalid_argument(std::string(INVALID_ARG_PREFIX) + tag + "'");
   }
 
-  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); POS::main(&qnet, qnet.core); }, qnet.core.POS_thread_id());
 }
 
 void handle_POS_signed_block(Message &m, QnetState &qnet)
@@ -1949,7 +1936,7 @@ void handle_POS_signed_block(Message &m, QnetState &qnet)
     throw std::invalid_argument("Invalid POS signed block: missing required field '"s + tag + "'");
   }
 
-  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); }, qnet.core.POS_thread_id());
+  qnet.omq.job([&qnet, data = std::move(msg)]() { POS::handle_message(&qnet, data); POS::main(&qnet, qnet.core); }, qnet.core.POS_thread_id());
 }
 
 } // end empty namespace

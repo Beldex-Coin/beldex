@@ -93,7 +93,8 @@ set(enabled_tests
     performance_tests
     core_proxy
     fuzz
-    unit_tests)
+    unit_tests
+    single_vote_tests)
 
 add_custom_target(tests DEPENDS ${enabled_tests})
 set_property(TARGET tests PROPERTY FOLDER "${folder}")

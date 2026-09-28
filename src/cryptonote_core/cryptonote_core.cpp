@@ -1091,8 +1091,12 @@ namespace cryptonote
       if (m_master_node)
       {
         m_POS_thread_id = m_omq->add_tagged_thread("POS");
+        // NOTE: This timer only drives the POS state machine's time-based
+        // transitions; message arrivals kick it directly from quorumnet. It
+        // bounds how late a stage notices that its grace period or deadline has
+        // passed, so keep it well under POS_WAIT_FOR_VRF_PROOF_QUIET_PERIOD.
         m_omq->add_timer([this]() { POS::main(m_quorumnet_state, *this); },
-                         std::chrono::milliseconds(500),
+                         std::chrono::milliseconds(100),
                          false,
                          m_POS_thread_id);
         m_omq->add_timer([this]() {this->check_master_node_time();},

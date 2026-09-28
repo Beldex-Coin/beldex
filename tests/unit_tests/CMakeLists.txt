@@ -126,3 +126,9 @@ add_test(
 add_executable(test_notifier test_notifier.cpp)
 target_link_libraries(test_notifier extra)
 set_property(TARGET test_notifier PROPERTY FOLDER "tests")
+
+# Keep consensus primitive tests runnable without building wallet/RPC tests.
+add_executable(single_vote_tests pos_single_vote.cpp pos_vrf.cpp)
+target_link_libraries(single_vote_tests PRIVATE pos_single_vote gtest_main extra)
+set_property(TARGET single_vote_tests PROPERTY FOLDER "tests")
+add_test(NAME single_vote_tests COMMAND single_vote_tests)
