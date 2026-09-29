@@ -93,7 +93,7 @@ namespace cryptonote::rpc {
   // has its own version, and that clients can just test major to see
   // whether they can talk to a given daemon without having to know in
   // advance which version they will stop working with
-  constexpr version_t VERSION = {4, 1};
+  constexpr version_t VERSION = {4, 2};
 
   const static std::string
     STATUS_OK = "OK",
@@ -1699,7 +1699,7 @@ namespace cryptonote::rpc {
   /// - `peers` -- dict of connection information about peers.  The key is the peer connection_id; the
   ///   value is identical to the values of the `connections` field of the
   ///   [`get_connections`](#get_connections) endpoint.
-  /// - `span` -- array of span information of current in progress synchronization.  Element element
+  /// - `spans` -- array of span information of current in progress synchronization.  Element element
   ///   contains:
   ///   - `start_block_height` -- Block height of the first block in the span
   ///   - `nblocks` -- the number of blocks in the span
