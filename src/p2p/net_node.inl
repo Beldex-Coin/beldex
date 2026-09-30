@@ -1035,7 +1035,7 @@ namespace nodetool
              static_cast<size_t>(-1.0 / rate * std::log(1.0 - u * (1.0 - std::exp(-rate * size))));
 
              MDEBUG("Random connection index= "<<res<<" ,(size="<< size<<")");
-    return res;
+    return std::min(res, size - 1);
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
@@ -1367,10 +1367,11 @@ namespace nodetool
         MDEBUG("No available peer in " << (use_white_list ? "white" : "gray") << " list filtered by " << next_needed_pruning_stripe);
         return false;
       }
+      max_random_index = std::min<size_t>(filtered.size() - 1, 20);
       if (use_white_list)
       {
         // if using the white list, we first pick in the set of peers we've already been using earlier
-        random_index = get_random_exp_index(std::min<uint64_t>(filtered.size() - 1, 20));
+        random_index = get_random_exp_index(filtered.size());
         std::lock_guard lock{m_used_stripe_peers_mutex};
         if (next_needed_pruning_stripe > 0 && next_needed_pruning_stripe <= (1ul << cryptonote::PRUNING_LOG_STRIPES) && !m_used_stripe_peers[next_needed_pruning_stripe-1].empty())
         {
