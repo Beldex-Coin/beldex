@@ -84,6 +84,7 @@ namespace cryptonote
     account_public_address miner_block_producer;
     master_nodes::payout  block_leader;         // Winner from the Master Node queuing in the Master Node List.
     uint64_t               batched_governance;   // NOTE: 0 until hardfork v10, then use blockchain::calc_batched_governance_reward
+    uint64_t               registration_governance_fee = 0;
   };
 
   bool construct_miner_tx(
@@ -121,6 +122,7 @@ namespace cryptonote
     uint64_t                 height;
     uint64_t                 fee;
     uint64_t                 batched_governance;   // Optional: 0 hardfork v10, then must be calculated using blockchain::calc_batched_governance_reward
+    uint64_t                 registration_governance_fee = 0; // HF21: see beldex_miner_tx_context::registration_governance_fee
     std::vector<master_nodes::payout_entry> block_leader_payouts = {master_nodes::null_payout_entry};
   };
 
@@ -145,6 +147,15 @@ namespace cryptonote
     rct::key mask;                      //ringct amount mask
     rct::multisig_kLRki multisig_kLRki; //multisig info
 
+    // Privacy token (HF21+). null_tid = native BDX input (txin_to_key).
+    crypto::token_id token_id = crypto::null_tid;
+    rct::key token_mask = rct::zero();  // real output's token-id blinding mask (transfer_details::m_token_mask)
+    // Blinded token ids of the ring, parallel to `outputs` (same index correspondence).
+    // Only populated/used when is_zyphora() is true.
+    std::vector<crypto::token_id> ring_blinded_token_ids;
+
+    bool is_zyphora() const { return token_id != crypto::null_tid; }
+
     void push_output(uint64_t idx, const crypto::public_key &k, uint64_t amount) { outputs.push_back(std::make_pair(idx, rct::ctkey({rct::pk2rct(k), rct::zeroCommit(amount)}))); }
 
     BEGIN_SERIALIZE_OBJECT()
@@ -157,6 +168,9 @@ namespace cryptonote
       FIELD(rct)
       FIELD(mask)
       FIELD(multisig_kLRki)
+      FIELD(token_id)
+      FIELD(token_mask)
+      FIELD(ring_blinded_token_ids)
 
       if (real_output >= outputs.size())
         throw std::invalid_argument{"invalid real_output size"};
@@ -170,10 +184,15 @@ namespace cryptonote
     account_public_address addr;        // Destination Address
     bool is_subaddress;
     bool is_integrated;
+    // Privacy token (HF21+). null_pkey = native BDX output (txout_to_key).
+    crypto::token_id token_id = crypto::null_tid;
+    uint64_t unlock_time = 0;
 
     tx_destination_entry() : amount(0), addr{}, is_subaddress(false), is_integrated(false) { }
     tx_destination_entry(uint64_t a, const account_public_address &ad, bool is_subaddress) : amount(a), addr(ad), is_subaddress(is_subaddress), is_integrated(false) { }
     tx_destination_entry(const std::string &o, uint64_t a, const account_public_address &ad, bool is_subaddress) : original(o), amount(a), addr(ad), is_subaddress(is_subaddress), is_integrated(false) { }
+
+    bool is_zyphora() const { return token_id != crypto::null_tid; }
 
     bool operator==(const tx_destination_entry& other) const
     {
@@ -201,6 +220,7 @@ namespace cryptonote
       FIELD(addr)
       FIELD(is_subaddress)
       FIELD(is_integrated)
+      FIELD(token_id)
     END_SERIALIZE()
   };
 
@@ -219,6 +239,12 @@ namespace cryptonote
     // allow these amounts to be burned).
     uint64_t burn_fixed   = 0; // atomic units
     uint64_t burn_percent = 0; // 123 = 1.23x base fee.
+    uint64_t governance_fee_fixed = 0; // atomic units
+    // Token burn metadata. These fields are only meaningful for txtype::burn_token;
+    // native BDX burn amounts continue to use burn_fixed/burn_percent above.
+    crypto::token_id burn_token_id = crypto::null_tid;
+    uint64_t burn_token_amount = 0;
+    network_type nettype = network_type::MAINNET;
   };
 
   //---------------------------------------------------------------
@@ -260,8 +286,8 @@ namespace cryptonote
 
 }
 
-BOOST_CLASS_VERSION(cryptonote::tx_source_entry, 1)
-BOOST_CLASS_VERSION(cryptonote::tx_destination_entry, 2)
+BOOST_CLASS_VERSION(cryptonote::tx_source_entry, 2)
+BOOST_CLASS_VERSION(cryptonote::tx_destination_entry, 3)
 
 namespace boost
 {
@@ -281,6 +307,11 @@ namespace boost
         return;
       a & x.multisig_kLRki;
       a & x.real_out_additional_tx_keys;
+      if (ver < 2)
+        return;
+      a & x.token_id;
+      a & x.token_mask;
+      a & x.ring_blinded_token_ids;
     }
 
     template <class Archive>
@@ -298,6 +329,9 @@ namespace boost
       }
       a & x.original;
       a & x.is_integrated;
+      if (ver < 3)
+        return;
+      a & x.token_id;
     }
   }
 }

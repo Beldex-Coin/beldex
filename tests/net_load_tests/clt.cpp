@@ -75,7 +75,7 @@ namespace
       , m_connections(open_request_target)
     {
       for (auto& conn_id : m_connections)
-        conn_id = boost::uuids::nil_uuid();
+        conn_id = epee::connection_id_t{};
     }
 
     bool open()
@@ -123,7 +123,7 @@ namespace
     size_t m_open_request_target;
     std::atomic<size_t> m_next_id;
     std::atomic<size_t> m_error_count;
-    std::vector<boost::uuids::uuid> m_connections;
+    std::vector<epee::connection_id_t> m_connections;
   };
 
   class t_connection_opener_2
@@ -199,7 +199,7 @@ namespace
 
       // Connect to server
       std::atomic<int> conn_status(0);
-      m_cmd_conn_id = boost::uuids::nil_uuid();
+      m_cmd_conn_id = epee::connection_id_t{};
       ASSERT_TRUE(m_tcp_server.connect_async("127.0.0.1", srv_port, CONNECTION_TIMEOUT, [&](const test_connection_context& context, const boost::system::error_code& ec) {
         if (!ec)
         {
@@ -240,14 +240,14 @@ namespace
       test_levin_commands_handler &commands_handler = *commands_handler_ptr;
       test_tcp_server tcp_server(epee::net_utils::e_connection_type_RPC);
       tcp_server.get_config_object().set_handler(commands_handler_ptr, [](epee::levin::levin_commands_handler<test_connection_context> *handler)->void { delete handler; });
-      tcp_server.get_config_object().m_invoke_timeout = CONNECTION_TIMEOUT;
+      tcp_server.get_config_object().m_invoke_timeout = 1ms * CONNECTION_TIMEOUT;
 
       if (!tcp_server.init_server(clt_port, "127.0.0.1")) return;
       if (!tcp_server.run_server(2, false)) return;
 
       // Connect to server and invoke shutdown command
       std::atomic<int> conn_status(0);
-      boost::uuids::uuid cmd_conn_id = boost::uuids::nil_uuid();
+      epee::connection_id_t cmd_conn_id = epee::connection_id_t{};
       tcp_server.connect_async("127.0.0.1", srv_port, CONNECTION_TIMEOUT, [&](const test_connection_context& context, const boost::system::error_code& ec) {
         cmd_conn_id = context.m_connection_id;
         conn_status.store(!ec ? 1 : -1, std::memory_order_seq_cst);
@@ -341,7 +341,7 @@ namespace
     test_tcp_server m_tcp_server;
     test_levin_commands_handler m_commands_handler;
     size_t m_thread_count;
-    boost::uuids::uuid m_cmd_conn_id;
+    epee::connection_id_t m_cmd_conn_id;
   };
 }
 

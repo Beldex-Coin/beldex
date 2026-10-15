@@ -63,7 +63,9 @@ constexpr uint8_t
   TX_EXTRA_TAG_MASTER_NODE_STATE_CHANGE  = 0x78,
   TX_EXTRA_TAG_BURN                       = 0x79,
   TX_EXTRA_TAG_BELDEX_NAME_SYSTEM           = 0x7A,
+  TX_EXTRA_TAG_TOKEN_DESCRIPTOR_OPERATION = 0x7B,
   TX_EXTRA_TAG_SECURITY_SIGNATURE          = 0x88,
+  TX_EXTRA_TAG_COLLATERAL_LOCK            = 0x89,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG       = 0xDE;
 
 constexpr char
@@ -552,6 +554,92 @@ namespace cryptonote
     END_SERIALIZE()
   };
 
+  // Opens the collateral output's amount commitment to consensus.
+  //
+  // Output amounts are hidden inside Pedersen commitments (amount*H + mask*G),
+  // so a validator cannot otherwise tell a 10,000 BDX collateral lock apart from
+  // a 1 atomic unit one. Publishing the amount together with that output's
+  // blinding mask lets the validator recompute the commitment and compare it
+  // against the one on chain, which a false amount cannot match. Only this one
+  // output is revealed: the mask is a hash of that output's own shared secret,
+  // so it discloses neither the tx secret key nor any other output.
+  struct tx_extra_collateral_lock
+  {
+    uint64_t amount;       // Declared collateral amount (must meet the network registration collateral minimum)
+    rct::key mask;         // Blinding factor of that output's amount commitment
+    uint8_t  output_index; // Index into tx.vout[] of the collateral output
+
+    BEGIN_SERIALIZE()
+      FIELD(amount)
+      FIELD(mask)
+      FIELD(output_index)
+    END_SERIALIZE()
+  };
+
+  // Initial protocol-layer scaffold for Zano-style custom tokens.
+  // This introduces the wire representation in tx.extra; construction and
+  // consensus rules will be added in follow-up changes.
+  struct token_descriptor_base
+  {
+    uint8_t version = 1;
+    uint64_t total_max_supply = 0;
+    uint64_t current_supply = 0;
+    uint8_t decimal_point = 0;
+    std::string ticker;
+    std::string full_name;
+    std::string meta_info;
+    crypto::public_key owner = crypto::null_pkey;
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      FIELD(total_max_supply)
+      FIELD(current_supply)
+      FIELD(decimal_point)
+      FIELD(ticker)
+      FIELD(full_name)
+      FIELD(meta_info)
+      FIELD(owner)
+    END_SERIALIZE()
+  };
+
+  enum token_descriptor_operation_field : uint8_t
+  {
+    token_field_none = 0,
+    token_field_amount_commitment = 1 << 0,
+    token_field_token_id = 1 << 1,
+    token_field_descriptor = 1 << 2,
+    token_field_amount = 1 << 3,
+    token_field_token_id_salt = 1 << 4,
+  };
+
+  struct tx_extra_token_descriptor_operation
+  {
+    uint8_t version = 1;
+    token_descriptor_operation_type operation_type = token_descriptor_operation_type::undefined;
+    uint8_t fields = token_field_none;
+    crypto::public_key amount_commitment = crypto::null_pkey;
+    crypto::token_id token_id = crypto::null_tid;
+    token_descriptor_base descriptor{};
+    uint64_t amount = 0;
+    uint32_t token_id_salt = 0;
+
+    bool field_is_set(token_descriptor_operation_field field) const
+    {
+      return (fields & static_cast<uint8_t>(field)) != 0;
+    }
+
+    BEGIN_SERIALIZE()
+      FIELD(version)
+      ENUM_FIELD(operation_type, operation_type < token_descriptor_operation_type::_count)
+      FIELD(fields)
+      if (field_is_set(token_field_amount_commitment)) FIELD(amount_commitment)
+      if (field_is_set(token_field_token_id)) FIELD(token_id)
+      if (field_is_set(token_field_descriptor)) FIELD(descriptor)
+      if (field_is_set(token_field_amount)) FIELD(amount)
+      if (field_is_set(token_field_token_id_salt)) FIELD(token_id_salt)
+    END_SERIALIZE()
+  };
+
   struct tx_extra_beldex_name_system
   {
     uint8_t                 version = 0;
@@ -649,10 +737,12 @@ namespace cryptonote
       tx_extra_tx_key_image_proofs,
       tx_extra_tx_key_image_unlock,
       tx_extra_burn,
+      tx_extra_token_descriptor_operation,
       tx_extra_merge_mining_tag,
       tx_extra_mysterious_minergate,
       tx_extra_padding,
-      tx_extra_security_signature
+      tx_extra_security_signature,
+      tx_extra_collateral_lock
       >;
 }
 
@@ -675,5 +765,7 @@ BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_secret_key,               cryptonote:
 BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_proofs,         cryptonote::TX_EXTRA_TAG_TX_KEY_IMAGE_PROOFS);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_tx_key_image_unlock,         cryptonote::TX_EXTRA_TAG_TX_KEY_IMAGE_UNLOCK);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_burn,                        cryptonote::TX_EXTRA_TAG_BURN);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_token_descriptor_operation,  cryptonote::TX_EXTRA_TAG_TOKEN_DESCRIPTOR_OPERATION);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_beldex_name_system,            cryptonote::TX_EXTRA_TAG_BELDEX_NAME_SYSTEM);
 BINARY_VARIANT_TAG(cryptonote::tx_extra_security_signature,            cryptonote::TX_EXTRA_TAG_SECURITY_SIGNATURE);
+BINARY_VARIANT_TAG(cryptonote::tx_extra_collateral_lock,               cryptonote::TX_EXTRA_TAG_COLLATERAL_LOCK);

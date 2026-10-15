@@ -2502,7 +2502,9 @@ namespace master_nodes
     }
 
     expected_vouts_size += block_leader.payouts.size();
-    expected_vouts_size += static_cast<size_t>(cryptonote::height_has_governance_output(m_blockchain.nettype(), hf_version, height));
+    expected_vouts_size += static_cast<size_t>(
+        cryptonote::height_has_governance_output(m_blockchain.nettype(), hf_version, height) ||
+        (hf_version >= cryptonote::feature::PRIVACY_TOKENS && reward_parts.governance_paid > 0));
 
     if (miner_tx.vout.size() != expected_vouts_size)
     {

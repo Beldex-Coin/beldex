@@ -120,6 +120,7 @@ public:
     bool trustedDaemon() const override;
     bool setProxy(const std::string &address) override;
     uint64_t balance(uint32_t accountIndex = 0) const override;
+    std::vector<TokenBalanceInfo> tokenBalances(uint32_t accountIndex = 0) const override;
     uint64_t unlockedBalance(uint32_t accountIndex = 0) const override;
     int countBns() override;
     std::vector<stakeInfo>* listCurrentStakes() const override;
@@ -177,15 +178,39 @@ public:
 
     PendingTransaction* createTransactionMultDest(const std::vector<std::string> &dst_addr,
                                         std::optional<std::vector<uint64_t>> amount,
+                                        std::optional<std::string> token_id = std::nullopt,
                                         uint32_t priority = 0,
                                         uint32_t subaddr_account = 0,
                                         std::set<uint32_t> subaddr_indices = {}) override;
     PendingTransaction* createTransaction(const std::string &dst_addr,
                                         std::optional<uint64_t> amount,
+                                        std::optional<std::string> token_id = std::nullopt,
                                         uint32_t priority = 0,
                                         uint32_t subaddr_account = 0,
                                         std::set<uint32_t> subaddr_indices = {}) override;
-    PendingTransaction* createSweepAllTransaction(uint32_t priority = 0,
+    PendingTransaction* createSweepAllTransaction(std::optional<std::string> token_id = std::nullopt,
+                                        std::optional<std::string> dst_addr = std::nullopt,
+                                        uint32_t priority = 0,
+                                        uint32_t subaddr_account = 0,
+                                        std::set<uint32_t> subaddr_indices = {}) override;
+    PendingTransaction* registerPrivacyTokenTransaction(const std::string& descriptor_json,
+                                        std::string& token_id,
+                                        uint32_t priority = 0,
+                                        uint32_t subaddr_account = 0,
+                                        std::set<uint32_t> subaddr_indices = {}) override;
+    PendingTransaction* mintTokenTransaction(const std::string& token_id,
+                                        uint64_t amount,
+                                        uint32_t priority = 0,
+                                        uint32_t subaddr_account = 0,
+                                        std::set<uint32_t> subaddr_indices = {}) override;
+    PendingTransaction* burnTokenTransaction(const std::string& token_id,
+                                        uint64_t amount,
+                                        uint32_t priority = 0,
+                                        uint32_t subaddr_account = 0,
+                                        std::set<uint32_t> subaddr_indices = {}) override;
+    PendingTransaction* updateTokenTransaction(const std::string& token_id,
+                                        const std::string& descriptor_json,
+                                        uint32_t priority = 0,
                                         uint32_t subaddr_account = 0,
                                         std::set<uint32_t> subaddr_indices = {}) override;
     PendingTransaction* createBnsTransaction(std::string& owner,
@@ -217,6 +242,7 @@ public:
     bool setBnsRecord(const std::string &name) override;
     std::string nameToNamehash(const std::string &name) override;
     std::vector<bnsInfo>* MyBns() const override;
+    std::vector<tokenInfo>* TokensByOwner(const std::string& owner = "") const override;
     PendingTransaction* createSweepUnmixableTransaction() override;
     bool submitTransaction(std::string_view filename) override;
     UnsignedTransaction* loadUnsignedTx(std::string_view unsigned_filename) override;

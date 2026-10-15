@@ -29,6 +29,7 @@
 // 
 // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 
+#include <algorithm>
 #include <atomic>
 #include <boost/algorithm/string.hpp>
 #include <limits>
@@ -45,6 +46,8 @@
 #include "cryptonote_config.h"
 #include "crypto/crypto.h"
 #include "crypto/hash.h"
+#include "crypto/keccak.h"
+#include "ringct/rctOps.h"
 #include "ringct/rctSigs.h"
 #include "cryptonote_basic/verification_context.h"
 #include "cryptonote_core/master_node_voting.h"
@@ -132,19 +135,27 @@ namespace cryptonote
       rct::rctSig &rv = tx.rct_signatures;
       if (rv.type == rct::RCTType::Null)
         return true;
-      if (rv.outPk.size() != tx.vout.size())
+      const size_t native_outputs = std::count_if(tx.vout.begin(), tx.vout.end(), [](const tx_out& out) {
+        return !std::holds_alternative<tx_out_zyphora>(out.target);
+      });
+      if (rv.outPk.size() != native_outputs)
       {
         LOG_PRINT_L1("Failed to parse transaction from blob, bad outPk size in tx " << get_transaction_hash(tx));
         return false;
       }
-      for (size_t n = 0; n < tx.rct_signatures.outPk.size(); ++n)
+      size_t rct_output_index = 0;
+      for (size_t n = 0; n < tx.vout.size(); ++n)
       {
+        // tx_out_zyphora outputs carry their own amount commitment; they do not
+        // contribute to the legacy outPk vector, so skip them here.
+        if (std::holds_alternative<tx_out_zyphora>(tx.vout[n].target))
+          continue;
         if (!std::holds_alternative<txout_to_key>(tx.vout[n].target))
         {
           LOG_PRINT_L1("Unsupported output type in tx " << get_transaction_hash(tx));
           return false;
         }
-        rv.outPk[n].dest = rct::pk2rct(var::get<txout_to_key>(tx.vout[n].target).key);
+        rv.outPk[rct_output_index++].dest = rct::pk2rct(var::get<txout_to_key>(tx.vout[n].target).key);
       }
 
       if (!base_only)
@@ -165,12 +176,12 @@ namespace cryptonote
             return false;
           }
           const size_t max_outputs = rct::n_bulletproof_plus_max_amounts(rv.p.bulletproofs_plus[0]);
-          if (max_outputs < tx.vout.size())
+          if (max_outputs < native_outputs)
           {
             LOG_PRINT_L1("Failed to parse transaction from blob, bad bulletproofs_plus max outputs in tx " << get_transaction_hash(tx));
             return false;
           }
-          const size_t n_amounts = tx.vout.size();
+          const size_t n_amounts = native_outputs;
           CHECK_AND_ASSERT_MES(n_amounts == rv.outPk.size(), false, "Internal error filling out V");
           rv.p.bulletproofs_plus[0].V.resize(n_amounts);
           for (size_t i = 0; i < n_amounts; ++i)
@@ -189,12 +200,12 @@ namespace cryptonote
             return false;
           }
           const size_t max_outputs = 1 << (rv.p.bulletproofs[0].L.size() - 6);
-          if (max_outputs < tx.vout.size())
+          if (max_outputs < native_outputs)
           {
             LOG_PRINT_L1("Failed to parse transaction from blob, bad bulletproofs max outputs in tx " << get_transaction_hash(tx));
             return false;
           }
-          const size_t n_amounts = tx.vout.size();
+          const size_t n_amounts = native_outputs;
           CHECK_AND_ASSERT_MES(n_amounts == rv.outPk.size(), false, "Internal error filling out V");
           rv.p.bulletproofs[0].V.resize(n_amounts);
           for (size_t i = 0; i < n_amounts; ++i)
@@ -470,6 +481,32 @@ namespace cryptonote
     const size_t n_padded_outputs = bulletproof_plus ? rct::n_bulletproof_plus_max_amounts(rv.p.bulletproofs_plus) : rct::n_bulletproof_max_amounts(rv.p.bulletproofs);
     uint64_t bp_clawback = get_transaction_weight_clawback(tx, n_padded_outputs);
     CHECK_AND_ASSERT_THROW_MES_L1(bp_clawback <= std::numeric_limits<uint64_t>::max() - blob_size, "Weight overflow");
+    
+    // Add artificial weight padding for view wallets missing Zyphora token proofs
+    if (tx.version >= txversion::v4_tx_types && tx.token_proofs.empty())
+    {
+      size_t num_zy_inputs = 0;
+      for (const auto& in : tx.vin)
+        if (std::holds_alternative<txin_zy_input>(in))
+          num_zy_inputs++;
+          
+      size_t num_zy_outputs = 0;
+      for (const auto& out : tx.vout)
+        if (std::holds_alternative<tx_out_zyphora>(out.target))
+          num_zy_outputs++;
+          
+      if (num_zy_inputs > 0 || num_zy_outputs > 0)
+      {
+        size_t estimated_token_proofs_size = 0;
+        estimated_token_proofs_size += num_zy_inputs * 928;
+        estimated_token_proofs_size += num_zy_outputs * 516;
+        if (num_zy_outputs > 0) estimated_token_proofs_size += 640;
+
+        estimated_token_proofs_size += 512; // padding for vector lengths
+        return blob_size + bp_clawback + estimated_token_proofs_size;
+      }
+    }
+
     return blob_size + bp_clawback;
   }
   //---------------------------------------------------------------
@@ -955,6 +992,50 @@ namespace cryptonote
     return result;
   }
   //---------------------------------------------------------------
+  bool get_collateral_lock_from_tx_extra(const std::vector<uint8_t>& tx_extra, tx_extra_collateral_lock& lock)
+  {
+    return get_field_from_tx_extra(tx_extra, lock);
+  }
+  //---------------------------------------------------------------
+  bool add_collateral_lock_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_collateral_lock& lock)
+  {
+    tx_extra_field field = lock;
+    bool result = add_tx_extra_field_to_tx_extra(tx_extra, field);
+    CHECK_AND_NO_ASSERT_MES_L1(result, false, "failed to serialize tx extra collateral lock");
+    return result;
+  }
+  //---------------------------------------------------------------
+  bool add_token_descriptor_operation_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_token_descriptor_operation& op)
+  {
+    tx_extra_field field = op;
+    bool result = add_tx_extra_field_to_tx_extra(tx_extra, field);
+    CHECK_AND_NO_ASSERT_MES_L1(result, false, "failed to serialize tx extra token descriptor operation");
+    return result;
+  }
+  //---------------------------------------------------------------
+  bool get_token_descriptor_operation_from_tx_extra(const std::vector<uint8_t>& tx_extra, tx_extra_token_descriptor_operation& op, size_t skip)
+  {
+    return get_field_from_tx_extra(tx_extra, op, skip);
+  }
+  //---------------------------------------------------------------
+  bool tx_has_privacy_token_content(const transaction& tx)
+  {
+    if (tx.type == txtype::register_privacy_token || tx.type == txtype::mint_token ||
+        tx.type == txtype::update_token || tx.type == txtype::burn_token)
+      return true;
+    if (tx.has_zyphora_inputs() || tx.has_zyphora_outputs())
+      return true;
+    if (!tx.zy_sig.empty() || !tx.token_proofs.empty())
+      return true;
+    tx_extra_token_descriptor_operation tdo{};
+    if (get_token_descriptor_operation_from_tx_extra(tx.extra, tdo, 0))
+      return true;
+    tx_extra_collateral_lock lock{};
+    if (get_collateral_lock_from_tx_extra(tx.extra, lock))
+      return true;
+    return false;
+  }
+  //---------------------------------------------------------------
   bool get_inputs_money_amount(const transaction& tx, uint64_t& money)
   {
     money = 0;
@@ -973,10 +1054,25 @@ namespace cryptonote
     return coinbase_in.height;
   }
   //---------------------------------------------------------------
+  const crypto::key_image& get_input_key_image(const txin_v& in)
+  {
+    if (const auto* tokey_in = std::get_if<txin_to_key>(&in))
+      return tokey_in->k_image;
+    if (const auto* zy_in = std::get_if<txin_zy_input>(&in))
+      return zy_in->k_image;
+    throw std::runtime_error("get_input_key_image: unexpected txin_v variant: " + std::string(tools::type_name(tools::variant_type(in))));
+  }
+  //---------------------------------------------------------------
   bool check_inputs_types_supported(const transaction& tx)
   {
     for(const auto& in: tx.vin)
     {
+      // Privacy token input (HF21+): proven via its own ZY_sig/token
+      // proofs rather than a plaintext amount, so it's exempt from the
+      // legacy txin_to_key-only restriction here.
+      if (std::holds_alternative<txin_zy_input>(in))
+        continue;
+
       CHECK_AND_ASSERT_MES(std::holds_alternative<txin_to_key>(in), false, "wrong variant type: "
         << tools::type_name(tools::variant_type(in)) << ", expected " << tools::type_name<txin_to_key>()
         << ", in transaction id=" << get_transaction_hash(tx));
@@ -999,6 +1095,28 @@ namespace cryptonote
 
     for(const tx_out& out: tx.vout)
     {
+      if (std::holds_alternative<tx_out_zyphora>(out.target))
+      {
+        // Privacy token output (HF21+): stealth_address must be a valid key.
+        const auto& zout = var::get<tx_out_zyphora>(out.target);
+        CHECK_AND_ASSERT_MES(check_key(zout.stealth_address), false,
+          "invalid stealth_address in tx_out_zyphora, tx id=" << get_transaction_hash(tx));
+        CHECK_AND_ASSERT_MES(check_token_key(zout.blinded_token_id), false,
+          "invalid blinded_token_id in tx_out_zyphora, tx id=" << get_transaction_hash(tx));
+        CHECK_AND_ASSERT_MES(check_key(zout.amount_commitment), false,
+          "invalid amount_commitment in tx_out_zyphora, tx id=" << get_transaction_hash(tx));
+        CHECK_AND_ASSERT_MES(rct::isInMainSubgroup(rct::pk2rct(zout.stealth_address)), false,
+          "stealth_address not in main subgroup in tx_out_zyphora, tx id=" << get_transaction_hash(tx));
+        CHECK_AND_ASSERT_MES(rct::isInMainSubgroup(rct::tid2rct(zout.blinded_token_id)), false,
+          "blinded_token_id not in main subgroup in tx_out_zyphora, tx id=" << get_transaction_hash(tx));
+        CHECK_AND_ASSERT_MES(rct::isInMainSubgroup(rct::pk2rct(zout.amount_commitment)), false,
+          "amount_commitment not in main subgroup in tx_out_zyphora, tx id=" << get_transaction_hash(tx));
+        // Plaintext amount must be 0 — the real amount is hidden in the commitment.
+        CHECK_AND_ASSERT_MES(out.amount == 0, false,
+          "non-zero plaintext amount in tx_out_zyphora, tx id=" << get_transaction_hash(tx));
+        continue;
+      }
+
       CHECK_AND_ASSERT_MES(std::holds_alternative<txout_to_key>(out.target), false, "wrong variant type: "
         << tools::type_name(tools::variant_type(out.target)) << ", expected " << tools::type_name<txout_to_key>()
         << ", in transaction id=" << get_transaction_hash(tx));
@@ -1024,6 +1142,12 @@ namespace cryptonote
     uint64_t money = 0;
     for(const auto& in: tx.vin)
     {
+      // Privacy token inputs carry no plaintext amount (it's hidden in
+      // the commitment, conserved separately by the token balance proof),
+      // so they don't participate in this native-money overflow check.
+      if (std::holds_alternative<txin_zy_input>(in))
+        continue;
+
       CHECKED_GET_SPECIFIC_VARIANT(in, txin_to_key, tokey_in, false);
       if(money > tokey_in.amount + money)
         return false;
@@ -1109,13 +1233,106 @@ namespace cryptonote
     return lookup_acc_outs(acc, tx, tx_pub_key, additional_tx_pub_keys, outs, money_transfered);
   }
   //---------------------------------------------------------------
+  // Check whether a tx_out_zyphora output belongs to this account by comparing
+  // the expected stealth address derived from the shared secret.
+  bool is_out_to_acc(const account_keys& acc, const tx_out_zyphora& zout,
+                     const crypto::public_key& tx_pub_key, size_t output_index)
+  {
+    crypto::key_derivation derivation;
+    if (!acc.get_device().generate_key_derivation(tx_pub_key, acc.m_view_secret_key, derivation))
+      return false;
+    crypto::public_key expected;
+    if (!acc.get_device().derive_public_key(derivation, output_index,
+                                            acc.m_account_address.m_spend_public_key, expected))
+      return false;
+    return expected == zout.stealth_address;
+  }
+
+  // ── HF21 helpers ─────────────────────────────────────────────────────────
+
+  rct::key zyphora_derivation_to_scalar(const crypto::key_derivation& derivation,
+                                          size_t output_index,
+                                          const char* domain)
+  {
+    // Base scalar from the standard derivation path
+    crypto::ec_scalar base{};
+    crypto::derivation_to_scalar(derivation, output_index, base);
+
+    // Domain-separate by hashing: H(base || domain_string)
+    // This ensures "token_blind", "amount_mask", "enc_amount" produce
+    // independent, uncorrelated scalars from the same derivation.
+    const size_t domain_len = strlen(domain);
+    std::vector<uint8_t> buf(32 + domain_len);
+    memcpy(buf.data(), base.data, 32);
+    memcpy(buf.data() + 32, domain, domain_len);
+
+    rct::key result;
+    keccak(buf.data(), (int)buf.size(), result.bytes, 32);
+    sc_reduce32(result.bytes);
+    return result;
+  }
+
+  bool decode_zyphora_output(const account_keys& acc,
+                               const tx_out_zyphora& zout,
+                               const crypto::key_derivation& derivation,
+                               size_t output_index,
+                               uint64_t& amount_out,
+                               crypto::token_id& token_id_out,
+                               rct::key& amount_mask_out,
+                               rct::key& token_blinding_mask_out)
+  {
+    // 1. Ownership has already been verified by check_acc_out_precomp_once / is_out_to_acc_precomp
+
+    // 2. Recover token blinding mask r and plaintext token_id
+    //    T = token_id + r*X  =>  token_id = T - r*X
+    rct::key r = zyphora_derivation_to_scalar(derivation, output_index, "token_blind");
+    rct::key rX = rct::scalarmultX(r);
+    rct::key token_id_rct;
+    rct::subKeys(token_id_rct, rct::tid2rct(zout.blinded_token_id), rX);
+    token_id_out = rct::rct2tid(token_id_rct);
+    token_blinding_mask_out = r;
+
+    // 3. Recover amount mask and decrypt amount
+    //    C = amount*T + mask*G  (we verify this below)
+    amount_mask_out = zyphora_derivation_to_scalar(derivation, output_index, "amount_mask");
+
+    // 4. Decrypt amount: enc_amount XOR le64(enc_mask)
+    rct::key enc_mask = zyphora_derivation_to_scalar(derivation, output_index, "enc_amount");
+    uint64_t enc_mask_64;
+    memcpy(&enc_mask_64, enc_mask.bytes, sizeof(uint64_t));
+    amount_out = zout.encrypted_amount ^ enc_mask_64;
+
+    // 5. Verify: recompute amount commitment and compare.
+    //    C = amount*T + mask*G -- the commitment is built on this output's
+    //    OWN blinded token id T (zout.blinded_token_id), not the recovered
+    //    plaintext token_id -- see rct::commitToken.
+    rct::key expected_C = rct::commitToken(amount_mask_out, rct::tid2rct(zout.blinded_token_id), amount_out);
+    if (expected_C != rct::pk2rct(zout.amount_commitment))
+    {
+      MWARNING("zyphora output commitment mismatch — output corrupted or not ours");
+      return false;
+    }
+
+    return true;
+  }
+  //---------------------------------------------------------------
   bool lookup_acc_outs(const account_keys& acc, const transaction& tx, const crypto::public_key& tx_pub_key, const std::vector<crypto::public_key>& additional_tx_pub_keys, std::vector<size_t>& outs, uint64_t& money_transfered)
   {
     CHECK_AND_ASSERT_MES(additional_tx_pub_keys.empty() || additional_tx_pub_keys.size() == tx.vout.size(), false, "wrong number of additional pubkeys" );
     money_transfered = 0;
     size_t i = 0;
-    for(const tx_out& o:  tx.vout)
+    for(const tx_out& o: tx.vout)
     {
+      if (std::holds_alternative<tx_out_zyphora>(o.target))
+      {
+        // Confidential output: plaintext amount is 0 on-chain; the wallet
+        // decrypts the real amount during scan_output(). Only record the index here.
+        if (is_out_to_acc(acc, var::get<tx_out_zyphora>(o.target), tx_pub_key, i))
+          outs.push_back(i);
+        // money_transfered is not updated — caller must decrypt via scan_output.
+        i++;
+        continue;
+      }
       CHECK_AND_ASSERT_MES(std::holds_alternative<txout_to_key>(o.target), false, "wrong type id in transaction out" );
       if(is_out_to_acc(acc, var::get<txout_to_key>(o.target), tx_pub_key, additional_tx_pub_keys, i))
       {
@@ -1154,6 +1371,71 @@ namespace cryptonote
     value += ' ';
     value += get_unit();
     return value;
+  }
+  //---------------------------------------------------------------
+  std::string print_token_amount(uint64_t amount, uint8_t decimal_point, bool strip_zeros)
+  {
+    std::string s = std::to_string(amount);
+    if (s.size() < static_cast<size_t>(decimal_point) + 1)
+      s.insert(0, static_cast<size_t>(decimal_point) + 1 - s.size(), '0');
+
+    if (decimal_point > 0)
+      s.insert(s.size() - decimal_point, ".");
+
+    if (strip_zeros && decimal_point > 0)
+    {
+      while (!s.empty() && s.back() == '0')
+        s.pop_back();
+      if (!s.empty() && s.back() == '.')
+        s.pop_back();
+    }
+
+    return s;
+  }
+  //---------------------------------------------------------------
+  bool parse_token_amount(uint64_t& amount, std::string_view str_amount, uint8_t decimal_point)
+  {
+    while (!str_amount.empty() && std::isspace((unsigned char)str_amount.front()))
+      str_amount.remove_prefix(1);
+    while (!str_amount.empty() && std::isspace((unsigned char)str_amount.back()))
+      str_amount.remove_suffix(1);
+
+    std::string str(str_amount);
+    auto point_index = str.find_first_of('.');
+    size_t fraction_size = 0;
+
+    if (point_index != std::string::npos)
+    {
+      fraction_size = str.size() - point_index - 1;
+      while (fraction_size > 0 && str.back() == '0')
+      {
+        str.pop_back();
+        --fraction_size;
+      }
+      if (fraction_size > decimal_point)
+        return false; // too many decimal places
+      str.erase(point_index, 1);
+    }
+
+    if (str.empty())
+      return false;
+
+    if (fraction_size < decimal_point)
+      str.append(decimal_point - fraction_size, '0');
+
+    for (char c : str)
+      if (!std::isdigit((unsigned char)c))
+        return false;
+
+    try
+    {
+      amount = std::stoull(str);
+    }
+    catch (const std::exception&)
+    {
+      return false;
+    }
+    return true;
   }
   //---------------------------------------------------------------
   std::string print_tx_verification_context(tx_verification_context const &tvc, transaction const *tx)
@@ -1296,12 +1578,45 @@ namespace cryptonote
     else
     {
       serialization::binary_string_archiver ba;
+      // HF21: the native rct CLSAGs/pseudoOuts arrays are sized to the
+      // non-zyphora input count and bulletproofs to the non-zyphora output
+      // count -- zyphora in/outs are proven via token_proofs, not the native
+      // rct arrays. These counts must match transaction::serialize_value
+      // (cryptonote_basic.h) exactly, or the prunable hash won't reproduce the
+      // serialized form. Ring size (mixin) is shared across all inputs, so vin[0]
+      // works whether it's a native or a zyphora input.
       size_t mixin = 0;
-      if (t.vin.size() > 0 && std::holds_alternative<txin_to_key>(t.vin[0]))
-        mixin = var::get<txin_to_key>(t.vin[0]).key_offsets.size() - 1;
+      if (!t.vin.empty())
+      {
+        if (std::holds_alternative<txin_to_key>(t.vin[0]))
+          mixin = var::get<txin_to_key>(t.vin[0]).key_offsets.size() - 1;
+        else if (std::holds_alternative<txin_zy_input>(t.vin[0]))
+          mixin = var::get<txin_zy_input>(t.vin[0]).key_offsets.size() - 1;
+      }
+      size_t native_inputs = 0;
+      for (const auto& in : t.vin)
+        if (std::holds_alternative<txin_to_key>(in))
+          ++native_inputs;
+      size_t native_outputs = 0;
+      for (const auto& o : t.vout)
+        if (!std::holds_alternative<tx_out_zyphora>(o.target))
+          ++native_outputs;
       try {
         const_cast<transaction&>(t).rct_signatures.p.serialize_rctsig_prunable(
-                ba, t.rct_signatures.type, t.vin.size(), t.vout.size(), mixin);
+                ba, t.rct_signatures.type, native_inputs, native_outputs, mixin);
+        // HF21: the ZY input signatures (zy_sig) and token_proofs are
+        // serialized right after rctsig_prunable in transaction::serialize_value,
+        // and both sit after unprunable_size -- i.e. they are part of the
+        // PRUNABLE region. The blob-slice path above hashes them
+        // (blob.substr(unprunable_size) covers them), so this re-serialize path
+        // must mint them too, zy_sig first then token_proofs, under the SAME
+        // presence gates as transaction::serialize_value, or the prunable hash
+        // won't match for PT txs (zy inputs/outputs and update_token/burn_token
+        // carry their sigs/proofs here, not in the native CLSAG/bulletproof arrays).
+        if (t.has_zyphora_inputs())
+          serialization::value(ba, const_cast<transaction&>(t).zy_sig);
+        if (!t.token_proofs.empty() || t.has_zyphora_outputs() || t.type == txtype::update_token || t.type == txtype::burn_token)
+          serialization::value(ba, const_cast<transaction&>(t).token_proofs);
       } catch (const std::exception& e) {
         LOG_ERROR("Failed to serialize rct signatures (prunable): " << e.what());
         return false;

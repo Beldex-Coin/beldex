@@ -28,6 +28,7 @@
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <chrono>
 #include <random>
@@ -245,6 +246,78 @@ TYPED_TEST(BlockchainDBTest, OpenAndClose)
   ASSERT_THROW(this->m_db->open(dirPath, cryptonote::FAKECHAIN), DB_OPEN_FAILURE);
 
   ASSERT_NO_THROW(this->m_db->close());
+}
+
+TYPED_TEST(BlockchainDBTest, NativeOutputDistributionMatchesPreToken)
+{
+  const auto path = random_tmp_file().string();
+  this->set_prefix(path);
+  this->m_db->open(path, cryptonote::FAKECHAIN);
+  this->get_filenames();
+
+  // Multiple outputs per block ensure the legacy loop counts exactly one
+  // output beyond the upper bound, rather than the whole next block.
+  const std::vector<uint64_t> counts{2, 1, 3, 2, 4};
+  std::vector<uint64_t> output_heights;
+  crypto::hash parent = crypto::null_hash;
+  {
+    db_wtxn_guard guard(this->m_db);
+    for (uint64_t h = 0; h < counts.size(); ++h)
+    {
+      block blk{};
+      blk.prev_id = parent;
+      blk.timestamp = h;
+      blk.miner_tx.version = txversion::v2_ringct;
+      blk.miner_tx.vin.push_back(txin_gen{h});
+      for (uint64_t i = 0; i < counts[h]; ++i)
+      {
+        tx_out out{};
+        out.amount = 1;
+        out.target = txout_to_key{};
+        blk.miner_tx.vout.push_back(out);
+        output_heights.push_back(h);
+      }
+      this->m_db->add_block({blk, block_to_blob(blk)}, 1, 1, h + 1, h + 1, {});
+      parent = get_block_hash(blk);
+    }
+    guard.stop();
+  }
+
+  for (uint64_t from = 0; from < counts.size(); ++from)
+  {
+    for (uint64_t to = 0; to < counts.size(); ++to)
+    {
+      if (to != 0 && to < from)
+        continue;
+      SCOPED_TRACE("from=" + std::to_string(from) + " to=" + std::to_string(to));
+
+      // Reference algorithm from dd1fe3c72^, before token filtering and
+      // reordering. Compare the full DB result, without RPC truncation.
+      std::vector<uint64_t> expected(counts.size() - from, 0);
+      uint64_t expected_base = 0;
+      for (uint64_t h : output_heights)
+      {
+        if (h >= from)
+          expected[h - from]++;
+        else
+          expected_base++;
+        if (to > 0 && h > to)
+          break;
+      }
+      expected[0] += expected_base;
+      for (size_t n = 1; n < expected.size(); ++n)
+        expected[n] += expected[n - 1];
+      expected_base = 0;
+
+      std::vector<uint64_t> actual;
+      uint64_t base = 123;
+      ASSERT_TRUE(this->m_db->get_output_distribution(0, from, to, actual, base));
+      ASSERT_EQ(expected.size(), actual.size());
+      EXPECT_EQ(0, std::memcmp(expected.data(), actual.data(), expected.size() * sizeof(uint64_t)));
+      EXPECT_EQ(expected_base, base);
+    }
+  }
+  this->m_db->close();
 }
 
 TYPED_TEST(BlockchainDBTest, AddBlock)

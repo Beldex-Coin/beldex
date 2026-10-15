@@ -60,7 +60,8 @@ static constexpr std::array testnet_hard_forks =
   hard_fork{hf::hf17_POS,               0,   169960, 1636391696 }, // Monday, November 8, 2021 5:14:56 PM
   hard_fork{hf::hf18_bns,               0,  1251330, 1701063000 }, // Monday, November 27, 2023 5:30:00 AM
   hard_fork{hf::hf19_enhance_bns,       0,  1997558, 1723447800 }, // Monday, Aug 12, 2024 7:30:00 AM
-  hard_fork{hf::hf20_bulletproof_plus,  0,  3262180, 1761388200 }, // Saturday, Oct 25, 2025 10:30:00 AM
+  hard_fork{hf::hf20_bulletproof_plus,  0,  3262180, 1761388200 }, // Saturday, Oct 25, 2025 10:30:00 AM};
+  hard_fork{hf::hf22_privacy_tokens,    0,  4242200, 1791280800 }, // Tuesday, 6 October 2026 at 10:00:00 AM (UTC)
 };
 
 static constexpr std::array devnet_hard_forks =

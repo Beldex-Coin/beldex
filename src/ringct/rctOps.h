@@ -122,6 +122,20 @@ namespace rct {
     key scalarmultKey(const key &P, const key &a);
     //Computes aH where H= toPoint(cn_fast_hash(G)), G the basepoint
     key scalarmultH(const key & a);
+    // Computes a*X where X = 8*hash_to_curve("beldex_token_id_blinding_generator") (HF21+)
+    key scalarmultX(const key& a);
+    // Returns a const reference to the X generator as a ge_p3 (for use in rctOps.cpp internals)
+    const ge_p3& rct_get_ge_p3_X();
+    // Returns the X generator as a rct::key (byte-encoded point)
+    key getX();
+    // Commitment for a privacy token output: C = amount*T + mask*G
+    // where T is the blinded token id. For an output, T is its own
+    // token_id + r*X; for a pseudo-output, T must be T_real (reconstructed
+    // from the real spent output's blinding scalar), not a fresh blinding --
+    // see rctOps.cpp for why.
+    key commitToken(const key& mask, const key& blinded_token_id, xmr_amount amount);
+    // Blind an token ID: T = token_id + r*X
+    key blindTokenId(const key& token_id, const key& r);
     // multiplies a point by 8
     key scalarmult8(const key & P);
     void scalarmult8(ge_p3 &res, const key & P);

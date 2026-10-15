@@ -192,10 +192,16 @@ namespace cryptonote
     bool bns_lookup(std::vector<std::string> args);
 
     bool coin_burn(std::vector<std::string> args);
+    bool register_privacy_token(const std::vector<std::string>& args);  // HF21
+    bool get_token_info(const std::string& token_id_hex, nlohmann::json& info_res);
+    bool tokens_by_owner(const std::vector<std::string>& args);
+    bool mint_token(const std::vector<std::string>& args);        // HF21
+    bool burn_token(const std::vector<std::string>& args);        // HF21
+    bool update_token(const std::vector<std::string>& args);
 
     enum class sweep_type_t { stake, register_stake, all_or_below, single };
     bool sweep_main_internal(sweep_type_t sweep_type, std::vector<tools::wallet2::pending_tx> &ptx_vector, cryptonote::address_parse_info const &dest, bool flash);
-    bool sweep_main(uint32_t account, uint64_t below, Transfer transfer_type, const std::vector<std::string> &args);
+    bool sweep_main(uint32_t account, uint64_t below, Transfer transfer_type, const std::vector<std::string> &args, bool plain_address_sweeps_all_tokens = false);
     bool sweep_all(const std::vector<std::string> &args);
     bool sweep_account(const std::vector<std::string> &args);
     bool sweep_below(const std::vector<std::string> &args);
@@ -349,7 +355,7 @@ namespace cryptonote
     virtual void on_new_block(uint64_t height, const cryptonote::block& block);
     virtual void on_money_received(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& tx, uint64_t amount, const cryptonote::subaddress_index& subaddr_index, uint64_t unlock_time, bool flash);
     virtual void on_unconfirmed_money_received(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& tx, uint64_t amount, const cryptonote::subaddress_index& subaddr_index);
-    virtual void on_money_spent(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& in_tx, uint64_t amount, const cryptonote::transaction& spend_tx, const cryptonote::subaddress_index& subaddr_index);
+    virtual void on_money_spent(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& in_tx, uint64_t amount, const crypto::token_id& token_id, const cryptonote::transaction& spend_tx, const cryptonote::subaddress_index& subaddr_index);
     virtual void on_skip_transaction(uint64_t height, const crypto::hash &txid, const cryptonote::transaction& tx);
     virtual std::optional<epee::wipeable_string> on_get_password(const char *reason);
     virtual void on_device_button_request(uint64_t code);

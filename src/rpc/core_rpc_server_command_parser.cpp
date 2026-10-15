@@ -331,6 +331,11 @@ namespace cryptonote::rpc {
   }
 
   void parse_request(RELAY_TX& relay_tx, rpc_input in){
+    // Backwards compat for older/local callers sending a single txid field.
+    if (auto* json_in = std::get_if<json>(&in))
+      if (auto it = json_in->find("txid"); it != json_in->end())
+        (*json_in)["txids"] = json::array({std::move(*it)});
+
     get_values(in,
        "txids", relay_tx.request.txids);
   }
@@ -395,6 +400,17 @@ namespace cryptonote::rpc {
         "encrypted_value", required{value_decrypt.request.encrypted_value},
         "name", required{value_decrypt.request.name},
         "type", required{value_decrypt.request.type});
+  }
+
+  void parse_request(GET_TOKEN_INFO& token_info, rpc_input in) {
+    get_values(in,
+        "token_id", required{token_info.request.token_id});
+  }
+
+  void parse_request(GET_TOKEN_LIST& token_list, rpc_input in) {
+    get_values(in,
+        "count", token_list.request.count,
+        "offset", token_list.request.offset);
   }
 
   void parse_request(GET_QUORUM_STATE& qs, rpc_input in) {

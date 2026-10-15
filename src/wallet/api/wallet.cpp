@@ -45,6 +45,8 @@
 #include "common_defines.h"
 #include "common/util.h"
 #include "common/fs.h"
+#include "cryptonote_basic/token_descriptor.h"
+#include "cryptonote_basic/token_descriptor_operation_utils.h"
 
 #include "mnemonics/electrum-words.h"
 #include "mnemonics/english.h"
@@ -108,6 +110,13 @@ namespace {
       else if (nettype == cryptonote::network_type::DEVNET)
         dir /= "devnet";
       return dir;
+    }
+
+    bool is_native_sweep_request(const std::optional<std::string>& token_id)
+    {
+        if (!token_id) return false;
+        return token_id->empty() || *token_id == "BDX" || *token_id == "bdx" ||
+               *token_id == "native" || *token_id == "NATIVE";
     }
 
     void checkMultisigWalletReady(LockedWallet& wallet) {
@@ -216,6 +225,7 @@ struct Wallet2CallbackImpl : public tools::i_wallet2_callback
                         const crypto::hash &txid,
                         const cryptonote::transaction &in_tx,
                         uint64_t amount,
+                        const crypto::token_id &token_id,
                         const cryptonote::transaction &spend_tx,
                         const cryptonote::subaddress_index &subaddr_index) override
     {
@@ -223,7 +233,7 @@ struct Wallet2CallbackImpl : public tools::i_wallet2_callback
         std::string tx_hash = tools::type_to_hex(txid);
         LOG_PRINT_L3(__FUNCTION__ << ": money spent. height:  " << height
                      << ", tx: " << tx_hash
-                     << ", amount: " << print_money(amount)
+                     << ", amount: " << (token_id == crypto::null_tid ? print_money(amount) : std::to_string(amount))
                      << ", idx: " << subaddr_index);
         // do not signal on sent tx if wallet is not syncronized completely
         if (m_listener && m_wallet->synchronized()) {
@@ -1105,6 +1115,130 @@ uint64_t WalletImpl::balance(uint32_t accountIndex) const
 }
 
 EXPORT
+std::vector<TokenBalanceInfo> WalletImpl::tokenBalances(uint32_t accountIndex) const
+{
+    auto w = wallet();
+
+    const auto token_balances_by_subaddr = w->token_balances_per_subaddress(accountIndex, false);
+    const auto unlocked_token_balances_by_subaddr = w->unlocked_token_balances_per_subaddress(accountIndex, true);
+
+    std::map<crypto::token_id, uint64_t> total_by_token;
+    std::map<crypto::token_id, uint64_t> unlocked_by_token;
+
+    for (const auto& [subaddr_index, token_balances] : token_balances_by_subaddr)
+    {
+        for (const auto& [token_id, amount] : token_balances)
+            total_by_token[token_id] += amount;
+    }
+
+    for (const auto& [subaddr_index, token_balances] : unlocked_token_balances_by_subaddr)
+    {
+        for (const auto& [token_id, amount] : token_balances)
+            unlocked_by_token[token_id] += amount;
+    }
+
+    std::vector<TokenBalanceInfo> result;
+    result.reserve(total_by_token.size());
+
+    for (const auto& [token_id, balance] : total_by_token)
+    {
+        TokenBalanceInfo entry;
+        entry.tokenId = tools::type_to_hex(token_id);
+        entry.balance = balance;
+        if (const auto it = unlocked_by_token.find(token_id); it != unlocked_by_token.end())
+            entry.unlockedBalance = it->second;
+
+        try
+        {
+            nlohmann::json info_req = nlohmann::json::object();
+            info_req["token_id"] = entry.tokenId;
+            const nlohmann::json info_res = w->json_rpc("get_token_info", info_req);
+            entry.ticker = info_res.value("ticker", "");
+            entry.decimalPoint = static_cast<uint8_t>(info_res.value("decimal_point", 0));
+        }
+        catch (const std::exception&)
+        {
+            // Best-effort metadata lookup: keep balances even if the daemon
+            // cannot supply ticker/decimal-point information right now.
+        }
+
+        result.push_back(std::move(entry));
+    }
+
+    return result;
+}
+
+EXPORT
+std::vector<tokenInfo>* WalletImpl::TokensByOwner(const std::string& owner) const
+{
+    std::vector<tokenInfo>* tokens = new std::vector<tokenInfo>;
+    try
+    {
+        auto w = wallet();
+
+        nlohmann::json list_req = nlohmann::json::object();
+        list_req["offset"] = 0;
+        list_req["count"] = 1000000;
+        const auto list_res = w->json_rpc("get_token_list", list_req);
+
+        std::string requested_owner = tools::type_to_hex(
+                w->get_account().get_keys().m_account_address.m_spend_public_key);
+        if (!owner.empty())
+        {
+            cryptonote::address_parse_info owner_info{};
+            crypto::public_key owner_spend_key{};
+
+            if (get_account_address_from_str(owner_info, w->nettype(), owner))
+                requested_owner = tools::type_to_hex(owner_info.address.m_spend_public_key);
+            else if (tools::hex_to_type(owner, owner_spend_key))
+                requested_owner = tools::type_to_hex(owner_spend_key);
+            else
+            {
+                setStatusError(tr("Invalid owner address or spend public key"));
+                return tokens;
+            }
+        }
+
+        if (!list_res.contains("token_ids") || !list_res["token_ids"].is_array())
+        {
+            setStatusError(tr("Invalid daemon response when requesting token list"));
+            return tokens;
+        }
+
+        for (const auto& token_id_val : list_res["token_ids"])
+        {
+            const std::string token_id_hex = token_id_val.get<std::string>();
+            const nlohmann::json info_res = w->json_rpc("get_token_info", {{"token_id", token_id_hex}});
+
+            if (!info_res.contains("owner") || info_res["owner"].get<std::string>() != requested_owner)
+                continue;
+
+            auto& info = tokens->emplace_back();
+            info.token_id = info_res.value("token_id", "");
+            info.ticker = info_res.value("ticker", "");
+            info.full_name = info_res.value("full_name", "");
+            info.owner = info_res.value("owner", "");
+            info.total_max_supply = info_res.value("total_max_supply", (uint64_t)0);
+            info.current_supply = info_res.value("current_supply", (uint64_t)0);
+            info.decimal_point = static_cast<uint8_t>(info_res.value("decimal_point", 0));
+            info.meta_info = info_res.value("meta_info", "");
+        }
+    }
+    catch (const std::exception& e)
+    {
+        LOG_PRINT_L1(__FUNCTION__ << "Failed to build or parse token-by-owner request: " << e.what());
+        setStatusError(std::string{tr("Failed to build or parse token-by-owner request: ")} + e.what());
+    }
+    catch (...)
+    {
+        LOG_PRINT_L1(__FUNCTION__ << "Unknown error while building or parsing token-by-owner request");
+        setStatusError(tr("Unknown error while building or parsing token-by-owner request"));
+    }
+
+    return tokens;
+}
+
+EXPORT
 uint64_t WalletImpl::unlockedBalance(uint32_t accountIndex) const
 {
     return wallet()->unlocked_balance(accountIndex, false);
@@ -1114,25 +1248,47 @@ EXPORT
 int WalletImpl::countBns()
 {  
     clearStatus();
-    auto w = wallet();
-
-    nlohmann::json req_params{
-        {"entries", nlohmann::json::array()}
-    };
-        
-    for (uint32_t index = 0; index < w->get_num_subaddresses(0); ++index)
+    try
     {
-        req_params["entries"].push_back(w->get_subaddress_as_str({0, index}));
+        auto w = wallet();
+
+        nlohmann::json req_params = nlohmann::json::object();
+        auto &entries = (req_params["entries"] = nlohmann::json::array());
+
+        for (uint32_t index = 0; index < w->get_num_subaddresses(0); ++index)
+        {
+            entries.push_back(w->get_subaddress_as_str({0, index}));
+        }
+
+        auto [success, result] = w->bns_owners_to_names(req_params);
+        if (!success)
+        {
+            LOG_PRINT_L1(__FUNCTION__ << "Connection to daemon failed when requesting BNS names");
+            setStatusError(tr("Connection to daemon failed when requesting BNS names"));
+            return 0;
+        }
+
+        if (!result.contains("entries") || !result["entries"].is_array())
+        {
+            LOG_PRINT_L1(__FUNCTION__ << "Invalid daemon response when requesting BNS names");
+            setStatusError(tr("Invalid daemon response when requesting BNS names"));
+            return 0;
+        }
+
+        return result["entries"].size();
+    }
+    catch (const std::exception &e)
+    {
+        LOG_PRINT_L1(__FUNCTION__ << "Failed to build or parse BNS request: " << e.what());
+        setStatusError(std::string{tr("Failed to build or parse BNS request: ")} + e.what());
+    }
+    catch (...)
+    {
+        LOG_PRINT_L1(__FUNCTION__ << "Unknown error while building or parsing BNS request");
+        setStatusError(tr("Unknown error while building or parsing BNS request"));
     }
 
-    auto [success, result] = w->bns_owners_to_names(req_params);
-    if (!success)
-    {
-        LOG_PRINT_L1(__FUNCTION__ << "Connection to daemon failed when requesting BNS names");
-        setStatusError(tr("Connection to daemon failed when requesting BNS names"));
-    }
-    
-    return result["entries"].size();
+    return 0;
 }
 
 EXPORT
@@ -1801,7 +1957,7 @@ PendingTransaction* WalletImpl::restoreMultisigTransaction(const std::string& si
 //    - confirmed_transfer_details)
 
 EXPORT
-PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std::string> &dst_addr, std::optional<std::vector<uint64_t>> amount, uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
+PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std::string> &dst_addr, std::optional<std::vector<uint64_t>> amount, std::optional<std::string> token_id, uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
 
 {
     clearStatus();
@@ -1819,6 +1975,15 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std:
         std::vector<uint8_t> extra;
         std::string extra_nonce;
         std::vector<cryptonote::tx_destination_entry> dsts;
+        std::optional<crypto::token_id> requested_token_id;
+        if (token_id) {
+            crypto::token_id parsed_token_id = crypto::null_tid;
+            if (!tools::hex_to_type(*token_id, parsed_token_id)) {
+                setStatusError(tr("Invalid token id"));
+                break;
+            }
+            requested_token_id = parsed_token_id;
+        }
         if (!amount && dst_addr.size() > 1) {
             setStatusError(tr("Sending all requires one destination address"));
             break;
@@ -1848,11 +2013,13 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std:
 
             if (amount) {
                 cryptonote::tx_destination_entry de;
-                de.original = dst_addr[i];
-                de.addr = info.address;
+                de.original = dst_addr[i]; // original stirng
+                de.addr = info.address; // parsed address
                 de.amount = (*amount)[i];
                 de.is_subaddress = info.is_subaddress;
                 de.is_integrated = info.has_payment_id;
+                if (requested_token_id)
+                    de.token_id = *requested_token_id;
                 dsts.push_back(de);
 
             } else {
@@ -1864,7 +2031,7 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std:
         }
         if (error) {
             break;
-        }
+        }// if payment id is present, add it to extra
         if (!extra_nonce.empty() && !add_extra_nonce_to_tx_extra(extra, extra_nonce)) {
             setStatusError(tr("failed to set up payment id, though it was decoded correctly"));
             break;
@@ -1884,7 +2051,7 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std:
             } else {
                 transaction->m_pending_tx = w->create_transactions_all(0, info.address, info.is_subaddress, 1, cryptonote::TX_OUTPUT_DECOYS, 0 /* unlock_time */,
                                                                               priority,
-                                                                              extra, subaddr_account, subaddr_indices);
+                                                                              extra, subaddr_account, subaddr_indices, requested_token_id);
             }
             pendingTxPostProcess(transaction);
 
@@ -1964,14 +2131,14 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<std:
 
 EXPORT
 PendingTransaction *WalletImpl::createTransaction(const std::string &dst_addr, std::optional<uint64_t> amount,
-                                                  uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
+                                                  std::optional<std::string> token_id, uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
 
 {
-    return createTransactionMultDest(std::vector<std::string> {dst_addr},  amount ? (std::vector<uint64_t> {*amount}) : (std::optional<std::vector<uint64_t>>()), priority, subaddr_account, subaddr_indices);
+    return createTransactionMultDest(std::vector<std::string> {dst_addr},  amount ? (std::vector<uint64_t> {*amount}) : (std::optional<std::vector<uint64_t>>()), token_id, priority, subaddr_account, subaddr_indices);
 }
 
 EXPORT
-PendingTransaction *WalletImpl::createSweepAllTransaction(uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
+PendingTransaction *WalletImpl::createSweepAllTransaction(std::optional<std::string> token_id, std::optional<std::string> dst_addr, uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
 {
     clearStatus();
     // Pause refresh thread while creating transaction
@@ -1985,8 +2152,22 @@ PendingTransaction *WalletImpl::createSweepAllTransaction(uint32_t priority, uin
         auto w = wallet();
         std::vector<uint8_t> extra;
         std::string extra_nonce;
+        std::optional<crypto::token_id> requested_token_id;
+        const bool native_only = is_native_sweep_request(token_id);
+        if (token_id && !native_only) {
+            crypto::token_id parsed_token_id = crypto::null_tid;
+            if (!tools::hex_to_type(*token_id, parsed_token_id)) {
+                setStatusError(tr("Invalid token id"));
+                break;
+            }
+            requested_token_id = parsed_token_id;
+        }
+        const auto selection_mode =
+                requested_token_id ? tools::wallet2::sweep_selection_mode::native_only :
+                (native_only ? tools::wallet2::sweep_selection_mode::native_only :
+                               tools::wallet2::sweep_selection_mode::native_and_all_tokens);
 
-        std::string addr = w->get_subaddress_as_str({0, 0});
+        std::string addr = dst_addr ? *dst_addr : w->get_subaddress_as_str({0, 0});
         if (!cryptonote::get_account_address_from_str(info, w->nettype(), addr)){
             setStatusError(tr("failed to parse address"));
             break;
@@ -2006,7 +2187,8 @@ PendingTransaction *WalletImpl::createSweepAllTransaction(uint32_t priority, uin
         try {
             transaction->m_pending_tx = w->create_transactions_all(0, info.address, info.is_subaddress, 1, cryptonote::TX_OUTPUT_DECOYS, 0 /* unlock_time */,
                                                                             priority,
-                                                                            extra, subaddr_account, subaddr_indices);
+                                                                            extra, subaddr_account, subaddr_indices, requested_token_id,
+                                                                            cryptonote::txtype::standard, selection_mode);
             pendingTxPostProcess(transaction);
 
         } catch (const tools::error::daemon_busy&) {
@@ -2076,6 +2258,545 @@ PendingTransaction *WalletImpl::createSweepAllTransaction(uint32_t priority, uin
 
     transaction->m_status = status();
     // Resume refresh thread
+    startRefresh();
+    return transaction;
+}
+
+EXPORT
+PendingTransaction *WalletImpl::registerPrivacyTokenTransaction(const std::string& descriptor_json, std::string& token_id, uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
+{
+    clearStatus();
+    pauseRefresh();
+
+    PendingTransactionImpl * transaction = new PendingTransactionImpl(*this);
+    token_id.clear();
+
+    do {
+        if (descriptor_json.empty()) {
+            setStatusError(tr("descriptor_json is required"));
+            break;
+        }
+
+        cryptonote::token_descriptor_base descriptor{};
+        std::string error;
+        if (!cryptonote::load_token_descriptor_from_json(descriptor_json, descriptor, error)) {
+            setStatusError(tr("Invalid token descriptor JSON: ") + error);
+            break;
+        }
+
+        auto w = wallet();
+        const auto owner = w->get_account().get_keys().m_account_address.m_spend_public_key;
+        if (descriptor.owner == crypto::null_pkey)
+            descriptor.owner = owner;
+        else if (descriptor.owner != owner) {
+            setStatusError(tr("Token owner must be this wallet's spend key"));
+            break;
+        }
+
+        if (!w->get_hard_fork_version()) {
+            setStatusError(tools::ERR_MSG_NETWORK_VERSION_QUERY_FAILED);
+            break;
+        }
+
+        cryptonote::tx_extra_token_descriptor_operation tdo{};
+        tdo.operation_type = cryptonote::token_descriptor_operation_type::register_token;
+        tdo.fields = static_cast<uint8_t>(cryptonote::token_field_descriptor |
+                                          cryptonote::token_field_token_id_salt);
+        tdo.descriptor = descriptor;
+        tdo.token_id_salt = crypto::rand<uint32_t>();
+
+        std::vector<uint8_t> extra;
+        if (!cryptonote::add_token_descriptor_operation_to_tx_extra(extra, tdo)) {
+            setStatusError(tr("Failed to encode token descriptor into tx extra"));
+            break;
+        }
+
+        const crypto::token_id computed_token_id = cryptonote::get_or_calculate_token_id(tdo);
+        token_id = tools::type_to_hex(computed_token_id);
+
+        std::vector<cryptonote::tx_destination_entry> dsts;
+        if (descriptor.current_supply > 0) {
+            cryptonote::tx_destination_entry dest;
+            dest.addr = w->get_account().get_keys().m_account_address;
+            dest.amount = descriptor.current_supply;
+            dest.token_id = computed_token_id;
+            dest.is_subaddress = false;
+            dsts.push_back(dest);
+        }
+
+        try {
+            transaction->m_pending_tx = w->create_privacy_token_registration_tx(
+                    dsts,
+                    computed_token_id,
+                    cryptonote::TX_OUTPUT_DECOYS,
+                    priority,
+                    extra,
+                    subaddr_account,
+                    subaddr_indices);
+            pendingTxPostProcess(transaction);
+
+            if (multisig().isMultisig) {
+                auto tx_set = w->make_multisig_tx_set(transaction->m_pending_tx);
+                transaction->m_pending_tx = tx_set.m_ptx;
+                transaction->m_signers = tx_set.m_signers;
+            }
+        } catch (const tools::error::daemon_busy&) {
+            setStatusError(tr("daemon is busy. Please try again later."));
+        } catch (const tools::error::no_connection_to_daemon&) {
+            setStatusError(tr("no connection to daemon. Please make sure daemon is running."));
+        } catch (const tools::error::wallet_rpc_error& e) {
+            setStatusError(tr("RPC error: ") + e.to_string());
+        } catch (const tools::error::get_outs_error &e) {
+            setStatusError((boost::format(tr("failed to get outputs to mix: %s")) % e.what()).str());
+        } catch (const tools::error::not_enough_unlocked_money& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, available only %s, sent amount %s")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount());
+            setStatusError(writer.str());
+        } catch (const tools::error::not_enough_money& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, overall balance only %s, sent amount %s")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount());
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_not_possible& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, available only %s, transaction amount %s = %s + %s (fee)")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount() + e.fee()) %
+                      print_money(e.tx_amount()) %
+                      print_money(e.fee());
+            setStatusError(writer.str());
+        } catch (const tools::error::not_enough_outs_to_mix& e) {
+            std::ostringstream writer;
+            writer << tr("not enough outputs for specified ring size") << " = " << (e.mixin_count() + 1) << ":";
+            for (const std::pair<uint64_t, uint64_t> outs_for_amount : e.scanty_outs()) {
+                writer << "\n" << tr("output amount") << " = " << print_money(outs_for_amount.first) << ", " << tr("found outputs to use") << " = " << outs_for_amount.second;
+            }
+            writer << "\n" << tr("Please sweep unmixable outputs.");
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_not_constructed&) {
+            setStatusError(tr("transaction was not constructed"));
+        } catch (const tools::error::tx_rejected& e) {
+            std::ostringstream writer;
+            writer << (boost::format(tr("transaction %s was rejected by daemon with status: ")) % get_transaction_hash(e.tx())) << e.status();
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_sum_overflow& e) {
+            setStatusError(e.what());
+        } catch (const tools::error::zero_destination&) {
+            setStatusError(tr("one of destinations is zero"));
+        } catch (const tools::error::tx_too_big&) {
+            setStatusError(tr("failed to find a suitable way to split transactions"));
+        } catch (const tools::error::transfer_error& e) {
+            setStatusError(std::string(tr("unknown transfer error: ")) + e.what());
+        } catch (const tools::error::wallet_internal_error& e) {
+            setStatusError(std::string(tr("internal error: ")) + e.what());
+        } catch (const std::exception& e) {
+            setStatusError(std::string(tr("unexpected error: ")) + e.what());
+        } catch (...) {
+            setStatusError(tr("unknown error"));
+        }
+    } while (false);
+
+    transaction->m_status = status();
+    startRefresh();
+    return transaction;
+}
+
+EXPORT
+PendingTransaction *WalletImpl::mintTokenTransaction(const std::string& token_id, uint64_t amount, uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
+{
+    clearStatus();
+    pauseRefresh();
+
+    PendingTransactionImpl * transaction = new PendingTransactionImpl(*this);
+
+    do {
+        crypto::token_id parsed_token_id = crypto::null_tid;
+        if (!tools::hex_to_type(token_id, parsed_token_id) || parsed_token_id == crypto::null_tid) {
+            setStatusError(tr("Invalid token id"));
+            break;
+        }
+
+        if (amount == 0) {
+            setStatusError(tr("amount must be greater than zero"));
+            break;
+        }
+
+        auto w = wallet();
+        std::vector<cryptonote::tx_destination_entry> dsts;
+        cryptonote::tx_destination_entry dst;
+        dst.amount = amount;
+        dst.addr = w->get_account().get_keys().m_account_address;
+        dst.is_subaddress = false;
+        dst.token_id = parsed_token_id;
+        dsts.push_back(dst);
+
+        cryptonote::tx_extra_token_descriptor_operation tdo{};
+        tdo.operation_type = cryptonote::token_descriptor_operation_type::mint_token;
+        tdo.fields = static_cast<uint8_t>(cryptonote::token_field_token_id | cryptonote::token_field_amount);
+        tdo.token_id = parsed_token_id;
+        tdo.amount = amount;
+
+        std::vector<uint8_t> extra;
+        if (!cryptonote::add_token_descriptor_operation_to_tx_extra(extra, tdo)) {
+            setStatusError(tr("Failed to encode token descriptor into tx extra"));
+            break;
+        }
+
+        try {
+            transaction->m_pending_tx = w->create_token_mint_tx(
+                    dsts,
+                    parsed_token_id,
+                    cryptonote::TX_OUTPUT_DECOYS,
+                    priority,
+                    extra,
+                    subaddr_account,
+                    subaddr_indices);
+            pendingTxPostProcess(transaction);
+
+            if (multisig().isMultisig) {
+                auto tx_set = w->make_multisig_tx_set(transaction->m_pending_tx);
+                transaction->m_pending_tx = tx_set.m_ptx;
+                transaction->m_signers = tx_set.m_signers;
+            }
+        } catch (const tools::error::daemon_busy&) {
+            setStatusError(tr("daemon is busy. Please try again later."));
+        } catch (const tools::error::no_connection_to_daemon&) {
+            setStatusError(tr("no connection to daemon. Please make sure daemon is running."));
+        } catch (const tools::error::wallet_rpc_error& e) {
+            setStatusError(tr("RPC error: ") + e.to_string());
+        } catch (const tools::error::get_outs_error &e) {
+            setStatusError((boost::format(tr("failed to get outputs to mix: %s")) % e.what()).str());
+        } catch (const tools::error::not_enough_unlocked_money& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, available only %s, sent amount %s")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount());
+            setStatusError(writer.str());
+        } catch (const tools::error::not_enough_money& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, overall balance only %s, sent amount %s")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount());
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_not_possible& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, available only %s, transaction amount %s = %s + %s (fee)")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount() + e.fee()) %
+                      print_money(e.tx_amount()) %
+                      print_money(e.fee());
+            setStatusError(writer.str());
+        } catch (const tools::error::not_enough_outs_to_mix& e) {
+            std::ostringstream writer;
+            writer << tr("not enough outputs for specified ring size") << " = " << (e.mixin_count() + 1) << ":";
+            for (const std::pair<uint64_t, uint64_t> outs_for_amount : e.scanty_outs()) {
+                writer << "\n" << tr("output amount") << " = " << print_money(outs_for_amount.first) << ", " << tr("found outputs to use") << " = " << outs_for_amount.second;
+            }
+            writer << "\n" << tr("Please sweep unmixable outputs.");
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_not_constructed&) {
+            setStatusError(tr("transaction was not constructed"));
+        } catch (const tools::error::tx_rejected& e) {
+            std::ostringstream writer;
+            writer << (boost::format(tr("transaction %s was rejected by daemon with status: ")) % get_transaction_hash(e.tx())) << e.status();
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_sum_overflow& e) {
+            setStatusError(e.what());
+        } catch (const tools::error::zero_destination&) {
+            setStatusError(tr("one of destinations is zero"));
+        } catch (const tools::error::tx_too_big&) {
+            setStatusError(tr("failed to find a suitable way to split transactions"));
+        } catch (const tools::error::transfer_error& e) {
+            setStatusError(std::string(tr("unknown transfer error: ")) + e.what());
+        } catch (const tools::error::wallet_internal_error& e) {
+            setStatusError(std::string(tr("internal error: ")) + e.what());
+        } catch (const std::exception& e) {
+            setStatusError(std::string(tr("unexpected error: ")) + e.what());
+        } catch (...) {
+            setStatusError(tr("unknown error"));
+        }
+    } while (false);
+
+    transaction->m_status = status();
+    startRefresh();
+    return transaction;
+}
+
+EXPORT
+PendingTransaction *WalletImpl::burnTokenTransaction(const std::string& token_id, uint64_t amount, uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
+{
+    clearStatus();
+    pauseRefresh();
+
+    PendingTransactionImpl * transaction = new PendingTransactionImpl(*this);
+
+    do {
+        crypto::token_id parsed_token_id = crypto::null_tid;
+        if (!tools::hex_to_type(token_id, parsed_token_id) || parsed_token_id == crypto::null_tid) {
+            setStatusError(tr("Invalid token id"));
+            break;
+        }
+
+        if (amount == 0) {
+            setStatusError(tr("amount must be greater than zero"));
+            break;
+        }
+
+        std::vector<uint8_t> extra;
+        cryptonote::tx_extra_token_descriptor_operation tdo{};
+        tdo.operation_type = cryptonote::token_descriptor_operation_type::burn_token;
+        tdo.fields = static_cast<uint8_t>(cryptonote::token_field_token_id |
+                                          cryptonote::token_field_amount);
+        tdo.token_id = parsed_token_id;
+        tdo.amount = amount;
+
+        if (!cryptonote::add_token_descriptor_operation_to_tx_extra(extra, tdo)) {
+            setStatusError(tr("Failed to encode token burn operation into tx extra"));
+            break;
+        }
+
+        auto w = wallet();
+        try {
+            transaction->m_pending_tx = w->create_token_burn_tx(
+                    parsed_token_id,
+                    amount,
+                    cryptonote::TX_OUTPUT_DECOYS,
+                    priority,
+                    extra,
+                    subaddr_account,
+                    subaddr_indices);
+            pendingTxPostProcess(transaction);
+
+            if (multisig().isMultisig) {
+                auto tx_set = w->make_multisig_tx_set(transaction->m_pending_tx);
+                transaction->m_pending_tx = tx_set.m_ptx;
+                transaction->m_signers = tx_set.m_signers;
+            }
+        } catch (const tools::error::daemon_busy&) {
+            setStatusError(tr("daemon is busy. Please try again later."));
+        } catch (const tools::error::no_connection_to_daemon&) {
+            setStatusError(tr("no connection to daemon. Please make sure daemon is running."));
+        } catch (const tools::error::wallet_rpc_error& e) {
+            setStatusError(tr("RPC error: ") + e.to_string());
+        } catch (const tools::error::get_outs_error &e) {
+            setStatusError((boost::format(tr("failed to get outputs to mix: %s")) % e.what()).str());
+        } catch (const tools::error::not_enough_unlocked_money& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, available only %s, sent amount %s")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount());
+            setStatusError(writer.str());
+        } catch (const tools::error::not_enough_money& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, overall balance only %s, sent amount %s")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount());
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_not_possible& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, available only %s, transaction amount %s = %s + %s (fee)")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount() + e.fee()) %
+                      print_money(e.tx_amount()) %
+                      print_money(e.fee());
+            setStatusError(writer.str());
+        } catch (const tools::error::not_enough_outs_to_mix& e) {
+            std::ostringstream writer;
+            writer << tr("not enough outputs for specified ring size") << " = " << (e.mixin_count() + 1) << ":";
+            for (const std::pair<uint64_t, uint64_t> outs_for_amount : e.scanty_outs()) {
+                writer << "\n" << tr("output amount") << " = " << print_money(outs_for_amount.first) << ", " << tr("found outputs to use") << " = " << outs_for_amount.second;
+            }
+            writer << "\n" << tr("Please sweep unmixable outputs.");
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_not_constructed&) {
+            setStatusError(tr("transaction was not constructed"));
+        } catch (const tools::error::tx_rejected& e) {
+            std::ostringstream writer;
+            writer << (boost::format(tr("transaction %s was rejected by daemon with status: ")) % get_transaction_hash(e.tx())) << e.status();
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_sum_overflow& e) {
+            setStatusError(e.what());
+        } catch (const tools::error::zero_destination&) {
+            setStatusError(tr("one of destinations is zero"));
+        } catch (const tools::error::tx_too_big&) {
+            setStatusError(tr("failed to find a suitable way to split transactions"));
+        } catch (const tools::error::transfer_error& e) {
+            setStatusError(std::string(tr("unknown transfer error: ")) + e.what());
+        } catch (const tools::error::wallet_internal_error& e) {
+            setStatusError(std::string(tr("internal error: ")) + e.what());
+        } catch (const std::exception& e) {
+            setStatusError(std::string(tr("unexpected error: ")) + e.what());
+        } catch (...) {
+            setStatusError(tr("unknown error"));
+        }
+    } while (false);
+
+    transaction->m_status = status();
+    startRefresh();
+    return transaction;
+}
+
+EXPORT
+PendingTransaction *WalletImpl::updateTokenTransaction(const std::string& token_id, const std::string& descriptor_json, uint32_t priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
+{
+    clearStatus();
+    pauseRefresh();
+
+    PendingTransactionImpl * transaction = new PendingTransactionImpl(*this);
+
+    do {
+        if (subaddr_account != 0 || !subaddr_indices.empty()) {
+            setStatusError(tr("update_token must be issued from the primary account without subaddress switches"));
+            break;
+        }
+
+        crypto::token_id parsed_token_id = crypto::null_tid;
+        if (!tools::hex_to_type(token_id, parsed_token_id) || parsed_token_id == crypto::null_tid) {
+            setStatusError(tr("Invalid token id"));
+            break;
+        }
+
+        if (descriptor_json.empty()) {
+            setStatusError(tr("descriptor_json is required"));
+            break;
+        }
+
+        auto w = wallet();
+        nlohmann::json info_req = nlohmann::json::object();
+        info_req["token_id"] = token_id;
+
+        nlohmann::json info_res;
+        try {
+            info_res = w->json_rpc("get_token_info", info_req);
+        } catch (const std::exception& e) {
+            setStatusError(tr("Failed to fetch token info from daemon: ") + std::string(e.what()));
+            break;
+        }
+
+        const std::string requested_owner = tools::type_to_hex(
+                w->get_account().get_keys().m_account_address.m_spend_public_key);
+        if (!info_res.contains("owner") || info_res["owner"].get<std::string>() != requested_owner) {
+            setStatusError(tr("This wallet does not own the token: ") + token_id);
+            break;
+        }
+
+        cryptonote::token_descriptor_base adb{};
+        adb.version = info_res.value("version", 1);
+        adb.total_max_supply = info_res.value("total_max_supply", (uint64_t)0);
+        adb.current_supply = info_res.value("current_supply", (uint64_t)0);
+        adb.decimal_point = info_res.value("decimal_point", 0);
+        adb.ticker = info_res.value("ticker", "");
+        adb.full_name = info_res.value("full_name", "");
+        adb.meta_info = info_res.value("meta_info", "");
+        tools::hex_to_type(info_res.value("owner", ""), adb.owner);
+
+        cryptonote::token_descriptor_base json_adb = adb;
+        std::string error;
+        if (!cryptonote::load_token_descriptor_from_json(descriptor_json, json_adb, error, cryptonote::token_descriptor_json_mode::update)) {
+            setStatusError(tr("Invalid token descriptor JSON: ") + error);
+            break;
+        }
+
+        if (json_adb.meta_info == adb.meta_info && json_adb.owner == adb.owner) {
+            setStatusError(tr("update_token: meta_info and owner are unchanged, nothing to update"));
+            break;
+        }
+        adb.meta_info = json_adb.meta_info;
+        if (json_adb.owner != crypto::null_pkey) {
+            adb.owner = json_adb.owner;
+        }
+
+        cryptonote::tx_extra_token_descriptor_operation tdo{};
+        tdo.operation_type = cryptonote::token_descriptor_operation_type::update_token;
+        tdo.fields = static_cast<uint8_t>(cryptonote::token_field_descriptor |
+                                          cryptonote::token_field_token_id);
+        tdo.descriptor = adb;
+        tdo.token_id = parsed_token_id;
+
+        std::vector<uint8_t> extra;
+        if (!cryptonote::add_token_descriptor_operation_to_tx_extra(extra, tdo)) {
+            setStatusError(tr("Failed to encode token descriptor into tx extra"));
+            break;
+        }
+
+        try {
+            transaction->m_pending_tx = w->create_token_update_tx(
+                    parsed_token_id,
+                    cryptonote::TX_OUTPUT_DECOYS,
+                    priority,
+                    extra,
+                    subaddr_account,
+                    subaddr_indices);
+            pendingTxPostProcess(transaction);
+
+            if (multisig().isMultisig) {
+                auto tx_set = w->make_multisig_tx_set(transaction->m_pending_tx);
+                transaction->m_pending_tx = tx_set.m_ptx;
+                transaction->m_signers = tx_set.m_signers;
+            }
+        } catch (const tools::error::daemon_busy&) {
+            setStatusError(tr("daemon is busy. Please try again later."));
+        } catch (const tools::error::no_connection_to_daemon&) {
+            setStatusError(tr("no connection to daemon. Please make sure daemon is running."));
+        } catch (const tools::error::wallet_rpc_error& e) {
+            setStatusError(tr("RPC error: ") + e.to_string());
+        } catch (const tools::error::get_outs_error &e) {
+            setStatusError((boost::format(tr("failed to get outputs to mix: %s")) % e.what()).str());
+        } catch (const tools::error::not_enough_unlocked_money& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, available only %s, sent amount %s")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount());
+            setStatusError(writer.str());
+        } catch (const tools::error::not_enough_money& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, overall balance only %s, sent amount %s")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount());
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_not_possible& e) {
+            std::ostringstream writer;
+            writer << boost::format(tr("not enough money to transfer, available only %s, transaction amount %s = %s + %s (fee)")) %
+                      print_money(e.available()) %
+                      print_money(e.tx_amount() + e.fee()) %
+                      print_money(e.tx_amount()) %
+                      print_money(e.fee());
+            setStatusError(writer.str());
+        } catch (const tools::error::not_enough_outs_to_mix& e) {
+            std::ostringstream writer;
+            writer << tr("not enough outputs for specified ring size") << " = " << (e.mixin_count() + 1) << ":";
+            for (const std::pair<uint64_t, uint64_t> outs_for_amount : e.scanty_outs()) {
+                writer << "\n" << tr("output amount") << " = " << print_money(outs_for_amount.first) << ", " << tr("found outputs to use") << " = " << outs_for_amount.second;
+            }
+            writer << "\n" << tr("Please sweep unmixable outputs.");
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_not_constructed&) {
+            setStatusError(tr("transaction was not constructed"));
+        } catch (const tools::error::tx_rejected& e) {
+            std::ostringstream writer;
+            writer << (boost::format(tr("transaction %s was rejected by daemon with status: ")) % get_transaction_hash(e.tx())) << e.status();
+            setStatusError(writer.str());
+        } catch (const tools::error::tx_sum_overflow& e) {
+            setStatusError(e.what());
+        } catch (const tools::error::zero_destination&) {
+            setStatusError(tr("one of destinations is zero"));
+        } catch (const tools::error::tx_too_big&) {
+            setStatusError(tr("failed to find a suitable way to split transactions"));
+        } catch (const tools::error::transfer_error& e) {
+            setStatusError(std::string(tr("unknown transfer error: ")) + e.what());
+        } catch (const tools::error::wallet_internal_error& e) {
+            setStatusError(std::string(tr("internal error: ")) + e.what());
+        } catch (const std::exception& e) {
+            setStatusError(std::string(tr("unexpected error: ")) + e.what());
+        } catch (...) {
+            setStatusError(tr("unknown error"));
+        }
+    } while (false);
+
+    transaction->m_status = status();
     startRefresh();
     return transaction;
 }
@@ -2507,83 +3228,94 @@ EXPORT
 std::vector<bnsInfo>* WalletImpl::MyBns() const
 {
     std::vector<bnsInfo>* my_bns = new std::vector<bnsInfo>;
-
-    auto w = wallet();
-
-    nlohmann::json req_params{
-        {"entries", nlohmann::json::array()}
-    };
-
-    std::unordered_map<std::string, tools::wallet2::bns_detail> cache = w->get_bns_cache();
-
-    for (uint32_t index = 0; index < w->get_num_subaddresses(0); ++index)
+    try
     {
-        req_params["entries"].push_back(w->get_subaddress_as_str({0, index}));
-    }
+        auto w = wallet();
 
-    auto [success, result] = w->bns_owners_to_names(req_params);
-    if (!success)
-    {
-        setStatusError(tr("Connection to daemon failed when requesting BNS names"));
-    }
+        nlohmann::json req_params = nlohmann::json::object();
+        auto &entries = (req_params["entries"] = nlohmann::json::array());
 
-    auto nettype = w->nettype();
+        std::unordered_map<std::string, tools::wallet2::bns_detail> cache = w->get_bns_cache();
 
-    for (auto const &entry : result["entries"])
-    {
-        std::string_view name;
-        std::string value_bchat, value_wallet, value_belnet, value_eth;
-        if (auto got = cache.find(entry["name_hash"].get<std::string>()); got != cache.end())
+        for (uint32_t index = 0; index < w->get_num_subaddresses(0); ++index)
         {
-            name = got->second.name;
-            auto decrypt_value = [&](std::string_view key, bns::mapping_type type, std::string& out) {
-                auto it = entry.find(key);
-                if (it != entry.end() && !it->empty())
-                {
-                    bns::mapping_value mv;
-                    const auto& hex_str = it->get_ref<const std::string&>();
-                    if (!hex_str.empty() && bns::mapping_value::validate_encrypted(type, oxenc::from_hex(hex_str), &mv) &&
-                        mv.decrypt(name, type))
-                    {
-                        out = mv.to_readable_value(nettype, type);
-                    }
-                }
-            };
-
-            decrypt_value("encrypted_bchat_value", bns::mapping_type::bchat, value_bchat);
-            decrypt_value("encrypted_wallet_value", bns::mapping_type::wallet, value_wallet);
-            decrypt_value("encrypted_belnet_value", bns::mapping_type::belnet, value_belnet);
-            decrypt_value("encrypted_eth_addr_value", bns::mapping_type::eth_addr, value_eth);
+            entries.push_back(w->get_subaddress_as_str({0, index}));
         }
 
-        auto &info = my_bns->emplace_back();
-        info.name_hash = entry["name_hash"].get<std::string>();
-        info.name = name.empty() ? "(none)" : std::string(name);
-        info.value_bchat = value_bchat.empty() ? "(none)" : value_bchat;
-        info.value_wallet = value_wallet.empty() ? "(none)" : value_wallet;
-        info.value_belnet = value_belnet.empty() ? "(none)" : value_belnet;
-        info.value_eth_addr = value_eth.empty() ? "(none)" : value_eth;
-        info.owner = entry["owner"].get<std::string>();
-        if (entry.contains("backup_owner") && !entry["backup_owner"].is_null())
-            info.backup_owner = entry["backup_owner"].get<std::string>();
-        else
-            info.backup_owner = "(none)";
-        info.update_height = entry["update_height"].get<uint64_t>();
-        info.expiration_height = entry["expiration_height"].get<uint64_t>();
-    
-        auto get_optional_string = [&entry](const char *key) {
-            auto it = entry.find(key);
-            if (it == entry.end() || !it->is_string())
-                return std::string("(none)");
-            const auto &value = it->get_ref<const std::string &>();
-            return value.empty() ? std::string("(none)") : value;
-        };
-        info.encrypted_bchat_value = get_optional_string("encrypted_bchat_value");
-        info.encrypted_wallet_value = get_optional_string("encrypted_wallet_value");
-        info.encrypted_belnet_value = get_optional_string("encrypted_belnet_value");
-        info.encrypted_eth_addr_value = get_optional_string("encrypted_eth_addr_value");
+        auto [success, result] = w->bns_owners_to_names(req_params);
+        if (!success)
+        {
+            setStatusError(tr("Connection to daemon failed when requesting BNS names"));
+            return my_bns;
+        }
 
+        if (!result.contains("entries") || !result["entries"].is_array())
+        {
+            setStatusError(tr("Invalid daemon response when requesting BNS names"));
+            return my_bns;
+        }
+
+        auto nettype = w->nettype();
+
+        for (auto const &entry : result["entries"])
+        {
+            std::string_view name;
+            std::string value_bchat, value_wallet, value_belnet, value_eth;
+            if (auto got = cache.find(entry["name_hash"]); got != cache.end())
+            {
+                name = got->second.name;
+                auto decrypt_value = [&](std::string_view key, bns::mapping_type type, std::string& out) {
+                    auto it = entry.find(key);
+                    if (it != entry.end() && !it->empty())
+                    {
+                        bns::mapping_value mv;
+                        const auto& hex_str = it->get_ref<const std::string&>();
+                        if (!hex_str.empty() && bns::mapping_value::validate_encrypted(type, oxenc::from_hex(hex_str), &mv) &&
+                            mv.decrypt(name, type))
+                        {
+                            out = mv.to_readable_value(nettype, type);
+                        }
+                    }
+                };
+
+                decrypt_value("encrypted_bchat_value", bns::mapping_type::bchat, value_bchat);
+                decrypt_value("encrypted_wallet_value", bns::mapping_type::wallet, value_wallet);
+                decrypt_value("encrypted_belnet_value", bns::mapping_type::belnet, value_belnet);
+                decrypt_value("encrypted_eth_addr_value", bns::mapping_type::eth_addr, value_eth);
+            }
+
+            auto &info = my_bns->emplace_back();
+            info.name_hash = entry["name_hash"];
+            info.name = name.empty() ? "(none)" : std::string(name);
+            info.value_bchat = value_bchat.empty() ? "(none)" : value_bchat;
+            info.value_wallet = value_wallet.empty() ? "(none)" : value_wallet;
+            info.value_belnet = value_belnet.empty() ? "(none)" : value_belnet;
+            info.value_eth_addr = value_eth.empty() ? "(none)" : value_eth;
+            info.owner = entry["owner"];
+            if (entry.contains("backup_owner") && !entry["backup_owner"].is_null())
+                info.backup_owner =  entry["backup_owner"];
+            else
+                info.backup_owner = "(none)";
+            info.update_height = entry["update_height"];
+            info.expiration_height = entry["expiration_height"];
+
+            info.encrypted_bchat_value = entry["encrypted_bchat_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_bchat_value"];
+            info.encrypted_wallet_value = entry["encrypted_wallet_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_wallet_value"];
+            info.encrypted_belnet_value = entry["encrypted_belnet_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_belnet_value"];
+            info.encrypted_eth_addr_value = entry["encrypted_eth_addr_value"].get<std::string>().empty() ? "(none)" : entry["encrypted_eth_addr_value"];
+        }
     }
+    catch (const std::exception &e)
+    {
+        LOG_PRINT_L1(__FUNCTION__ << "Failed to build or parse BNS request: " << e.what());
+        setStatusError(std::string{tr("Failed to build or parse BNS request: ")} + e.what());
+    }
+    catch (...)
+    {
+        LOG_PRINT_L1(__FUNCTION__ << "Unknown error while building or parsing BNS request");
+        setStatusError(tr("Unknown error while building or parsing BNS request"));
+    }
+
     return my_bns;
 }
 
@@ -2848,7 +3580,8 @@ bool WalletImpl::checkTxKey(const std::string &txid_str, std::string_view tx_key
 
     try
     {
-        wallet()->check_tx_key(txid, tx_key, additional_tx_keys, info.address, received, in_pool, confirmations);
+        std::map<crypto::token_id, uint64_t> token_received;
+        wallet()->check_tx_key(txid, tx_key, additional_tx_keys, info.address, received, in_pool, confirmations, token_received);
         clearStatus();
         return true;
     }
@@ -2910,7 +3643,8 @@ bool WalletImpl::checkTxProof(const std::string &txid_str, const std::string &ad
 
     try
     {
-        good = wallet()->check_tx_proof(txid, info.address, info.is_subaddress, message, signature, received, in_pool, confirmations);
+        std::map<crypto::token_id, uint64_t> token_received;
+        good = wallet()->check_tx_proof(txid, info.address, info.is_subaddress, message, signature, received, in_pool, confirmations, token_received);
         clearStatus();
         return true;
     }
@@ -3008,7 +3742,8 @@ bool WalletImpl::checkReserveProof(const std::string &address, const std::string
     try
     {
         clearStatus();
-        good = wallet()->check_reserve_proof(info.address, message, signature, total, spent);
+        std::map<crypto::token_id, std::pair<uint64_t, uint64_t>> token_totals;
+        good = wallet()->check_reserve_proof(info.address, message, signature, total, spent, token_totals);
         return true;
     }
     catch (const std::exception &e)

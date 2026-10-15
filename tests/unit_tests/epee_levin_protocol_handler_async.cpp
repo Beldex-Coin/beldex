@@ -191,7 +191,7 @@ namespace
       m_commands_handler(*m_pcommands_handler)
     {
       m_handler_config.set_handler(m_pcommands_handler, [](epee::levin::levin_commands_handler<test_levin_connection_context> *handler) { delete handler; });
-      m_handler_config.m_invoke_timeout = invoke_timeout;
+      m_handler_config.m_invoke_timeout = std::chrono::milliseconds{invoke_timeout};
       m_handler_config.m_max_packet_size = max_packet_size;
     }
 

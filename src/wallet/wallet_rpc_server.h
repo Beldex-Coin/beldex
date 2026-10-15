@@ -172,7 +172,11 @@ namespace tools
     wallet_rpc::BNS_ENCRYPT_VALUE::response               invoke(wallet_rpc::BNS_ENCRYPT_VALUE::request&& req);
     wallet_rpc::COIN_BURN::response                       invoke(wallet_rpc::COIN_BURN::request&& req);
     wallet_rpc::QUERY_KEY::response                       invoke(wallet_rpc::QUERY_KEY::request&& req);
-
+    wallet_rpc::REGISTER_PRIVACY_TOKEN::response                invoke(wallet_rpc::REGISTER_PRIVACY_TOKEN::request&& req);
+    wallet_rpc::GET_OWNED_TOKENS::response                invoke(wallet_rpc::GET_OWNED_TOKENS::request&& req);
+    wallet_rpc::MINT_TOKEN::response                      invoke(wallet_rpc::MINT_TOKEN::request&& req);
+    wallet_rpc::BURN_TOKEN::response                      invoke(wallet_rpc::BURN_TOKEN::request&& req);
+    wallet_rpc::UPDATE_TOKEN::response                    invoke(wallet_rpc::UPDATE_TOKEN::request&& req);
   private:
 
       /// Handles a POST request to /json_rpc.

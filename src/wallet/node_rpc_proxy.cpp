@@ -106,22 +106,37 @@ bool NodeRPCProxy::get_info() const
   {
     try {
       auto res = m_http_client.json_rpc("get_info", {});
-      m_height = res.at("height").get<uint64_t>();
-      m_target_height = res.at("target_height").get<uint64_t>();
+
+      // Parse into temporary variables first
+      uint64_t height = res.at("height").get<uint64_t>();
+      uint64_t target_height = res.at("target_height").get<uint64_t>();
+      uint64_t immutable_height = 0;
+
+      uint64_t block_weight_limit;
       auto it_block_weight_limit = res.find("block_weight_limit");
+
       if (it_block_weight_limit != res.end())
-        m_block_weight_limit = res.at("block_weight_limit").get<uint64_t>();
+        block_weight_limit = it_block_weight_limit->get<uint64_t>();
       else
-        m_block_weight_limit = res.at("block_size_limit").get<uint64_t>();
+        block_weight_limit = res.at("block_size_limit").get<uint64_t>();
       auto it_immutable_height = res.find("immutable_height");
-        if (it_immutable_height != res.end())
-            m_immutable_height = res.at("immutable_height").get<uint64_t>();
-        m_get_info_time = now;
-        m_height_time = now;
-    } catch (const std::exception& e) {
-        // log::error(logcat, "Failed to get info message: {}", e.what()); //TODO
-        return false; }
+
+      if (it_immutable_height != res.end())
+        immutable_height = it_immutable_height->get<uint64_t>();
+
+      // Commit only after everything succeeds
+      m_height = height;
+      m_target_height = target_height;
+      m_block_weight_limit = block_weight_limit;
+      m_immutable_height = immutable_height;
+
+      m_get_info_time = now;
+      m_height_time = now;
+    } catch (const std::exception &e) {
+      // log::error(logcat, "Failed to get info message: {}", e.what());
+      return false; }
   }
+
   return true;
 }
 

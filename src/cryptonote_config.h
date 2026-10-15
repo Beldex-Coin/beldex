@@ -56,6 +56,42 @@ inline constexpr uint64_t DEFAULT_TX_SPENDABLE_AGE_V17         = 2;
 inline constexpr uint64_t TX_OUTPUT_DECOYS                     = 9;
 inline constexpr size_t   TX_BULLETPROOF_MAX_OUTPUTS           = 16;
 inline constexpr size_t   TX_BULLETPROOF_PLUS_MAX_OUTPUTS      = 16;
+
+// ── Privacy token ring design (HF21+) ─────────────────────────────────
+//
+// Zyphora inputs (spending a tx_out_zyphora) use the SAME output_amounts[0]
+// pool as native BDX RingCT outputs for decoy selection.  Both BDX RCT outputs
+// (txout_to_key) and privacy token outputs (tx_out_zyphora) store
+// tx_out.amount == 0 on-chain, so they live in the same LMDB bucket.
+//
+// The CLSAG ring is 1-layer (key only):
+//   - BDX decoy  → ring member pubkey = txout_to_key.key
+//   - ZY decoy   → ring member pubkey = tx_out_zyphora.stealth_address
+//   - ZY real    → ring member pubkey = tx_out_zyphora.stealth_address
+//
+// Amount balance and token integrity are proven separately:
+//   - Balance:   linear_composition_proof  (proves tx balances in G and X)
+//   - Token:     BGE surjection proof       (proves output token is real)
+//   - Range:     BulletproofPlus            (proves amounts in [0, 2^64))
+//
+// Result: no bootstrapping problem — day-1 token transfers can draw decoys
+// from the existing BDX output pool (millions of outputs available).
+inline constexpr size_t TOKEN_RING_SIZE = TX_OUTPUT_DECOYS; // same as BDX
+
+// ── Mandatory fan-out for deploy / mint transactions (HF21+) ───────────────
+//
+// Every register_privacy_token or mint_token transaction MUST produce at least
+// MIN_TOKEN_MINT_OUTPUTS tx_out_zyphora outputs.
+//
+// Why: even though the ring draws from the shared BDX pool, we want
+// dedicated ZY ring members for future token-specific BGE proofs.
+// The wallet auto-generates self-send outputs (to its own subaddresses)
+// to reach this minimum whenever the user's destinations fall short.
+//
+// Value = TX_OUTPUT_DECOYS + 1 = 10: guarantees a full ring of 9 decoys
+// + 1 real is always achievable using only prior ZY outputs of the same
+// token, independent of the BDX pool.
+inline constexpr size_t MIN_TOKEN_MINT_OUTPUTS = TX_OUTPUT_DECOYS + 1; // 10
 inline constexpr uint64_t PUBLIC_ADDRESS_TEXTBLOB_VER          = 0;
 
 inline constexpr uint64_t FINAL_SUBSIDY_PER_MINUTE             = 500000000; // 3 * pow(10, 7)
@@ -92,6 +128,7 @@ inline constexpr size_t DEFAULT_MEMPOOL_MAX_WEIGHT           = 72h / TARGET_BLOC
 
 inline constexpr uint64_t FEE_PER_BYTE                         = 215;   // Fallback used in wallet if no fee is available from RPC
 inline constexpr uint64_t FEE_PER_OUTPUT_V17                   = 100000; // 0.0001 BDX per tx output 
+inline constexpr uint64_t FEE_PER_OUTPUT_V21                   = 10000000; // 0.01 BDX per tx output 
 inline constexpr uint64_t DYNAMIC_FEE_REFERENCE_TRANSACTION_WEIGHT      = 300000;
 inline constexpr uint64_t FEE_QUANTIZATION_DECIMALS                     = 8;
 
@@ -119,6 +156,12 @@ namespace hashkey {
   inline constexpr std::string_view CLSAG_ROUND = "CLSAG_round"sv;
   inline constexpr std::string_view CLSAG_AGG_0 = "CLSAG_agg_0"sv;
   inline constexpr std::string_view CLSAG_AGG_1 = "CLSAG_agg_1"sv;
+  // 3-layer CLSAG-GGX (zyphora ZY_sig): layer 0 = stealth address (G),
+  // layer 1 = amount commitment (G), layer 2 = blinded token id (X).
+  inline constexpr std::string_view CLSAG_GGX_ROUND = "CLSAG_GGX_round"sv;
+  inline constexpr std::string_view CLSAG_GGX_AGG_0 = "CLSAG_GGX_agg_0"sv;
+  inline constexpr std::string_view CLSAG_GGX_AGG_1 = "CLSAG_GGX_agg_1"sv;
+  inline constexpr std::string_view CLSAG_GGX_AGG_2 = "CLSAG_GGX_agg_2"sv;
 }
 
 // Maximum allowed stake contribution, as a fraction of the available contribution room.  This
@@ -207,6 +250,8 @@ enum class hf : uint8_t
     hf19_enhance_bns, // provided EVM address in BNS
     hf20_bulletproof_plus,
     hf21_bulletproof_plus,
+    hf22_privacy_tokens, // Private custom token transfers
+
 
     _next,
     none = 0
@@ -238,6 +283,7 @@ namespace feature {
   constexpr auto CLSAG                        = hf::hf15_flash;
   constexpr auto PROOF_BTENC                  = hf::hf18_bns;
   constexpr auto BULLETPROOF_PLUS             = hf::hf20_bulletproof_plus;
+  constexpr auto PRIVACY_TOKENS               = hf::hf22_privacy_tokens;
 }
 
 enum network_type : uint8_t

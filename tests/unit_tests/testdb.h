@@ -153,6 +153,9 @@ public:
   virtual void set_master_node_data  (const std::string& data, bool long_term)      override { }
   virtual bool get_master_node_data  (std::string& data, bool long_term)            override { return false; }
   virtual void clear_master_node_data()                                             override { }
+  virtual void set_token_undo(uint64_t height, const std::string &data) override { }
+  virtual bool get_token_undo(uint64_t height, std::string &data) const override { return false; }
+  virtual bool del_token_undo(uint64_t height) override { return false; }
 
   virtual cryptonote::transaction get_pruned_tx(const crypto::hash& h) const override { return {}; };
   virtual bool get_tx(const crypto::hash& h, cryptonote::transaction &tx) const override { return false; }

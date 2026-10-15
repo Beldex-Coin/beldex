@@ -191,7 +191,7 @@ extern int aesb_pseudo_round(const uint8_t *in, uint8_t *out, const uint8_t *exp
   } while (0)
 
 
-#if defined(__x86_64__) || defined(_M_X64)
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AES__) || defined(_MSC_VER))
 
 #include "cn_turtle_hash-amd64.inl"
 

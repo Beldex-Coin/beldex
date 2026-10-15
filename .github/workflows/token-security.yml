@@ -1,0 +1,36 @@
+name: Token security regressions
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  token-security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config python3 \
+            libboost-all-dev libzmq3-dev libsodium-dev libunwind-dev liblzma-dev \
+            libreadline-dev libsqlite3-dev libcurl4-openssl-dev libexpat1-dev \
+            libusb-1.0-0-dev libhidapi-dev libssl-dev libunbound-dev
+      - name: Configure
+        run: >-
+          cmake -S . -B build/security -DBUILD_TESTS=ON
+          -DBUILD_DOCUMENTATION=OFF -DCMAKE_BUILD_TYPE=Release -DUSE_LTO=OFF
+      - name: Build unit tests
+        run: cmake --build build/security --target unit_tests --parallel 2
+      - name: Run token security regressions
+        run: ctest --test-dir build/security -R '^token_security$' --output-on-failure
+      - name: Independently check BGE vectors
+        run: |
+          python3 tests/data/check_token_bge_vector.py tests/data/token_bge_v1.txt
+          python3 tests/data/check_token_bge_vector.py tests/data/token_bge_legacy.txt --legacy

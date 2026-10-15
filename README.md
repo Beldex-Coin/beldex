@@ -22,6 +22,13 @@ More information on the project can be found on the website and in the whitepape
 
 Beldex is an open source project, and we encourage contributions from anyone with something to offer. For more information on contributing, please contact team@beldex.io
 
+### Privacy token anonymity model
+
+Privacy token (ZY / Zyphora) transactions hide the output amount, the token
+identity, and which ring member is spent. They do **not** hide that a transaction
+is a token transaction, nor its token input/output counts or token-vs-native
+split. See [docs/token-privacy.md](docs/token-privacy.md) for the full model.
+
 ## Compiling Beldex from source
 
 ### Dependencies

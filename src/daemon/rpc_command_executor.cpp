@@ -1462,7 +1462,7 @@ bool rpc_command_executor::print_blockchain_dynamic_stats(uint64_t nblocks)
 
 bool rpc_command_executor::relay_tx(const std::string &txid)
 {
-  auto maybe_relay = try_running([&] { return invoke<RELAY_TX>(json{{"txid", txid}}); }, "Failed to relay tx");
+  auto maybe_relay = try_running([&] { return invoke<RELAY_TX>(json{{"txids", std::vector<std::string>{txid}}}); }, "Failed to relay tx");
   if (!maybe_relay)
     return false;
 
@@ -2610,4 +2610,3 @@ bool rpc_command_executor::test_trigger_uptime_proof()
 }
 
 }// namespace daemonize
-

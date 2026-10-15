@@ -19,6 +19,10 @@ enum class txversion : uint16_t {
     stake,
     beldex_name_system,
     coin_burn,
+    register_privacy_token,
+    mint_token,
+    update_token,
+    burn_token,
     _count
   };
 

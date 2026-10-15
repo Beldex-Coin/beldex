@@ -539,6 +539,7 @@ TEST(NetUtils, NetworkAddress)
     constexpr static bool is_local() noexcept { return false; }
     static std::string str() { return {}; }
     static std::string host_str() { return {}; }
+    constexpr static uint16_t port() noexcept { return 0; }
     constexpr static epee::net_utils::address_type get_type_id() noexcept { return epee::net_utils::address_type(-1); }
     constexpr static epee::net_utils::zone get_zone() noexcept { return epee::net_utils::zone::invalid; }
     constexpr static bool is_blockable() noexcept { return false; }

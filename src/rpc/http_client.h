@@ -293,7 +293,7 @@ private:
   std::string proxy;
   std::optional<std::pair<cpr::ssl::CertFile, cpr::ssl::KeyFile>> client_cert;
   bool verify_https = true;
-  std::optional<cpr::ssl::CaInfo> ca_info;
+  std::optional<cpr::ssl::CaInfo> pt_info;
   // Whether we need to apply the above to the session when making the next request
   bool apply_timeout = true, apply_auth = false, apply_proxy = false, apply_ssl = false;
 

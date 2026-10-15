@@ -35,6 +35,7 @@
 #include "rctSigs.h"
 #include "bulletproofs.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "cryptonote_basic/token_descriptor_operation_utils.h"
 #include "cryptonote_config.h"
 #include "bulletproofs_plus.h"
 
@@ -622,7 +623,7 @@ namespace rct {
       catch (...) { return false; }
     }
 
-    key get_pre_mlsag_hash(const rctSig &rv, hw::device &hwdev)
+    key get_pre_mlsag_hash(const rctSig &rv, hw::device &hwdev, bool hash_bulletproof_plus = false)
     {
         keyV hashes;
         hashes.reserve(3);
@@ -665,7 +666,7 @@ namespace rct {
                 kv.push_back(p.t);
             }
         }
-        else if (rv.type == RCTType::BulletproofPlus)
+        else if (hash_bulletproof_plus && rv.type == RCTType::BulletproofPlus)
         {
             kv.reserve((6 * 2 + 6) * rv.p.bulletproofs_plus.size());
             for (const auto &p : rv.p.bulletproofs_plus)
@@ -790,7 +791,7 @@ namespace rct {
         return result;
     }
 
-    key get_pre_clsag_hash(const rctSig &rv, hw::device &hwdev)
+    key get_pre_clsag_hash(const rctSig &rv, hw::device &hwdev, bool hash_bulletproof_plus)
     {
       keyV hashes;
       hashes.reserve(3);
@@ -833,6 +834,25 @@ namespace rct {
           kv.push_back(p.t);
         }
       }
+      else if (hash_bulletproof_plus && rv.type == RCTType::BulletproofPlus)
+      {
+        kv.reserve((6 * 2 + 6) * rv.p.bulletproofs_plus.size());
+        for (const auto &p : rv.p.bulletproofs_plus)
+        {
+          // V are not hashed as they're expanded from outPk.mask
+          // (and thus hashed as part of rctSigBase above)
+          kv.push_back(p.A);
+          kv.push_back(p.A1);
+          kv.push_back(p.B);
+          kv.push_back(p.r1);
+          kv.push_back(p.s1);
+          kv.push_back(p.d1);
+          for (size_t n = 0; n < p.L.size(); ++n)
+            kv.push_back(p.L[n]);
+          for (size_t n = 0; n < p.R.size(); ++n)
+            kv.push_back(p.R[n]);
+        }
+      }
       else
       {
         kv.reserve((64*3+1) * rv.p.rangeSigs.size());
@@ -850,6 +870,67 @@ namespace rct {
       hashes.push_back(cn_fast_hash(kv));
       hwdev.clsag_prehash(blob, inputs, outputs, hashes, rv.outPk, prehash);
       return  prehash;
+    }
+
+    key get_hf21_token_proof_message(const cryptonote::transaction& tx, const rct::ctkeyM& rings, hw::device &hwdev)
+    {
+      const key pre = get_pre_clsag_hash(tx.rct_signatures, hwdev, true);
+      std::vector<uint8_t> blob;
+      auto append = [&blob](const void* ptr, size_t n) {
+        const auto* p = static_cast<const uint8_t*>(ptr);
+        blob.insert(blob.end(), p, p + n);
+      };
+      auto append_u8 = [&blob](uint8_t v) { blob.push_back(v); };
+      auto append_u64 = [&append](uint64_t v) { append(&v, sizeof(v)); };
+
+      static constexpr char PROOF_DOMAIN[] = "BLDX_HF21_ASSET_PROOF_MSG_V1";
+      append(PROOF_DOMAIN, sizeof(PROOF_DOMAIN) - 1);
+      append(&pre, sizeof(pre));
+
+      append_u64(tx.vin.size());
+      for (size_t i = 0; i < tx.vin.size(); ++i)
+      {
+        if (std::holds_alternative<cryptonote::txin_zy_input>(tx.vin[i]))
+        {
+          append_u8(1);
+          const auto& zy = std::get<cryptonote::txin_zy_input>(tx.vin[i]);
+          append(&zy.k_image, sizeof(zy.k_image));
+        }
+        else
+        {
+          append_u8(0);
+          const auto& tk = std::get<cryptonote::txin_to_key>(tx.vin[i]);
+          append(&tk.k_image, sizeof(tk.k_image));
+          append_u64(tk.amount);
+        }
+
+        const size_t ring_size = i < rings.size() ? rings[i].size() : 0;
+        append_u64(ring_size);
+        for (size_t j = 0; j < ring_size; ++j)
+        {
+          append(&rings[i][j].dest, sizeof(rings[i][j].dest));
+          append(&rings[i][j].mask, sizeof(rings[i][j].mask));
+        }
+      }
+
+      size_t zy_outs = 0;
+      for (const auto& out : tx.vout)
+        if (std::holds_alternative<cryptonote::tx_out_zyphora>(out.target))
+          ++zy_outs;
+      append_u64(zy_outs);
+      for (const auto& out : tx.vout)
+      {
+        if (!std::holds_alternative<cryptonote::tx_out_zyphora>(out.target))
+          continue;
+        const auto& zout = std::get<cryptonote::tx_out_zyphora>(out.target);
+        append(&zout.stealth_address, sizeof(zout.stealth_address));
+        append(&zout.amount_commitment, sizeof(zout.amount_commitment));
+        append(&zout.blinded_token_id, sizeof(zout.blinded_token_id));
+      }
+
+      crypto::hash h = crypto::null_hash;
+      crypto::cn_fast_hash(blob.data(), blob.size(), h);
+      return hash2rct(h);
     }
 
     clsag proveRctCLSAGSimple(const key &message, const ctkeyV &pubs, const ctkey &inSk, const key &a, const key &Cout, const multisig_kLRki *kLRki, key *mscout, key *mspout, unsigned int index, hw::device &hwdev) {
@@ -1199,7 +1280,8 @@ namespace rct {
     }
     //RCT simple    
     //for post-rct only
-    rctSig genRctSimple(const key &message, const ctkeyV & inSk, const keyV & destinations, const std::vector<xmr_amount> &inamounts, const std::vector<xmr_amount> &outamounts, xmr_amount txnFee, const ctkeyM & mixRing, const keyV &amount_keys, const std::vector<multisig_kLRki> *kLRki, multisig_out *msout, const std::vector<unsigned int> & index, ctkeyV &outSk, const RCTConfig &rct_config, hw::device &hwdev) {
+    rctSig genRctSimple(const key &message, const ctkeyV & inSk, const keyV & destinations, const std::vector<xmr_amount> &inamounts, const std::vector<xmr_amount> &outamounts, xmr_amount txnFee, const ctkeyM & mixRing, const keyV &amount_keys, const std::vector<multisig_kLRki> *kLRki, multisig_out *msout, const std::vector<unsigned int> & index, ctkeyV &outSk, const RCTConfig &rct_config, hw::device &hwdev, bool hash_bulletproof_plus) {
+        MTRACE("genRctSimple called with " << inSk.size() << " inputs, " << amount_keys.size() << " amount_keys, " << destinations.size() << " outputs, mixin " << mixRing.size() << ", kLRki " << (kLRki ? kLRki->size() : 0) << ", msout " << (msout ? 1 : 0));
         const bool bulletproof_or_plus = rct_config.range_proof_type > RangeProofType::Borromean;
         CHECK_AND_ASSERT_THROW_MES(inamounts.size() > 0, "Empty inamounts");
         CHECK_AND_ASSERT_THROW_MES(inamounts.size() == inSk.size(), "Different number of inamounts/inSk");
@@ -1374,7 +1456,7 @@ namespace rct {
         genC(pseudoOuts[i], a[i], inamounts[i]);
         DP(pseudoOuts[i]);
 
-        key full_message = get_pre_clsag_hash(rv, hwdev);
+        key full_message = get_pre_clsag_hash(rv, hwdev, hash_bulletproof_plus);
         if (msout)
         {
             msout->c.resize(inamounts.size());
@@ -1394,7 +1476,7 @@ namespace rct {
         return rv;
     }
 
-    rctSig genRctSimple(const key &message, const ctkeyV & inSk, const ctkeyV & inPk, const keyV & destinations, const std::vector<xmr_amount> &inamounts, const std::vector<xmr_amount> &outamounts, const keyV &amount_keys, const std::vector<multisig_kLRki> *kLRki, multisig_out *msout, xmr_amount txnFee, unsigned int mixin, const RCTConfig &rct_config, hw::device &hwdev) {
+    rctSig genRctSimple(const key &message, const ctkeyV & inSk, const ctkeyV & inPk, const keyV & destinations, const std::vector<xmr_amount> &inamounts, const std::vector<xmr_amount> &outamounts, const keyV &amount_keys, const std::vector<multisig_kLRki> *kLRki, multisig_out *msout, xmr_amount txnFee, unsigned int mixin, const RCTConfig &rct_config, hw::device &hwdev, bool hash_bulletproof_plus) {
         std::vector<unsigned int> index;
         index.resize(inPk.size());
         ctkeyM mixRing;
@@ -1404,7 +1486,7 @@ namespace rct {
           mixRing[i].resize(mixin+1);
           index[i] = populateFromBlockchainSimple(mixRing[i], inPk[i], mixin);
         }
-        return genRctSimple(message, inSk, destinations, inamounts, outamounts, txnFee, mixRing, amount_keys, kLRki, msout, index, outSk, rct_config, hwdev);
+        return genRctSimple(message, inSk, destinations, inamounts, outamounts, txnFee, mixRing, amount_keys, kLRki, msout, index, outSk, rct_config, hwdev, hash_bulletproof_plus);
     }
 
     //RingCT protocol
@@ -1417,7 +1499,7 @@ namespace rct {
     //decodeRct: (c.f. https://eprint.iacr.org/2015/1098 section 5.1.1)
     //   uses the attached ecdh info to find the amounts represented by each output commitment 
     //   must know the destination private key to find the correct amount, else will return a random number    
-    bool verRct(const rctSig & rv, bool semantics) {
+    bool verRct(const rctSig & rv, bool semantics, bool hash_bulletproof_plus) {
         PERF_TIMER(verRct);
         CHECK_AND_ASSERT_MES(rv.type == RCTType::Full, false, "verRct called on non-full rctSig");
         if (semantics)
@@ -1454,7 +1536,7 @@ namespace rct {
           if (!semantics) {
             //compute txn fee
             key txnFeeKey = scalarmultH(d2h(rv.txnFee));
-            bool mgVerd = verRctMG(rv.p.MGs[0], rv.mixRing, rv.outPk, txnFeeKey, get_pre_clsag_hash(rv, hw::get_device("default")));
+            bool mgVerd = verRctMG(rv.p.MGs[0], rv.mixRing, rv.outPk, txnFeeKey, get_pre_clsag_hash(rv, hw::get_device("default"), hash_bulletproof_plus));
             DP("mg sig verified?");
             DP(mgVerd);
             if (!mgVerd) {
@@ -1614,7 +1696,7 @@ namespace rct {
 
     //ver RingCT simple
     //assumes only post-rct style inputs (at least for max anonymity)
-    bool verRctNonSemanticsSimple(const rctSig & rv) {
+    bool verRctNonSemanticsSimple(const rctSig & rv, bool hash_bulletproof_plus) {
       try
       {
         PERF_TIMER(verRctNonSemanticsSimple);
@@ -1637,7 +1719,7 @@ namespace rct {
 
         const keyV &pseudoOuts = bulletproof || bulletproof_plus ? rv.p.pseudoOuts : rv.pseudoOuts;
 
-        const key message = get_pre_clsag_hash(rv, hw::get_device("default"));
+        const key message = get_pre_clsag_hash(rv, hw::get_device("default"), hash_bulletproof_plus);
 
         results.clear();
         results.resize(rv.mixRing.size());
@@ -1808,4 +1890,827 @@ namespace rct {
         else
             return signMultisigMLSAG(rv, indices, k, msout, secret_key);
     }
+
+    // ── HF21: verTokenProofs ─────────────────────────────────────────────────
+
+    bool verTokenProofs(const cryptonote::transaction& tx,
+                        const rct::ctkeyM& pubkeys,
+                        const std::vector<rct::keyV>& token_id_rings,
+                        std::string& reason)
+    {
+      try {
+        // ── 0. Prevalidate the proof set is well-formed ──────────────────────
+        // token_proofs is a self-describing serialized vector, so serialization
+        // constrains neither WHICH proofs appear nor how many. Reject duplicates
+        // of singleton proofs, an unknown proof type, and any proof that doesn't
+        // belong to this tx kind -- otherwise a peer could pad token_proofs with
+        // extra/duplicate entries, and since token_proofs are part of the
+        // prunable hash that yields a verifying-but-bloated variant tx. Mirrors
+        // Zano's per-type count_type_in_variant_container prevalidation.
+        {
+            size_t n_surjection = 0, n_balance = 0, n_range = 0,
+                   n_token_op = 0, n_ownership = 0;
+            for (const auto& proof : tx.token_proofs)
+            {
+                if      (std::holds_alternative<rct::zy_token_surjection_proof>(proof))       ++n_surjection;
+                else if (std::holds_alternative<rct::zy_balance_proof>(proof))                ++n_balance;
+                else if (std::holds_alternative<rct::zy_outs_range_proof>(proof))             ++n_range;
+                else if (std::holds_alternative<rct::token_operation_proof>(proof))           ++n_token_op;
+                else if (std::holds_alternative<rct::token_operation_ownership_proof>(proof)) ++n_ownership;
+                else { reason = "unknown token proof type"; return false; }
+            }
+            // ZY_sigs live under the tx's signatures (tx.zy_sig), not token_proofs.
+            const size_t n_zy_sig = tx.zy_sig.size();
+
+            // Singleton proofs: at most one of each.
+            if (n_surjection > 1) { reason = "multiple zy_token_surjection_proof entries"; return false; }
+            if (n_balance    > 1) { reason = "multiple zy_balance_proof entries"; return false; }
+            if (n_range      > 1) { reason = "multiple zy_outs_range_proof entries"; return false; }
+            if (n_token_op   > 1) { reason = "multiple token_operation_proof entries"; return false; }
+            if (n_ownership  > 1) { reason = "multiple token_operation_ownership_proof entries"; return false; }
+
+            // ZY_sig: exactly one per confidential (zyphora) input.
+            size_t zy_input_count = 0;
+            for (const auto& in : tx.vin)
+                if (std::holds_alternative<cryptonote::txin_zy_input>(in))
+                    ++zy_input_count;
+            if (n_zy_sig != zy_input_count)
+            {
+                reason = "ZY_sig count (" + std::to_string(n_zy_sig)
+                       + ") != confidential input count (" + std::to_string(zy_input_count) + ")";
+                return false;
+            }
+
+            // Token-operation proofs only belong to their originating tx kinds:
+            //   token_operation_proof          -> register_privacy_token / mint_token / burn_token
+            //   token_operation_ownership_proof -> mint_token / update_token
+            // (see construct_tx_with_tx_key.) burn_token also carries an
+            // amount-commitment composition_proof: it binds the publicly-declared
+            // burned amount to the TDO commitment that the zy_balance_proof then
+            // subtracts from the spend equation.
+            const bool aop_allowed       = tx.type == cryptonote::txtype::register_privacy_token
+                                        || tx.type == cryptonote::txtype::mint_token
+                                        || tx.type == cryptonote::txtype::burn_token;
+            const bool ownership_allowed = tx.type == cryptonote::txtype::mint_token
+                                        || tx.type == cryptonote::txtype::update_token;
+            if (n_token_op  != 0 && !aop_allowed)
+            {
+                reason = "token_operation_proof present on a tx that is not deploy/mint/burn";
+                return false;
+            }
+            if (n_ownership != 0 && !ownership_allowed)
+            {
+                reason = "token_operation_ownership_proof present on a tx that is not mint/update";
+                return false;
+            }
+
+            {
+                cryptonote::tx_extra_token_descriptor_operation tdo{};
+                if (cryptonote::get_token_descriptor_operation_from_tx_extra(tx.extra, tdo, 0))
+                {
+                    cryptonote::tx_extra_token_descriptor_operation tdo2{};
+                    if (cryptonote::get_token_descriptor_operation_from_tx_extra(tx.extra, tdo2, 1))
+                    {
+                        reason = "a token transaction must carry exactly one token descriptor operation";
+                        return false;
+                    }
+                    bool type_matches = false;
+                    switch (tdo.operation_type)
+                    {
+                        case cryptonote::token_descriptor_operation_type::register_token: type_matches = (tx.type == cryptonote::txtype::register_privacy_token); break;
+                        case cryptonote::token_descriptor_operation_type::mint_token:     type_matches = (tx.type == cryptonote::txtype::mint_token);             break;
+                        case cryptonote::token_descriptor_operation_type::update_token:   type_matches = (tx.type == cryptonote::txtype::update_token);           break;
+                        case cryptonote::token_descriptor_operation_type::burn_token:     type_matches = (tx.type == cryptonote::txtype::burn_token);             break;
+                        default:                                                          type_matches = false;                                                   break;
+                    }
+                    if (!type_matches)
+                    {
+                        reason = "tx.type does not match the token descriptor operation_type (cross-typed token operation rejected)";
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // ── 1. Verify ZY_sig for each ZY input ───────────────────────────────
+        // Count ZY inputs and match them to the tx's ZY_sig signatures (one per
+        // zy input, in tx.vin order). pubkeys[i] / token_id_rings[i] is the ring
+        // for input i (built by check_tx_inputs / check_tx_input_zy);
+        // token_id_rings is only populated for indices where tx.vin[i] is a
+        // txin_zy_input.
+        size_t zy_sig_idx = 0;
+        const key tx_prefix_hash = get_hf21_token_proof_message(tx, pubkeys, hw::get_device("default"));
+
+        std::vector<const rct::ZY_sig*> zy_sigs;
+        zy_sigs.reserve(tx.zy_sig.size());
+        for (const auto& sig : tx.zy_sig)
+        {
+            const auto* zs = std::get_if<rct::ZY_sig>(&sig);
+            if (!zs) { reason = "unknown signature type in tx.zy_sig"; return false; }
+            zy_sigs.push_back(zs);
+        }
+
+        // Collect ring pubkeys for ZY inputs (subset of all inputs)
+        size_t zy_input_count = 0;
+        for (size_t i = 0; i < tx.vin.size(); ++i)
+        {
+            if (!std::holds_alternative<cryptonote::txin_zy_input>(tx.vin[i]))
+                continue;
+            const auto& txin = std::get<cryptonote::txin_zy_input>(tx.vin[i]);
+            if (zy_sig_idx >= zy_sigs.size())
+                continue;  // more inputs than ZY_sigs → not a ZY input
+
+            const rct::ZY_sig& zy_sig = *zy_sigs[zy_sig_idx];
+
+            // Extract ring stealth addresses and amount commitments for this
+            // input from pubkeys[i]; the blinded-token-id ring comes from
+            // token_id_rings[i] (threaded through by check_tx_input_zy).
+            rct::keyV ring_dest, ring_amount;
+            ring_dest.reserve(pubkeys[i].size());
+            ring_amount.reserve(pubkeys[i].size());
+            for (const auto& ctk : pubkeys[i])
+            {
+                ring_dest.push_back(ctk.dest);
+                ring_amount.push_back(ctk.mask);
+            }
+            const rct::keyV& ring_token_id = token_id_rings[i];
+
+            if (ring_token_id.size() != ring_dest.size())
+            {
+                reason = "token-id ring size mismatch for input " + std::to_string(i);
+                return false;
+            }
+
+            // The ZY_sig is now the single source of truth for this input's
+            // pseudo-out amount commitment and blinded token id -- the balance
+            // proof and surjection proof both read the same zy_sig.pseudo_out_*
+            // values verified here, so there is no separate txin declaration to
+            // cross-check against (and thus no decoupling risk to guard).
+
+            // Torsion safety: unlike Zano, Beldex keeps these points UNSCALED
+            // (no 1/8 storage + ×8-on-verify cofactor clearing), so every
+            // attacker-controllable point that later enters the *unscaled* proof
+            // arithmetic must be explicitly forced into the prime-order subgroup
+            // here. Both pseudo-outs are freshly chosen by the prover in THIS tx
+            // and are reused raw by the BGE surjection ring (verify_BGE_proof)
+            // and the zy_balance_proof sum -- a small-order component there could
+            // grant the prover extra Z_8 freedom those proofs can't otherwise
+            // catch. (Chain-resolved ring members are already subgroup-checked at
+            // output-creation time in check_tx_outputs, so they need no recheck.)
+            if (!rct::isInMainSubgroup(zy_sig.pseudo_out_amount_commitment) ||
+                !rct::isInMainSubgroup(zy_sig.pseudo_out_blinded_token_id))
+            {
+                reason = "ZY_sig pseudo-out point not in main subgroup for input " + std::to_string(i);
+                return false;
+            }
+
+            if (!verZYSig(tx_prefix_hash, zy_sig, ring_dest, ring_amount, ring_token_id,
+                          zy_sig.pseudo_out_amount_commitment, zy_sig.pseudo_out_blinded_token_id))
+            {
+                reason = "ZY_sig verification failed for input " + std::to_string(i);
+                return false;
+            }
+
+            // Key image in ZY_sig must match txin.k_image
+            if (memcmp(&zy_sig.clsag_sig.I, &txin.k_image, sizeof(crypto::key_image)) != 0)
+            {
+                reason = "ZY_sig key_image mismatch for input " + std::to_string(i);
+                return false;
+            }
+
+            ++zy_sig_idx;
+            ++zy_input_count;
+        }
+
+        if (zy_sig_idx != zy_sigs.size())
+        {
+            reason = "ZY_sig count mismatch: have " + std::to_string(zy_sigs.size()) +
+                     ", matched " + std::to_string(zy_sig_idx);
+            return false;
+        }
+
+        // ── 2. Verify token surjection proof (BGE) ────────────────────────────
+        // For each tx_out_zyphora output, verify its blinded_token_id is a
+        // valid blinding of one of the tx's legitimate token sources, without
+        // revealing which one. Ring members (must match construct_tx_with_tx_key's
+        // surjection block bit-for-bit, in the same order):
+        //   - every spent zy input's pseudo-blinded token id (zy_sigs, step 1), and
+        //   - for register_privacy_token/mint_token, the token-descriptor-operation's
+        //     own token id H_tdo, appended LAST (mirrors Zano's "token emission"
+        //     ring member, generate_token_surjection_proof_hf6). This is what
+        //     binds EACH mint output to the declared token: the TDO
+        //     composition_proof only constrains the weighted sum
+        //     Σ amount_j·H_j == declared·H_tdo, not each output's hidden H_j, so
+        //     without a per-output surjection a multi-output mint could set
+        //     output#1 to a large amount of a DIFFERENT existing token B and
+        //     output#2 to a compensating garbage token -- inflating token B.
+        //
+        // Native coin never carries an token id (is_zyphora() == token_id !=
+        // null_tid), so native fee/change inputs never need a ring slot here.
+        bool any_zy_outputs = false;
+        for (const auto& out : tx.vout)
+            if (std::holds_alternative<cryptonote::tx_out_zyphora>(out.target)) { any_zy_outputs = true; break; }
+
+        // Build the surjection ring shared by every output's BGE proof.
+        rct::keyV surjection_ring;
+        surjection_ring.reserve(zy_sigs.size() + 1);
+        for (const auto* zs : zy_sigs)
+            surjection_ring.push_back(zs->pseudo_out_blinded_token_id);
+
+        if (tx.type == cryptonote::txtype::register_privacy_token || tx.type == cryptonote::txtype::mint_token)
+        {
+            cryptonote::tx_extra_token_descriptor_operation tdo{};
+            if (!cryptonote::get_token_descriptor_operation_from_tx_extra(tx.extra, tdo))
+            {
+                reason = "mint tx is missing its token_descriptor_operation in tx.extra";
+                return false;
+            }
+            const crypto::token_id token_id = (tx.type == cryptonote::txtype::register_privacy_token)
+                ? cryptonote::get_or_calculate_token_id(tdo)
+                : tdo.token_id;
+            if (token_id == crypto::null_tid)
+            {
+                reason = "mint tx token_descriptor_operation has no resolvable token_id";
+                return false;
+            }
+            surjection_ring.push_back(rct::tid2rct(token_id));
+        }
+
+        bool found_surjection_proof = false;
+        for (const auto& proof : tx.token_proofs)
+        {
+            if (const auto* sp = std::get_if<rct::zy_token_surjection_proof>(&proof))
+            {
+                found_surjection_proof = true;
+                if (surjection_ring.empty())
+                {
+                    reason = "surjection proof present but tx has no token source (no zy inputs and not a mint)";
+                    return false;
+                }
+
+                size_t out_idx = 0;
+                for (size_t k = 0; k < tx.vout.size(); ++k)
+                {
+                    if (!std::holds_alternative<cryptonote::tx_out_zyphora>(tx.vout[k].target))
+                        continue;
+                    if (out_idx >= sp->bge_proofs.size())
+                    {
+                        reason = "surjection proof has fewer entries than ZY outputs";
+                        return false;
+                    }
+
+                    const auto& zout = std::get<cryptonote::tx_out_zyphora>(tx.vout[k].target);
+                    const rct::key T = rct::tid2rct(zout.blinded_token_id);
+
+                    if (!crypto::verify_BGE_proof(tx_prefix_hash, surjection_ring, T, sp->bge_proofs[out_idx]))
+                    {
+                        reason = "BGE surjection proof verification failed for output " + std::to_string(k);
+                        return false;
+                    }
+                    ++out_idx;
+                }
+
+                if (out_idx != sp->bge_proofs.size())
+                {
+                    reason = "surjection proof has more entries than ZY outputs";
+                    return false;
+                }
+                break;
+            }
+        }
+
+        // Any tx that produces zyphora outputs must carry a surjection proof
+        // binding each output's token id to a legitimate source (a spent zy
+        // input, or -- for deploy/mint -- the mint TDO). This covers both spends
+        // and mints; without it a tx could claim any token id for its outputs.
+        if (any_zy_outputs && !found_surjection_proof)
+        {
+            reason = "zyphora outputs present without an token surjection proof";
+            return false;
+        }
+
+        // ── 3. Verify ownership proof for token operations ────────────────────
+        // For deploy/mint/burn, verify the Schnorr signature against descriptor.owner.
+        for (const auto& proof : tx.token_proofs)
+        {
+            if (const auto* op = std::get_if<rct::token_operation_ownership_proof>(&proof))
+            {
+                // The message signed is the tx prefix hash.
+                // The public key is retrieved from the token descriptor in
+                // validate_tx_token_operations_against_db (token_history_utils).
+                // Here we check the proof is non-zero (structural check only;
+                // key-specific check is in token_history_utils.cpp).
+                if (op->sig.c == rct::zero() || op->sig.y == rct::zero())
+                {
+                    reason = "token ownership proof is zero";
+                    return false;
+                }
+            }
+        }
+
+        // ── 4. Verify HF21 PT balance proof (token conservation statement) ───
+        const rct::zy_balance_proof* bal = nullptr;
+        for (const auto& proof : tx.token_proofs)
+        {
+            if (const auto* bp = std::get_if<rct::zy_balance_proof>(&proof))
+            {
+                if (bal != nullptr)
+                {
+                    reason = "multiple zy_balance_proof entries";
+                    return false;
+                }
+                bal = bp;
+            }
+        }
+        if (zy_input_count > 0)
+        {
+            if (bal == nullptr)
+            {
+                reason = "missing zy_balance_proof for PT spend";
+                return false;
+            }
+
+            // Pseudo-out amount commitments live in the ZY_sigs (one per zy
+            // input, collected in input order in step 1), not on the inputs.
+            rct::key sum_in_C = rct::zero();
+            for (const auto* zs : zy_sigs)
+                rct::addKeys(sum_in_C, sum_in_C, zs->pseudo_out_amount_commitment);
+
+            rct::key sum_out_C = rct::zero();
+            for (const auto& out : tx.vout)
+            {
+                if (!std::holds_alternative<cryptonote::tx_out_zyphora>(out.target))
+                    continue;
+                const auto& zout = std::get<cryptonote::tx_out_zyphora>(out.target);
+                rct::addKeys(sum_out_C, sum_out_C, rct::pk2rct(zout.amount_commitment));
+            }
+
+            rct::key expected_P = rct::zero();
+            rct::subKeys(expected_P, sum_in_C, sum_out_C);
+            if (tx.type == cryptonote::txtype::burn_token)
+            {
+                cryptonote::tx_extra_token_descriptor_operation tdo{};
+                if (!cryptonote::get_token_descriptor_operation_from_tx_extra(tx.extra, tdo))
+                {
+                    reason = "burn tx is missing its token_descriptor_operation in tx.extra";
+                    return false;
+                }
+                if (!tdo.field_is_set(cryptonote::token_field_amount_commitment))
+                {
+                    reason = "burn tx token_descriptor_operation is missing amount_commitment";
+                    return false;
+                }
+                rct::subKeys(expected_P, expected_P, rct::pk2rct(tdo.amount_commitment));
+            }
+            if (bal->P != expected_P)
+            {
+                reason = "zy_balance_proof statement mismatch";
+                return false;
+            }
+            const rct::key tx_pub_key_rct = rct::pk2rct(cryptonote::get_tx_pub_key_from_extra(tx));
+            if (!crypto::verify_double_schnorr_sig(tx_prefix_hash, bal->P, tx_pub_key_rct, bal->dss))
+            {
+                reason = "zy_balance_proof verification failed";
+                return false;
+            }
+        }
+
+        // ── 5. Verify HF21 token outputs range proof (overflow/inflation guard) ─
+        // Confirms every zyphora output's amount is in [0, 2^64), preventing a
+        // wraparound-based inflation attack that the balance proof alone can't
+        // catch (it only checks conservation, not range).
+        {
+            const rct::zy_outs_range_proof* rp = nullptr;
+            for (const auto& proof : tx.token_proofs)
+            {
+                if (const auto* p = std::get_if<rct::zy_outs_range_proof>(&proof))
+                {
+                    if (rp != nullptr)
+                    {
+                        reason = "multiple zy_outs_range_proof entries";
+                        return false;
+                    }
+                    rp = p;
+                }
+            }
+
+            if (any_zy_outputs)
+            {
+                if (rp == nullptr)
+                {
+                    reason = "zyphora outputs present without an outputs range proof";
+                    return false;
+                }
+
+                // Zyphora outputs need *some* source pinning their token id to
+                // exist at all: either spent zy inputs (whose hidden token ids
+                // need not agree -- multiple distinct privacy tokens are
+                // allowed in one tx, see construct_tx_with_tx_key) or, for mints
+                // with no zy input (register_privacy_token/mint_token), the token
+                // descriptor operation's own (plaintext, public) token_id.
+                //
+                // Note: zy inputs no longer declare any plaintext token id (it
+                // stays hidden behind the ZY_sig's pseudo_out_blinded_token_id).
+                // It doesn't need to be revealed: each output's real token basis
+                // is independently pinned down by verify_BGE_proof (ties the
+                // output's blinded id back to a real spent input's) and the
+                // aggregation proof below (ties the output's real commitment to
+                // its own blinded id as tag) -- both require finding a discrete-
+                // log relation between two independently hash-derived token
+                // points, which is assumed infeasible.
+                bool tag_set = zy_input_count > 0;
+                if (!tag_set && (tx.type == cryptonote::txtype::register_privacy_token || tx.type == cryptonote::txtype::mint_token))
+                {
+                    cryptonote::tx_extra_token_descriptor_operation tdo{};
+                    if (!cryptonote::get_token_descriptor_operation_from_tx_extra(tx.extra, tdo))
+                    {
+                        reason = "mint tx is missing its token_descriptor_operation in tx.extra";
+                        return false;
+                    }
+                    const crypto::token_id token_id = (tx.type == cryptonote::txtype::register_privacy_token)
+                        ? cryptonote::get_or_calculate_token_id(tdo)
+                        : tdo.token_id;
+                    if (token_id == crypto::null_tid)
+                    {
+                        reason = "mint tx token_descriptor_operation has no resolvable token_id";
+                        return false;
+                    }
+                    tag_set = true;
+                }
+
+                if (!tag_set)
+                {
+                    reason = "zyphora outputs present without any source to declare the token id";
+                    return false;
+                }
+
+                rct::keyV real_commitments, tags;
+                for (const auto& out : tx.vout)
+                {
+                    if (!std::holds_alternative<cryptonote::tx_out_zyphora>(out.target))
+                        continue;
+                    const auto& zout = std::get<cryptonote::tx_out_zyphora>(out.target);
+                    real_commitments.push_back(rct::pk2rct(zout.amount_commitment));
+                    // tags[j] must be this output's OWN blinded token id T_j
+                    // (not the shared plaintext-derived `tag`) -- it's the
+                    // base zout.amount_commitment was actually built on (see
+                    // rct::commitToken), and the aggregation proof checks
+                    // real_commitments[j] against "tags[j] + w*H" directly.
+                    tags.push_back(rct::tid2rct(zout.blinded_token_id));
+                }
+
+                if (!crypto::verify_vector_ug_aggregation_proof(tx_prefix_hash, real_commitments, tags, rp->aggregation_proof))
+                {
+                    reason = "zy_outs_range_proof aggregation proof verification failed";
+                    return false;
+                }
+
+                rct::BulletproofPlus bpp = rp->bpp;
+                bpp.V.resize(rp->aggregation_proof.amount_commitments_for_rp_aggregation.size());
+                for (size_t i = 0; i < bpp.V.size(); ++i)
+                    bpp.V[i] = rp->aggregation_proof.amount_commitments_for_rp_aggregation[i];
+                if (!rct::verBulletproofPlus(bpp))
+                {
+                    reason = "zy_outs_range_proof Bulletproof+ verification failed";
+                    return false;
+                }
+            }
+            else if (rp != nullptr)
+            {
+                reason = "zy_outs_range_proof present without any zyphora outputs";
+                return false;
+            }
+        }
+
+        return true;
+      }
+      catch (const std::exception& e)
+      {
+        reason = std::string("token proof verification threw: ") + e.what();
+        return false;
+      }
+      catch (...)
+      {
+        reason = "token proof verification threw an unknown exception";
+        return false;
+      }
+    }
+
+    // ── HF21: CLSAG-GGX (3-layer CLSAG over G, G, X) ──────────────────────────
+    //
+    // Proves, for a hidden real index l in a ring of size n:
+    //   layer 0 (G): knowledge of p such that p*G == P[l]                 (stealth address)
+    //   layer 1 (G): knowledge of f such that f*G == A[l] - pseudo_A      (amount commitment)
+    //   layer 2 (X): knowledge of t such that t*X == T[l] - pseudo_T      (blinded token id)
+    // all bound to one key image I = p*Hp(P[l]) via a single Fiat-Shamir challenge chain,
+    // following the same aggregation-coefficient trick Beldex's CLSAG_Gen already uses for
+    // its two G-layers (mu_P/mu_C), extended with a third coefficient mu_T for the X-layer.
+    //
+    // P, A, T are parallel rings (stealth addresses, amount commitments, blinded token ids).
+    // A[i]/T[i] are canonical (full-scale) points, matching how C_nonzero is used by CLSAG_Gen.
+    // pseudo_A/pseudo_T are the pseudo-output's amount commitment and blinded token id, also
+    // full-scale (not premultiplied by 1/8); only the auxiliary key images D, E get the
+    // standard 1/8 treatment before being stored, mirroring clsag::D.
+
+    clsag_ggx CLSAG_GGX_Gen(const key& message,
+                            const keyV& P,
+                            const keyV& A,
+                            const keyV& T,
+                            const key& p,
+                            const key& f,
+                            const key& t,
+                            const key& pseudo_A,
+                            const key& pseudo_T,
+                            unsigned int l)
+    {
+        size_t n = P.size();
+        CHECK_AND_ASSERT_THROW_MES(n > 0, "ring size is zero");
+        CHECK_AND_ASSERT_THROW_MES(n == A.size() && n == T.size(), "ring vector sizes must match");
+        CHECK_AND_ASSERT_THROW_MES(l < n, "real index out of range");
+
+        // Key-image base point and real-index key images
+        ge_p3 H_p3;
+        hash_to_p3(H_p3, P[l]);
+        key H;
+        ge_p3_tobytes(H.bytes, &H_p3);
+
+        clsag_ggx sig;
+        scalarmultKey(sig.I, H, p);                 // I = p*H            (real key image, layer 0)
+        key D_full; scalarmultKey(D_full, H, f);     // D_full = f*H
+        scalarmultKey(sig.D, D_full, INV_EIGHT);     // sig.D = D_full / 8 (layer 1 aux key image)
+        key E_full; scalarmultKey(E_full, H, t);     // E_full = t*H
+        scalarmultKey(sig.E, E_full, INV_EIGHT);     // sig.E = E_full / 8 (layer 2 aux key image)
+
+        keyV Adiff(n), Tdiff(n);
+        for (size_t i = 0; i < n; ++i)
+        {
+            subKeys(Adiff[i], A[i], pseudo_A);
+            subKeys(Tdiff[i], T[i], pseudo_T);
+        }
+
+#ifndef NDEBUG
+        CHECK_AND_ASSERT_THROW_MES(scalarmultBase(p) == P[l], "secret p mismatch");
+        CHECK_AND_ASSERT_THROW_MES(scalarmultBase(f) == Adiff[l], "secret f mismatch");
+        CHECK_AND_ASSERT_THROW_MES(scalarmultX(t) == Tdiff[l], "secret t mismatch");
+#endif
+
+        key D8 = scalarmult8(sig.D);
+        key E8 = scalarmult8(sig.E);
+
+        // Aggregation coefficients: one shared input hash, three domain-separated re-hashes.
+        keyV agg_to_hash(3 * n + 6);
+        sc_0(agg_to_hash[0].bytes);
+        size_t idx = 1;
+        for (size_t i = 0; i < n; ++i) agg_to_hash[idx++] = P[i];
+        for (size_t i = 0; i < n; ++i) agg_to_hash[idx++] = A[i];
+        for (size_t i = 0; i < n; ++i) agg_to_hash[idx++] = T[i];
+        agg_to_hash[idx++] = pseudo_A;
+        agg_to_hash[idx++] = pseudo_T;
+        agg_to_hash[idx++] = sig.I;
+        agg_to_hash[idx++] = sig.D;
+        agg_to_hash[idx++] = sig.E;
+
+        memcpy(agg_to_hash[0].bytes, cryptonote::hashkey::CLSAG_GGX_AGG_0.data(), cryptonote::hashkey::CLSAG_GGX_AGG_0.size());
+        key mu_P = hash_to_scalar(agg_to_hash);
+        memcpy(agg_to_hash[0].bytes, cryptonote::hashkey::CLSAG_GGX_AGG_1.data(), cryptonote::hashkey::CLSAG_GGX_AGG_1.size());
+        key mu_A = hash_to_scalar(agg_to_hash);
+        memcpy(agg_to_hash[0].bytes, cryptonote::hashkey::CLSAG_GGX_AGG_2.data(), cryptonote::hashkey::CLSAG_GGX_AGG_2.size());
+        key mu_T = hash_to_scalar(agg_to_hash);
+
+        // Round hash skeleton: domain, P, A, T, pseudo_A, pseudo_T, message, L_g, R_g, L_x, R_x
+        keyV c_to_hash(3 * n + 8);
+        sc_0(c_to_hash[0].bytes);
+        memcpy(c_to_hash[0].bytes, cryptonote::hashkey::CLSAG_GGX_ROUND.data(), cryptonote::hashkey::CLSAG_GGX_ROUND.size());
+        idx = 1;
+        for (size_t i = 0; i < n; ++i) c_to_hash[idx++] = P[i];
+        for (size_t i = 0; i < n; ++i) c_to_hash[idx++] = A[i];
+        for (size_t i = 0; i < n; ++i) c_to_hash[idx++] = T[i];
+        c_to_hash[idx++] = pseudo_A;
+        c_to_hash[idx++] = pseudo_T;
+        c_to_hash[idx++] = message;
+        size_t Lg_pos = idx, Rg_pos = idx + 1, Lx_pos = idx + 2, Rx_pos = idx + 3;
+
+        // Initial commitment
+        key alpha_g = skGen();
+        key alpha_x = skGen();
+        c_to_hash[Lg_pos] = scalarmultBase(alpha_g);
+        c_to_hash[Rg_pos] = scalarmultKey(H, alpha_g);
+        c_to_hash[Lx_pos] = scalarmultX(alpha_x);
+        c_to_hash[Rx_pos] = scalarmultKey(H, alpha_x);
+        key c = hash_to_scalar(c_to_hash); // c_{l+1}
+
+        sig.s_g = keyV(n);
+        sig.s_x = keyV(n);
+
+        size_t i = (l + 1) % n;
+        if (i == 0)
+            copy(sig.c1, c);
+
+        while (i != l)
+        {
+            key c_p, c_a, c_t;
+            sc_mul(c_p.bytes, mu_P.bytes, c.bytes);
+            sc_mul(c_a.bytes, mu_A.bytes, c.bytes);
+            sc_mul(c_t.bytes, mu_T.bytes, c.bytes);
+
+            sig.s_g[i] = skGen();
+            sig.s_x[i] = skGen();
+
+            ge_p3 Hi_p3;
+            hash_to_p3(Hi_p3, P[i]);
+            key Hi;
+            ge_p3_tobytes(Hi.bytes, &Hi_p3);
+
+            key Lg, Rg, Lx, Rx;
+            addKeys(Lg, scalarmultBase(sig.s_g[i]), scalarmultKey(P[i], c_p));
+            addKeys(Lg, Lg, scalarmultKey(Adiff[i], c_a));
+            addKeys(Rg, scalarmultKey(Hi, sig.s_g[i]), scalarmultKey(sig.I, c_p));
+            addKeys(Rg, Rg, scalarmultKey(D8, c_a));
+            addKeys(Lx, scalarmultX(sig.s_x[i]), scalarmultKey(Tdiff[i], c_t));
+            addKeys(Rx, scalarmultKey(Hi, sig.s_x[i]), scalarmultKey(E8, c_t));
+
+            c_to_hash[Lg_pos] = Lg;
+            c_to_hash[Rg_pos] = Rg;
+            c_to_hash[Lx_pos] = Lx;
+            c_to_hash[Rx_pos] = Rx;
+            c = hash_to_scalar(c_to_hash);
+
+            i = (i + 1) % n;
+            if (i == 0)
+                copy(sig.c1, c);
+        }
+
+        // c now holds c_l; solve the two independent linear equations for the real index.
+        key w_sec_g, tmp_mul;
+        sc_mul(w_sec_g.bytes, mu_P.bytes, p.bytes);
+        sc_mul(tmp_mul.bytes, mu_A.bytes, f.bytes);
+        sc_add(w_sec_g.bytes, w_sec_g.bytes, tmp_mul.bytes);
+        key w_sec_x;
+        sc_mul(w_sec_x.bytes, mu_T.bytes, t.bytes);
+
+        sc_mulsub(sig.s_g[l].bytes, w_sec_g.bytes, c.bytes, alpha_g.bytes); // s_g[l] = alpha_g - c*w_sec_g
+        sc_mulsub(sig.s_x[l].bytes, w_sec_x.bytes, c.bytes, alpha_x.bytes); // s_x[l] = alpha_x - c*w_sec_x
+
+        MTRACE("CLSAG_GGX_Gen: n=" << n << " message=" << message
+                 << " mu_P=" << mu_P << " mu_A=" << mu_A << " mu_T=" << mu_T
+                 << " I=" << sig.I << " D=" << sig.D << " E=" << sig.E << " c1=" << sig.c1);
+
+        return sig;
+    }
+
+    bool verify_CLSAG_GGX(const key& message,
+                          const keyV& P,
+                          const keyV& A,
+                          const keyV& T,
+                          const key& pseudo_A,
+                          const key& pseudo_T,
+                          const clsag_ggx& sig)
+    {
+        try
+        {
+            size_t n = P.size();
+            CHECK_AND_ASSERT_MES(n > 0, false, "ring size is zero");
+            CHECK_AND_ASSERT_MES(n == A.size() && n == T.size(), false, "ring vector sizes must match");
+            CHECK_AND_ASSERT_MES(n == sig.s_g.size() && n == sig.s_x.size(), false, "response vector size mismatch");
+            CHECK_AND_ASSERT_MES(sc_check(sig.c1.bytes) == 0, false, "bad signature commitment");
+            for (size_t i = 0; i < n; ++i)
+            {
+                CHECK_AND_ASSERT_MES(sc_check(sig.s_g[i].bytes) == 0, false, "bad signature scalar (g)");
+                CHECK_AND_ASSERT_MES(sc_check(sig.s_x[i].bytes) == 0, false, "bad signature scalar (x)");
+            }
+            CHECK_AND_ASSERT_MES(!(sig.I == rct::identity()), false, "bad key image");
+
+            key D8 = scalarmult8(sig.D);
+            key E8 = scalarmult8(sig.E);
+            CHECK_AND_ASSERT_MES(!(D8 == rct::identity()), false, "bad auxiliary key image (D)");
+            CHECK_AND_ASSERT_MES(!(E8 == rct::identity()), false, "bad auxiliary key image (E)");
+
+            keyV Adiff(n), Tdiff(n);
+            for (size_t i = 0; i < n; ++i)
+            {
+                subKeys(Adiff[i], A[i], pseudo_A);
+                subKeys(Tdiff[i], T[i], pseudo_T);
+            }
+
+            keyV agg_to_hash(3 * n + 6);
+            sc_0(agg_to_hash[0].bytes);
+            size_t idx = 1;
+            for (size_t i = 0; i < n; ++i) agg_to_hash[idx++] = P[i];
+            for (size_t i = 0; i < n; ++i) agg_to_hash[idx++] = A[i];
+            for (size_t i = 0; i < n; ++i) agg_to_hash[idx++] = T[i];
+            agg_to_hash[idx++] = pseudo_A;
+            agg_to_hash[idx++] = pseudo_T;
+            agg_to_hash[idx++] = sig.I;
+            agg_to_hash[idx++] = sig.D;
+            agg_to_hash[idx++] = sig.E;
+
+            memcpy(agg_to_hash[0].bytes, cryptonote::hashkey::CLSAG_GGX_AGG_0.data(), cryptonote::hashkey::CLSAG_GGX_AGG_0.size());
+            key mu_P = hash_to_scalar(agg_to_hash);
+            memcpy(agg_to_hash[0].bytes, cryptonote::hashkey::CLSAG_GGX_AGG_1.data(), cryptonote::hashkey::CLSAG_GGX_AGG_1.size());
+            key mu_A = hash_to_scalar(agg_to_hash);
+            memcpy(agg_to_hash[0].bytes, cryptonote::hashkey::CLSAG_GGX_AGG_2.data(), cryptonote::hashkey::CLSAG_GGX_AGG_2.size());
+            key mu_T = hash_to_scalar(agg_to_hash);
+
+            keyV c_to_hash(3 * n + 8);
+            sc_0(c_to_hash[0].bytes);
+            memcpy(c_to_hash[0].bytes, cryptonote::hashkey::CLSAG_GGX_ROUND.data(), cryptonote::hashkey::CLSAG_GGX_ROUND.size());
+            idx = 1;
+            for (size_t i = 0; i < n; ++i) c_to_hash[idx++] = P[i];
+            for (size_t i = 0; i < n; ++i) c_to_hash[idx++] = A[i];
+            for (size_t i = 0; i < n; ++i) c_to_hash[idx++] = T[i];
+            c_to_hash[idx++] = pseudo_A;
+            c_to_hash[idx++] = pseudo_T;
+            c_to_hash[idx++] = message;
+            size_t Lg_pos = idx, Rg_pos = idx + 1, Lx_pos = idx + 2, Rx_pos = idx + 3;
+
+            key c = copy(sig.c1);
+            for (size_t i = 0; i < n; ++i)
+            {
+                key c_p, c_a, c_t;
+                sc_mul(c_p.bytes, mu_P.bytes, c.bytes);
+                sc_mul(c_a.bytes, mu_A.bytes, c.bytes);
+                sc_mul(c_t.bytes, mu_T.bytes, c.bytes);
+
+                ge_p3 Hi_p3;
+                hash_to_p3(Hi_p3, P[i]);
+                key Hi;
+                ge_p3_tobytes(Hi.bytes, &Hi_p3);
+
+                key Lg, Rg, Lx, Rx;
+                addKeys(Lg, scalarmultBase(sig.s_g[i]), scalarmultKey(P[i], c_p));
+                addKeys(Lg, Lg, scalarmultKey(Adiff[i], c_a));
+                addKeys(Rg, scalarmultKey(Hi, sig.s_g[i]), scalarmultKey(sig.I, c_p));
+                addKeys(Rg, Rg, scalarmultKey(D8, c_a));
+                addKeys(Lx, scalarmultX(sig.s_x[i]), scalarmultKey(Tdiff[i], c_t));
+                addKeys(Rx, scalarmultKey(Hi, sig.s_x[i]), scalarmultKey(E8, c_t));
+
+                c_to_hash[Lg_pos] = Lg;
+                c_to_hash[Rg_pos] = Rg;
+                c_to_hash[Lx_pos] = Lx;
+                c_to_hash[Rx_pos] = Rx;
+                c = hash_to_scalar(c_to_hash);
+            }
+
+            key diff;
+            sc_sub(diff.bytes, c.bytes, sig.c1.bytes);
+            bool ok = sc_isnonzero(diff.bytes) == 0;
+            if (!ok)
+                MWARNING("verify_CLSAG_GGX FAILED: n=" << n << " message=" << message
+                         << " mu_P=" << mu_P << " mu_A=" << mu_A << " mu_T=" << mu_T
+                         << " I=" << sig.I << " D=" << sig.D << " E=" << sig.E
+                         << " sig.c1=" << sig.c1 << " recomputed_c=" << c);
+            return ok;
+        }
+        catch (...) { return false; }
+    }
+
+    // ── HF21: ZY_sig generation and verification ─────────────────────────────
+    //
+    // ZY_sig wraps CLSAG_GGX: a 3-layer ring signature proving stealth-address
+    // ownership, amount-commitment balance and token-id balance for one input
+    // spending a tx_out_zyphora, in a single linked proof.
+
+    ZY_sig genZYSig(const key& message,
+                    const keyV& ring_stealth_addrs,
+                    const keyV& ring_amount_commitments,
+                    const keyV& ring_blinded_token_ids,
+                    const key& spend_secret,
+                    const key& real_amount_mask_diff,
+                    const key& real_token_mask_diff,
+                    const key& pseudo_out_amount_commitment,
+                    const key& pseudo_out_blinded_token_id,
+                    unsigned int real_index)
+    {
+        CHECK_AND_ASSERT_THROW_MES(!ring_stealth_addrs.empty(), "Empty ring for ZY_sig");
+        CHECK_AND_ASSERT_THROW_MES(real_index < ring_stealth_addrs.size(), "Invalid real_index");
+
+        ZY_sig result;
+        result.clsag_sig = CLSAG_GGX_Gen(message, ring_stealth_addrs, ring_amount_commitments, ring_blinded_token_ids,
+                                         spend_secret, real_amount_mask_diff, real_token_mask_diff,
+                                         pseudo_out_amount_commitment, pseudo_out_blinded_token_id, real_index);
+        result.pseudo_out_amount_commitment = pseudo_out_amount_commitment;
+        result.pseudo_out_blinded_token_id  = pseudo_out_blinded_token_id;
+        CHECK_AND_ASSERT_THROW_MES(verify_CLSAG_GGX(message, ring_stealth_addrs, ring_amount_commitments, ring_blinded_token_ids,
+                                                    pseudo_out_amount_commitment, pseudo_out_blinded_token_id, result.clsag_sig),
+                                   "Generated ZY_sig failed local verification");
+        return result;
+    }
+
+    bool verZYSig(const key& message,
+                  const ZY_sig& sig,
+                  const keyV& ring_stealth_addrs,
+                  const keyV& ring_amount_commitments,
+                  const keyV& ring_blinded_token_ids,
+                  const key& pseudo_out_amount_commitment,
+                  const key& pseudo_out_blinded_token_id)
+    {
+        if (ring_stealth_addrs.empty()) return false;
+        if (!(sig.pseudo_out_amount_commitment == pseudo_out_amount_commitment) ||
+            !(sig.pseudo_out_blinded_token_id == pseudo_out_blinded_token_id))
+            return false;
+
+        return verify_CLSAG_GGX(message, ring_stealth_addrs, ring_amount_commitments, ring_blinded_token_ids,
+                                pseudo_out_amount_commitment, pseudo_out_blinded_token_id, sig.clsag_sig);
+    }
+
 }

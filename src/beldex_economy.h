@@ -1,5 +1,6 @@
 #pragma once
 #include "cryptonote_config.h"
+#include "cryptonote_basic/token_operation_type.h"
 
 namespace beldex {
 
@@ -148,3 +149,82 @@ constexpr uint64_t burn_needed(cryptonote::hf hf_version, mapping_years map_year
 }
 }; // namespace bns
 
+namespace tokens
+{
+inline constexpr uint64_t REGISTRATION_COLLATERAL_AMOUNT = 10'000 * beldex::COIN;
+inline constexpr uint64_t REGISTRATION_COLLATERAL_AMOUNT_TESTNET = 100 * beldex::COIN;
+
+constexpr uint64_t registration_collateral_amount(cryptonote::network_type nettype)
+{
+  return nettype == cryptonote::network_type::TESTNET
+      ? REGISTRATION_COLLATERAL_AMOUNT_TESTNET : REGISTRATION_COLLATERAL_AMOUNT;
+}
+
+inline constexpr uint64_t REGISTRATION_COLLATERAL_LOCK_BLOCKS = 2880 * 30 * 6;
+inline constexpr uint64_t REGISTRATION_COLLATERAL_LOCK_TOLERANCE_BLOCKS = 60;
+// Token operation surcharges in atomic BDX, in addition to the ordinary
+// network fee. These preserve the existing HF21 amounts. Changing the amounts
+// after activation requires a new hardfork branch, not a database migration.
+inline constexpr uint64_t REGISTRATION_FEE_BURN_AMOUNT       = 500 * beldex::COIN;
+inline constexpr uint64_t REGISTRATION_FEE_GOVERNANCE_AMOUNT = 500 * beldex::COIN;
+inline constexpr uint64_t REGISTRATION_FEE_AMOUNT =
+    REGISTRATION_FEE_BURN_AMOUNT + REGISTRATION_FEE_GOVERNANCE_AMOUNT;
+inline constexpr uint64_t MINT_FEE_BURN_AMOUNT   = 50 * beldex::COIN;
+inline constexpr uint64_t UPDATE_FEE_BURN_AMOUNT = 10 * beldex::COIN;
+inline constexpr uint64_t BURN_FEE_BURN_AMOUNT   = 0;
+
+inline constexpr uint64_t REGISTRATION_FEE_BURN_AMOUNT_TESTNET       = 50 * beldex::COIN;
+inline constexpr uint64_t REGISTRATION_FEE_GOVERNANCE_AMOUNT_TESTNET = 50 * beldex::COIN;
+inline constexpr uint64_t REGISTRATION_FEE_AMOUNT_TESTNET =
+    REGISTRATION_FEE_BURN_AMOUNT_TESTNET + REGISTRATION_FEE_GOVERNANCE_AMOUNT_TESTNET;
+inline constexpr uint64_t MINT_FEE_BURN_AMOUNT_TESTNET   = 5 * beldex::COIN;
+inline constexpr uint64_t UPDATE_FEE_BURN_AMOUNT_TESTNET = 1 * beldex::COIN;
+inline constexpr uint64_t BURN_FEE_BURN_AMOUNT_TESTNET   = 0;
+
+struct operation_fee
+{
+  uint64_t burn_amount = 0;
+  uint64_t governance_amount = 0;
+  bool exact_burn = false;
+  bool enabled = false;
+
+  // txnFee includes both the declared burn and the governance carve-out.
+  // Subtract only after checking burn <= txnFee to avoid unsigned underflow.
+  constexpr bool paid(uint64_t burned, uint64_t txn_fee) const
+  {
+    return enabled && burned <= txn_fee &&
+        (exact_burn ? burned == burn_amount : burned >= burn_amount) &&
+        txn_fee - burned >= governance_amount;
+  }
+};
+
+constexpr operation_fee fee_for_operation(
+    cryptonote::hf hf_version,
+    cryptonote::token_descriptor_operation_type op_type,
+    cryptonote::network_type nettype)
+{
+  if (hf_version < cryptonote::feature::PRIVACY_TOKENS)
+    return {};
+
+  // Mainnet (and fakechain): 1000 BDX registration. Testnet/devnet: 100 BDX.
+  const bool testnet = nettype == cryptonote::network_type::TESTNET ||
+                       nettype == cryptonote::network_type::DEVNET;
+
+  using operation = cryptonote::token_descriptor_operation_type;
+  switch (op_type)
+  {
+    case operation::register_token:
+      return testnet
+          ? operation_fee{REGISTRATION_FEE_BURN_AMOUNT_TESTNET, REGISTRATION_FEE_GOVERNANCE_AMOUNT_TESTNET, true, true}
+          : operation_fee{REGISTRATION_FEE_BURN_AMOUNT, REGISTRATION_FEE_GOVERNANCE_AMOUNT, true, true};
+    case operation::mint_token:
+      return {testnet ? MINT_FEE_BURN_AMOUNT_TESTNET : MINT_FEE_BURN_AMOUNT, 0, false, true};
+    case operation::update_token:
+      return {testnet ? UPDATE_FEE_BURN_AMOUNT_TESTNET : UPDATE_FEE_BURN_AMOUNT, 0, false, true};
+    case operation::burn_token:
+      return {testnet ? BURN_FEE_BURN_AMOUNT_TESTNET : BURN_FEE_BURN_AMOUNT, 0, false, true};
+    default:
+      return {}; // Invalid operations never receive an enabled zero-fee policy.
+  }
+}
+} // namespace tokens

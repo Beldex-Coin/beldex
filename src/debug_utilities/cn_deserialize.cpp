@@ -76,6 +76,7 @@ struct extra_printer {
   void operator()(const tx_extra_tx_key_image_proofs& x) { std::cout << "TX key image proofs (" << x.proofs.size() << ")"; }
   void operator()(const tx_extra_tx_key_image_unlock& x) { std::cout << "TX key image unlock: " << x.key_image; }
   void operator()(const tx_extra_burn& x) { std::cout << "Transaction burned fee/payment: " << print_money(x.amount); }
+  void operator()(const tx_extra_collateral_lock& x) { std::cout << "Collateral lock: " << print_money(x.amount) << " at output " << (unsigned)x.output_index; }
   void operator()(const tx_extra_beldex_name_system& x) {
     std::cout << "BNS " << (x.is_buying() ? "registration" : x.is_updating() ? "update" : "(unknown)");
     switch (x.type)

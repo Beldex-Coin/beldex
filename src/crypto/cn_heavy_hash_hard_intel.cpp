@@ -35,6 +35,8 @@
 #  include <x86intrin.h>
 #endif
 
+#include <assert.h>
+
 #include "cn_heavy_hash.hpp"
 
 extern "C" {
@@ -50,6 +52,8 @@ extern "C" {
 #else
 #  include <cpuid.h>
 #endif
+
+#if defined(__AES__) || defined(_MSC_VER)
 
 static bool hw_check_aes()
 {
@@ -428,5 +432,32 @@ void cn_heavy_hash<MEMORY,ITER,VERSION>::hardware_hash(const void* in, size_t le
 
 template class cn_heavy_hash<2*1024*1024, 0x80000, 0>;
 template class cn_heavy_hash<4*1024*1024, 0x40000, 1>;
+
+#else
+
+extern "C" const bool cpu_aes_enabled = false;
+
+template<size_t MEMORY, size_t ITER, size_t VERSION>
+void cn_heavy_hash<MEMORY,ITER,VERSION>::implode_scratchpad_hard()
+{
+	assert(false && "AES-NI hard hash path should not be used without AES support");
+}
+
+template<size_t MEMORY, size_t ITER, size_t VERSION>
+void cn_heavy_hash<MEMORY,ITER,VERSION>::explode_scratchpad_hard()
+{
+	assert(false && "AES-NI hard hash path should not be used without AES support");
+}
+
+template<size_t MEMORY, size_t ITER, size_t VERSION>
+void cn_heavy_hash<MEMORY,ITER,VERSION>::hardware_hash(const void* in, size_t len, void* out, bool prehashed)
+{
+	software_hash(in, len, out, prehashed);
+}
+
+template class cn_heavy_hash<2*1024*1024, 0x80000, 0>;
+template class cn_heavy_hash<4*1024*1024, 0x40000, 1>;
+
+#endif
 
 #endif

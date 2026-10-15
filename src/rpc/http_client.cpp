@@ -111,12 +111,12 @@ void http_client::set_insecure_https(bool insecure) {
 void http_client::set_https_cainfo(std::string cainfo_bundle_path) {
   std::lock_guard lock{params_mutex};
   if (cainfo_bundle_path.empty()) {
-    if (ca_info) {
-      ca_info.reset();
+    if (pt_info) {
+      pt_info.reset();
       apply_ssl = true;
     }
   } else {
-    ca_info.emplace(std::move(cainfo_bundle_path));
+    pt_info.emplace(std::move(cainfo_bundle_path));
   }
 }
 
@@ -208,8 +208,8 @@ cpr::Response http_client::post(const std::string& uri, cpr::Body body, cpr::Hea
         new_ssl_opts->SetOption(cpr::ssl::VerifyPeer(false));
         new_ssl_opts->SetOption(cpr::ssl::VerifyStatus(false));
       }
-      if (ca_info) {
-        new_ssl_opts->SetOption(*ca_info);
+      if (pt_info) {
+        new_ssl_opts->SetOption(*pt_info);
       }
     }
 

@@ -92,9 +92,7 @@ bool beldex_checkpointing_alt_chain_handle_alt_blocks_at_tip::generate(std::vect
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_alt_block_count");
 
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
     CHECK_EQ(top_height, curr_height);
     CHECK_EQ(top_hash, curr_hash);
     CHECK_TEST_CONDITION(c.get_blockchain_storage().get_alternative_blocks_count() > 0);
@@ -116,9 +114,7 @@ bool beldex_checkpointing_alt_chain_handle_alt_blocks_at_tip::generate(std::vect
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_chain_reorged");
     CHECK_EQ(c.get_blockchain_storage().get_alternative_blocks_count(), 0);
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
     CHECK_EQ(expected_top_hash, top_hash);
     return true;
   });
@@ -152,9 +148,7 @@ bool beldex_checkpointing_alt_chain_more_master_node_checkpoints_less_pow_overta
   beldex_register_callback(events, "check_switched_to_alt_chain", [fork_top_hash, fork_top_height](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_switched_to_alt_chain");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
     CHECK_EQ(top_height, fork_top_height);
     CHECK_EQ(top_hash, fork_top_hash);
     return true;
@@ -221,9 +215,7 @@ bool beldex_checkpointing_alt_chain_receive_checkpoint_votes_should_reorg_back::
   beldex_register_callback(events, "check_switched_to_alt_chain", [fork_top_hash](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_switched_to_alt_chain");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
     CHECK_EQ(fork_top_hash, top_hash);
     return true;
   });
@@ -293,9 +285,7 @@ bool beldex_checkpointing_alt_chain_with_increasing_master_node_checkpoints::gen
   beldex_register_callback(events, "check_still_on_main_chain", [gen_top_hash](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_still_on_main_chain");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
     CHECK_EQ(top_hash, gen_top_hash);
     return true;
   });
@@ -314,9 +304,7 @@ bool beldex_checkpointing_alt_chain_with_increasing_master_node_checkpoints::gen
   beldex_register_callback(events, "check_switched_to_alt_chain", [fork_top_hash](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_switched_to_alt_chain");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
     CHECK_EQ(fork_top_hash, top_hash);
     return true;
   });
@@ -460,9 +448,7 @@ bool beldex_core_block_reward_unpenalized_pre_POS::generate(std::vector<test_eve
   beldex_register_callback(events, "check_block_rewards", [unpenalized_block_reward, expected_master_node_reward](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_block_rewards");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
 
     bool orphan;
     cryptonote::block top_block;
@@ -515,9 +501,7 @@ bool beldex_core_block_reward_unpenalized_post_POS::generate(std::vector<test_ev
   beldex_register_callback(events, "check_block_rewards", [unpenalized_reward, tx_fee](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_block_rewards");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
 
     bool orphan;
     cryptonote::block top_block;
@@ -602,9 +586,7 @@ bool beldex_core_fee_burning::generate(std::vector<test_event_entry>& events)
   beldex_register_callback(events, "check_fee_burned", [good_hash, good_miner_reward](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_fee_burned");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
 
     bool orphan;
     cryptonote::block top_block;
@@ -3201,9 +3183,7 @@ bool beldex_POS_generate_blocks::generate(std::vector<test_event_entry> &events)
   beldex_register_callback(events, "check_POS_blocks", [](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_POS_blocks");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
     cryptonote::block top_block = c.get_blockchain_storage().get_db().get_block(top_hash);
     CHECK_TEST_CONDITION(cryptonote::block_has_POS_components(top_block));
     return true;
@@ -3293,9 +3273,7 @@ bool beldex_POS_chain_split::generate(std::vector<test_event_entry> &events)
   beldex_register_callback(events, "check_reorganized_to_POS_chain_with_checkpoints", [fork_top_hash](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_reorganized_to_POS_chain_with_checkpoints");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
     CHECK_EQ(fork_top_hash, top_hash);
     return true;
   });
@@ -3325,9 +3303,7 @@ bool beldex_POS_chain_split_with_no_checkpoints::generate(std::vector<test_event
   beldex_register_callback(events, "check_reorganized_to_POS_chain_with_no_checkpoints", [fork_top_hash](cryptonote::core &c, size_t ev_index)
   {
     DEFINE_TESTS_ERROR_CONTEXT("check_reorganized_to_POS_chain_with_no_checkpoints");
-    uint64_t top_height;
-    crypto::hash top_hash;
-    c.get_blockchain_top(top_height, top_hash);
+    auto [top_height, top_hash] = c.get_blockchain_top();
     CHECK_EQ(fork_top_hash, top_hash);
     return true;
   });

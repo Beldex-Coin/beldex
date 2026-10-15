@@ -899,45 +899,54 @@ void handle_flash(Message& m, QnetState& qnet) {
     // the hash if we haven't seen it before -- this is only used to skip propagation and
     // validation.
     crypto::hash tx_hash;
-    auto &tx_hash_str = var::get<std::string>(data.at("#"));
     bool already_approved = false, already_rejected = false;
-    if (tx_hash_str.size() == sizeof(crypto::hash)) {
-        std::memcpy(tx_hash.data, tx_hash_str.data(), sizeof(crypto::hash));
-        std::shared_lock lock{qnet.mutex};
-        auto bit = qnet.flashes.find(flash_height);
-        if (bit != qnet.flashes.end()) {
-            auto &umap = bit->second;
-            auto it = umap.find(tx_hash);
-            if (it != umap.end() && it->second.btxptr) {
-                if (tag) {
-                    // This is a direct flash submission, not a quorum-relayed submission
-                    already_approved = it->second.btxptr->approved();
-                    already_rejected = !already_approved && it->second.btxptr->rejected();
-                    if (already_approved || already_rejected) {
-                        // Quorum approved/rejected the tx before we received the submitted flash,
-                        // reply with a bl.good/bl.bad immediately (done below, outside the lock).
-                        MINFO("Submitted flash tx already " << (already_approved ? "approved" : "rejected") <<
-                                "; sending result back to originating node");
+    std::string_view tx_hash_str;
+    if (auto it = data.find("#"); it != data.end())
+        tx_hash_str = var::get<std::string>(it->second);
+    if (!tx_hash_str.empty()) {
+        if (tx_hash_str.size() == sizeof(crypto::hash)) {
+            std::memcpy(tx_hash.data, tx_hash_str.data(), sizeof(tx_hash));
+            std::shared_lock lock{qnet.mutex};
+            auto bit = qnet.flashes.find(flash_height);
+            if (bit != qnet.flashes.end()) {
+                auto &umap = bit->second;
+                auto it = umap.find(tx_hash);
+                if (it != umap.end() && it->second.btxptr) {
+                    if (tag) {
+                        // This is a direct flash submission, not a quorum-relayed submission
+                        already_approved = it->second.btxptr->approved();
+                        already_rejected = !already_approved && it->second.btxptr->rejected();
+                        if (already_approved || already_rejected) {
+                            // Quorum approved/rejected the tx before we received the submitted flash,
+                            // reply with a bl.good/bl.bad immediately (done below, outside the lock).
+                            MINFO("Submitted flash tx already " << (already_approved ? "approved" : "rejected") <<
+                                    "; sending result back to originating node");
+                        } else {
+                            // We've already seen it but are still waiting on more signatures to
+                            // determine the result, so stash the tag & pubkey in the metadata to delay
+                            // the reply until a signature comes in that flips it to approved/rejected
+                            // status.
+                            it->second.reply_tag = tag;
+                            it->second.reply_conn = m.conn;
+                            return;
+                        }
                     } else {
-                        // We've already seen it but are still waiting on more signatures to
-                        // determine the result, so stash the tag & pubkey in the metadata to delay
-                        // the reply until a signature comes in that flips it to approved/rejected
-                        // status.
-                        it->second.reply_tag = tag;
-                        it->second.reply_conn = m.conn;
+                        MDEBUG("Already seen and forwarded this flash tx, ignoring it.");
                         return;
                     }
-                } else {
-                    MDEBUG("Already seen and forwarded this flash tx, ignoring it.");
-                    return;
                 }
             }
+            MTRACE("Flash tx hash: " << to_hex(tx_hash.data));
+        } else {
+            MINFO("Rejecting flash tx: invalid tx hash included in request");
+            if (tag)
+                m.send_back("bl.nostart", bt_serialize(bt_dict{{"!", tag}, {"e", "Invalid transaction hash"s}}));
+            return;
         }
-        MTRACE("Flash tx hash: " << to_hex(tx_hash.data));
     } else {
-        MINFO("Rejecting flash tx: invalid tx hash included in request");
+        MTRACE("No pre-computed flash tx hash included in request");
         if (tag)
-            m.send_back("bl.nostart", bt_serialize(bt_dict{{"!", tag}, {"e", "Invalid transaction hash"s}}));
+            m.send_back("bl.nostart", bt_serialize(bt_dict{{"!", tag}, {"e", "No transaction hash included in flash request"s}}));
         return;
     }
 

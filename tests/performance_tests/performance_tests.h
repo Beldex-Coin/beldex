@@ -86,7 +86,10 @@ public:
         m_per_call_timers[i].pause();
     }
     m_elapsed = clock::now() - start;
-    m_stats.reset(new Stats<tools::PerformanceTimer, double>(m_per_call_timers));
+    m_per_call_seconds.reserve(m_per_call_timers.size());
+    for (const auto &t : m_per_call_timers)
+      m_per_call_seconds.push_back(t.seconds().count());
+    m_stats.reset(new Stats<double>(m_per_call_seconds));
 
     return true;
   }
@@ -133,7 +136,8 @@ private:
   std::chrono::duration<double> m_elapsed;
   Params m_params;
   std::vector<tools::PerformanceTimer> m_per_call_timers;
-  std::unique_ptr<Stats<tools::PerformanceTimer, double>> m_stats;
+  std::vector<double> m_per_call_seconds;
+  std::unique_ptr<Stats<double>> m_stats;
 };
 
 std::string elapsed_str(std::chrono::duration<double> seconds)

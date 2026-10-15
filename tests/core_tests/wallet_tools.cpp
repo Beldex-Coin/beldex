@@ -163,7 +163,7 @@ void wallet_tools::gen_tx_src(size_t mixin, uint64_t cur_height, const tools::wa
   src.amount = td.amount();
   src.rct = td.is_rct();
 
-  std::vector<tools::wallet2::get_outs_entry> outs;
+  std::vector<get_outs_entry> outs;
   bt.get_fake_outs(mixin, td.is_rct() ? 0 : td.amount(), td.m_global_output_index, cur_height, outs);
 
   for (size_t n = 0; n < mixin; ++n)
@@ -219,15 +219,16 @@ void wallet_tools::gen_block_data(block_tracker &bt, const cryptonote::block *bl
   parsed_block.block = *bl;
   parsed_block.txes.reserve(bl->tx_hashes.size());
 
-  auto & o_indices = parsed_block.o_indices.indices;
-  o_indices.reserve(bl->tx_hashes.size() + 1);
+  auto & o_indices = parsed_block.o_indices["indices"];
+  o_indices = nlohmann::json::array();
 
   size_t cur = 0;
   for (const transaction *tx : vtx){
     cur += 1;
-    o_indices.emplace_back();
     bt.process(bl, tx, cur - 1);
-    bt.global_indices(tx, o_indices.back().indices);
+    std::vector<uint64_t> indices;
+    bt.global_indices(tx, indices);
+    o_indices.push_back(nlohmann::json{{"indices", indices}});
 
     if (cur > 1)  // miner not included
       parsed_block.txes.push_back(*tx);

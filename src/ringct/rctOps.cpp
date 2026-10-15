@@ -29,6 +29,7 @@
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <boost/lexical_cast.hpp>
+#include <mutex>
 #include "epee/misc_log_ex.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "rctOps.h"
@@ -219,6 +220,32 @@ static const zero_commitment zero_commitments[] = {
 
 namespace rct {
 
+    // ── X generator (token ID blinding base, HF21+) ──────────────────────────
+    // X = 8 * hash_to_curve("beldex_token_id_blinding_generator")
+    // Computed once at first use; same construction as ge_p3_H.
+    static ge_p3 s_ge_p3_X;
+    static std::once_flag s_ge_p3_X_flag;
+
+    static void init_ge_p3_X() {
+        static const char domain[] = "beldex_token_id_blinding_generator";
+        uint8_t h[32];
+        keccak(reinterpret_cast<const uint8_t*>(domain), sizeof(domain) - 1, h, 32);
+        ge_p2 p2;
+        ge_fromfe_frombytes_vartime(&p2, h);
+        // Lift to p1p1, multiply by 8 to clear cofactor, store as p3
+        ge_p1p1 p1;
+        ge_p2_dbl(&p1, &p2);  // 2*P
+        ge_p1p1_to_p2(&p2, &p1);
+        ge_p2_dbl(&p1, &p2);  // 4*P
+        ge_p1p1_to_p2(&p2, &p1);
+        ge_p2_dbl(&p1, &p2);  // 8*P
+        ge_p1p1_to_p3(&s_ge_p3_X, &p1);
+    }
+
+    const ge_p3& rct_get_ge_p3_X() {
+        std::call_once(s_ge_p3_X_flag, init_ge_p3_X);
+        return s_ge_p3_X;
+    }
     //Various key initialization functions
 
     //initializes a key matrix;
@@ -392,6 +419,52 @@ namespace rct {
         key aP;
         ge_tobytes(aP.bytes, &R);
         return aP;
+    }
+
+    // Computes a*X where X is the token-ID blinding generator (HF21+)
+    key scalarmultX(const key& a) {
+        ge_p2 R;
+        ge_scalarmult(&R, a.bytes, &rct_get_ge_p3_X());
+        key aP;
+        ge_tobytes(aP.bytes, &R);
+        return aP;
+    }
+
+    // Returns the encoded X generator as a rct::key
+    key getX() {
+        key X;
+        ge_p3_tobytes(X.bytes, &rct_get_ge_p3_X());
+        return X;
+    }
+
+    // Pedersen commitment for a custom token output:
+    //   C = amount * T + mask * G
+    // where T is the blinded token id (T = token_id + r*X) -- for an output,
+    // its OWN T; for a pseudo-output (spend-side), T_real = token_id + real_r*X
+    // reconstructed from the real spent output's own blinding scalar (NOT a
+    // fresh/independent blinding). This is required for CLSAG_GGX's layer-1
+    // (mask) relation to collapse cleanly for the real ring index: since both
+    // sides use the identical T, the amount term cancels and only the mask
+    // differs -- passing the plaintext token_id here instead would make the
+    // proof unconstructible for genuine spends. Mirrors Zano's
+    // currency_format_utils.cpp:2456/2490.
+    key commitToken(const key& mask, const key& blinded_token_id, xmr_amount amount) {
+        key am = d2h(amount);
+        key amToken = scalarmultKey(blinded_token_id, am);  // amount * T
+        key maskG = scalarmultBase(mask);            // mask * G
+        key C;
+        addKeys(C, amToken, maskG);
+        return C;
+    }
+
+    // Blind an token ID for a tx_out_zyphora output:
+    //   T = token_id + r * X
+    // where r is the per-output blinding scalar
+    key blindTokenId(const key& token_id, const key& r) {
+        key rX = scalarmultX(r);   // r * X
+        key T;
+        addKeys(T, token_id, rX);  // token_id + r*X
+        return T;
     }
 
     //Computes 8P

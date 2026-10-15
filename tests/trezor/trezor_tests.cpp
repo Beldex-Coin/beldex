@@ -231,12 +231,12 @@ static void rollback_chain(cryptonote::core * core, const cryptonote::block & he
   block popped_block;
   std::vector<transaction> popped_txs;
 
-  crypto::hash head_hash = get_block_hash(head), cur_hash{};
-  uint64_t height = get_block_height(head), cur_height=0;
+  crypto::hash head_hash = get_block_hash(head);
+  uint64_t height = get_block_height(head);
   MDEBUG("Rollbacking to " << height << " to hash " << head_hash);
 
   do {
-    core->get_blockchain_top(cur_height, cur_hash);
+    auto [cur_height, cur_hash] = core->get_blockchain_top();
 
     if (cur_height <= height && head_hash == cur_hash)
       return;

@@ -29,6 +29,7 @@
 
 add_library(cncrypto
   aesb.c
+  token_proofs.cpp
   blake256.c
   chacha.c
   crypto-ops-data.c
@@ -68,16 +69,20 @@ target_link_libraries(cncrypto
   PRIVATE
     extra)
 
-if (CMAKE_CXX_COMPILER_ID MATCHES Clang OR CMAKE_CXX_COMPILER_ID STREQUAL GNU)
+if ((CMAKE_CXX_COMPILER_ID MATCHES Clang OR CMAKE_CXX_COMPILER_ID STREQUAL GNU)
+    AND (CMAKE_C_COMPILER_ID MATCHES Clang OR CMAKE_C_COMPILER_ID STREQUAL GNU))
   # If we're compiling for x86/amd64 then we need to force on -maes -msse2 for the hard intel code:
   # it has a run-time check to not actually call it if not supported by the running CPU.
   # Unfortunately CMake sucks for actually reliably giving us the target architecture, so we'll just
   # try to compile with these flags if the compiler accepts them.
   include(CheckCXXCompilerFlag)
+  include(CheckCCompilerFlag)
   check_cxx_compiler_flag(-msse2 COMPILER_SUPPORTS_SSE2)
-  if(COMPILER_SUPPORTS_SSE2)
+  check_c_compiler_flag(-msse2 C_COMPILER_SUPPORTS_SSE2)
+  if(COMPILER_SUPPORTS_SSE2 AND C_COMPILER_SUPPORTS_SSE2)
     check_cxx_compiler_flag(-maes COMPILER_SUPPORTS_AES)
-    if(COMPILER_SUPPORTS_AES)
+    check_c_compiler_flag(-maes C_COMPILER_SUPPORTS_AES)
+    if(COMPILER_SUPPORTS_AES AND C_COMPILER_SUPPORTS_AES)
       set_source_files_properties(cn_heavy_hash_hard_intel.cpp PROPERTIES COMPILE_FLAGS "-maes -msse2")
       set_source_files_properties(cn_monero_slow_hash.c PROPERTIES COMPILE_FLAGS "-maes -msse2")
       set_source_files_properties(cn_turtle_hash.c PROPERTIES COMPILE_FLAGS "-maes -msse2")
@@ -93,7 +98,10 @@ if(IPO_ENABLED AND (CMAKE_BUILD_TYPE STREQUAL Release OR CMAKE_BUILD_TYPE STREQU
   set_target_properties(cncrypto PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
 endif()
 
-if (ARCH STREQUAL "armv8-a" AND (CMAKE_CXX_COMPILER_ID MATCHES Clang OR CMAKE_CXX_COMPILER_ID STREQUAL GNU))
+if ((ARCH STREQUAL "armv8-a" OR ARCH_ID STREQUAL "aarch64" OR ARCH_ID STREQUAL "arm64"
+     OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64"
+     OR CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    AND (CMAKE_CXX_COMPILER_ID MATCHES Clang OR CMAKE_CXX_COMPILER_ID STREQUAL GNU))
   # Similarly use +crypto extensions for the arm hash code (it also has a run-time check before
   # enabling).
   include(CheckCXXCompilerFlag)
@@ -110,4 +118,3 @@ endif()
 if (ANDROID OR IOS)
   target_compile_definitions(cncrypto PUBLIC FORCE_USE_HEAP=1)
 endif()
-

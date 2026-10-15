@@ -29,6 +29,8 @@
 
 add_library(cryptonote_basic
   account.cpp
+  token_descriptor.cpp
+  token_descriptor_operation_utils.cpp
   cryptonote_basic.cpp
   cryptonote_basic_impl.cpp
   cryptonote_format_utils.cpp

@@ -112,6 +112,10 @@ void BlockchainDB::add_transaction(const crypto::hash& blk_hash, const std::pair
     {
       add_spent_key(var::get<txin_to_key>(tx_input).k_image);
     }
+    else if (std::holds_alternative<txin_zy_input>(tx_input))
+    {
+      add_spent_key(var::get<txin_zy_input>(tx_input).k_image);
+    }
     else if (std::holds_alternative<txin_gen>(tx_input))
     {
       /* nothing to do here */
@@ -126,6 +130,10 @@ void BlockchainDB::add_transaction(const crypto::hash& blk_hash, const std::pair
         {
           remove_spent_key(var::get<txin_to_key>(tx_input).k_image);
         }
+        else if (std::holds_alternative<txin_zy_input>(tx_input))
+        {
+          remove_spent_key(var::get<txin_zy_input>(tx_input).k_image);
+        }
       }
       return;
     }
@@ -134,6 +142,17 @@ void BlockchainDB::add_transaction(const crypto::hash& blk_hash, const std::pair
   uint64_t tx_id = add_transaction_data(blk_hash, txp, tx_hash, tx_prunable_hash);
 
   std::vector<uint64_t> amount_output_indices(tx.vout.size());
+
+  // HF21: rct_signatures.outPk is COMPACTED to non-zyphora (native) outputs --
+  // tx_out_zyphora outputs carry their own commitment and are excluded when
+  // genRctSimple builds outPk. So outPk must be indexed by the native-output
+  // position, NOT the vout index; otherwise a mixed native+zyphora tx reads
+  // outPk out of bounds and stores a garbage commitment for the native
+  // output(s), which then can never be spent (the wallet's recomputed
+  // commitment never matches what the daemon serves for decoys). Zyphora
+  // outputs need no commitment passed here (add_output reads it from the output
+  // itself and ignores this argument).
+  size_t native_output_index = 0;
 
   // iterate tx.vout using indices instead of C++11 foreach syntax because
   // we need the index
@@ -149,6 +168,8 @@ void BlockchainDB::add_transaction(const crypto::hash& blk_hash, const std::pair
       unlock_time = tx.unlock_time;
     }
 
+    const bool is_zyphora = std::holds_alternative<cryptonote::tx_out_zyphora>(tx.vout[i].target);
+
     // miner v2 txes have their coinbase output in one single out to save space,
     // and we store them as rct outputs with an identity mask
     if (miner_tx && tx.version >= cryptonote::txversion::v2_ringct)
@@ -161,9 +182,19 @@ void BlockchainDB::add_transaction(const crypto::hash& blk_hash, const std::pair
     }
     else
     {
-      amount_output_indices[i] = add_output(tx_hash, tx.vout[i], i, unlock_time,
-        tx.version >= cryptonote::txversion::v2_ringct ? &tx.rct_signatures.outPk[i].mask : NULL);
+      const rct::key* commitment = nullptr;
+      if (tx.version >= cryptonote::txversion::v2_ringct && !is_zyphora)
+      {
+        CHECK_AND_ASSERT_THROW_MES(native_output_index < tx.rct_signatures.outPk.size(),
+          "outPk index out of range: native output #" << native_output_index
+          << " but outPk has only " << tx.rct_signatures.outPk.size() << " entries (tx " << tx_hash << ")");
+        commitment = &tx.rct_signatures.outPk[native_output_index].mask;
+      }
+      amount_output_indices[i] = add_output(tx_hash, tx.vout[i], i, unlock_time, commitment);
     }
+
+    if (!is_zyphora)
+      ++native_output_index;
   }
 
   if (has_blacklisted_outputs)
@@ -253,6 +284,10 @@ void BlockchainDB::remove_transaction(const crypto::hash& tx_hash)
     if (std::holds_alternative<txin_to_key>(tx_input))
     {
       remove_spent_key(var::get<txin_to_key>(tx_input).k_image);
+    }
+    else if (std::holds_alternative<txin_zy_input>(tx_input))
+    {
+      remove_spent_key(var::get<txin_zy_input>(tx_input).k_image);
     }
   }
 

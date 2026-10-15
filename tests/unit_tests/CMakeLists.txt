@@ -79,6 +79,11 @@ add_executable(unit_tests
   test_peerlist.cpp
   test_protocol_pack.cpp
   threadpool.cpp
+  token_fees.cpp
+  token_security.cpp
+  token_proofs.cpp
+  token_output_index.cpp
+  token_pool.cpp
   unbound.cpp
   uri.cpp
   varint.cpp
@@ -126,3 +131,9 @@ add_test(
 add_executable(test_notifier test_notifier.cpp)
 target_link_libraries(test_notifier extra)
 set_property(TARGET test_notifier PROPERTY FOLDER "tests")
+
+# A focused entry point for security CI; these also run in the full unit suite.
+add_test(NAME token_security
+  COMMAND unit_tests --data-dir "${TEST_DATA_DIR}"
+    --gtest_filter=TokenSecurity.*:TokenProofs.*:TokenOutputIndex.*:TokenPool.*)
+set_tests_properties(token_security PROPERTIES LABELS "security;tokens")
