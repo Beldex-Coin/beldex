@@ -2338,7 +2338,7 @@ namespace cryptonote::rpc {
   ///   - `key_image` -- The key image of the transaction that is blacklisted on the network.
   ///   - `unlock_height` -- The height at which the key image is removed from the blacklist and becomes spendable.
   ///   - `amount` -- The total amount of locked Beldex in atomic units in this blacklisted stake.
-  struct GET_MASTER_NODE_BLACKLISTED_KEY_IMAGES : NO_ARGS
+  struct GET_MASTER_NODE_BLACKLISTED_KEY_IMAGES : PUBLIC, NO_ARGS
   {
     static constexpr auto names() { return NAMES("get_master_node_blacklisted_key_images"); }
   };
