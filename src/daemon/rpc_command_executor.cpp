@@ -942,34 +942,47 @@ static void print_pool(const json& txs) {
   }
   const time_t now = time(nullptr);
   tools::msg_writer() << txs.size() << " Transactions:\n";
+  auto num = [](const json& j, const char* k) -> uint64_t {
+    auto it = j.find(k);
+    if (it == j.end() || !it->is_number()) return 0;
+    return it->is_number_float() ? static_cast<uint64_t>(it->get<double>()) : it->get<uint64_t>();
+  };
+  auto str = [](const json& j, const char* k) -> std::string {
+    auto it = j.find(k);
+    return it != j.end() && it->is_string() ? it->get<std::string>() : std::string{};
+  };
+  auto flag = [](const json& j, const char* k) -> bool {
+    auto it = j.find(k);
+    return it != j.end() && it->is_boolean() && it->get<bool>();
+  };
+
   std::vector<std::string> lines;
-  for (auto &tx : txs)
+  for (const auto& tx : txs)
   {
     std::vector<std::string_view> status;
-    if (tx.value("blink", false)) status.push_back("blink"sv);
-    status.push_back(tx["relayed"].get<bool>() ? "relayed"sv : "not relayed"sv);
-    if (tx.value("do_not_relay", false)) status.push_back("do not relay"sv);
-    if (tx.value("double_spend_seen", false)) status.push_back("double spend"sv);
-    if (tx.value("kept_by_block", false)) status.push_back("from popped block"sv);
+    if (flag(tx, "flash")) status.push_back("flash"sv);
+    status.push_back(flag(tx, "relayed") ? "relayed"sv : "not relayed"sv);
+    if (flag(tx, "do_not_relay")) status.push_back("do not relay"sv);
+    if (flag(tx, "double_spend_seen")) status.push_back("double spend"sv);
+    if (flag(tx, "kept_by_block")) status.push_back("from popped block"sv);
 
     lines.clear();
-    lines.push_back(tx["tx_hash"].get_ref<const std::string&>() + ":"s);
-    lines.push_back(fmt::format("size/weight: {}/{}", tx["size"].get<int>(), tx["weight"].get<int>()));
-    lines.push_back(fmt::format("fee: {} ({}/byte)",
-          cryptonote::print_money(tx["fee"].get<uint64_t>()), cryptonote::print_money(tx["fee"].get<double>() / tx["weight"].get<double>())));
-    lines.push_back(fmt::format("received: {} ({})", tx["received_timestamp"].get<std::time_t>(), get_human_time_ago(tx["received_timestamp"].get<std::time_t>(), now)));
+    lines.push_back(str(tx, "tx_hash") + ":"s);
+    const uint64_t weight = num(tx, "weight"), fee = num(tx, "fee");
+    lines.push_back(fmt::format("size/weight: {}/{}", num(tx, "size"), weight));
+    lines.push_back(fmt::format("fee: {} ({}/byte)", cryptonote::print_money(fee),
+          weight > 0 ? cryptonote::print_money(fee / weight) : "0"));
+    const uint64_t ts = num(tx, "received_timestamp");
+    lines.push_back(fmt::format("received: {} ({})", ts, get_human_time_ago(static_cast<time_t>(ts), now)));
     lines.push_back("status: " + tools::join(", ", status));
-    lines.push_back(fmt::format("top required block: {} ({})", tx["max_used_height"].get<uint64_t>(), tx["max_used_block"]));
-    if (tx.count("last_failed_height"))
-      lines.push_back(fmt::format("last failed block: {} ({})", tx["last_failed_height"].get<uint64_t>(), tx["last_failed_block"].get<std::string_view>()));
+    if (tx.contains("max_used_height"))
+      lines.push_back(fmt::format("top required block: {} ({})", num(tx, "max_used_height"), str(tx, "max_used_block")));
+    if (tx.contains("last_failed_height"))
+      lines.push_back(fmt::format("last failed block: {} ({})", num(tx, "last_failed_height"), str(tx, "last_failed_block")));
     if (auto extra = tx.find("extra"); extra != tx.end()) {
       lines.push_back("transaction extra: ");
-      for (auto c : extra->dump(2)) {
-        if (c == '\n')
-          lines.back() += "\n    "sv;
-        else
-          lines.back() += c;
-      }
+      for (auto c : extra->dump(2))
+        lines.back() += (c == '\n' ? "\n    "s : std::string(1, c));
     }
     tools::msg_writer() << tools::join("\n    ", lines) << "\n";
   }
