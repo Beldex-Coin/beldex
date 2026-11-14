@@ -32,7 +32,7 @@
 
 #include <atomic>
 
-#include <boost/asio/io_service.hpp>
+#include <boost/asio/io_context.hpp>
 #include "epee/net/net_utils_base.h"
 
 #include "epee/string_tools.h"

@@ -611,6 +611,12 @@ else()
     set(CXX_WARNINGS "${CXX_WARNINGS} -Wno-stringop-overflow")
   endif()
 
+  # GCC 14+ (Ubuntu 26.04 ships GCC 15) reports false-positive dangling references inside the
+  # vendored fmt's arg_mapper; keep the warning but don't let it break -Werror builds.
+  if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14)
+    set(CXX_WARNINGS "${CXX_WARNINGS} -Wno-error=dangling-reference")
+  endif()
+
   # Removed in GCC 9.1 (or before ?), but still accepted, so spams the output
   if (NOT CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_VERSION VERSION_LESS 9.1)
     add_c_flag_if_supported(-mmitigate-rop C_SECURITY_FLAGS)
@@ -770,7 +776,14 @@ set(Boost_USE_MULTITHREADED TRUE) # Needed for macOS, at least, and won't hurt e
 if(BUILD_STATIC_DEPS)
   # StaticBuild.cmake sets Boost targets up for us
 else()
-  find_package(Boost 1.62 QUIET REQUIRED COMPONENTS system thread serialization program_options)
+  # Boost.System is header-only since 1.69 and its stub library was removed in 1.89 (Ubuntu 26.04),
+  # so don't request it as a component: FindBoost still pulls it in as a dependency of thread on
+  # older Boost versions that actually need it.
+  find_package(Boost 1.62 QUIET REQUIRED COMPONENTS thread serialization program_options)
+  if(Boost_FOUND AND NOT TARGET Boost::system)
+    add_library(Boost::system INTERFACE IMPORTED)
+    set_target_properties(Boost::system PROPERTIES INTERFACE_LINK_LIBRARIES Boost::boost)
+  endif()
 endif()
 
 set(CMAKE_FIND_LIBRARY_SUFFIXES ${OLD_LIB_SUFFIXES})

@@ -2614,22 +2614,35 @@ namespace cryptonote::rpc {
       const uint64_t req_to_height = get_output_distribution.request.to_height ? get_output_distribution.request.to_height : (m_core.get_current_blockchain_height() - 1);
       for (uint64_t amount: get_output_distribution.request.amounts)
       {
-        auto data = detail::get_output_distribution(
-            [this](auto&&... args) { return m_core.get_output_distribution(std::forward<decltype(args)>(args)...); },
-            amount,
-            get_output_distribution.request.from_height,
-            req_to_height,
-            [this](uint64_t height) { return m_core.get_blockchain_storage().get_db().get_block_hash_from_height(height); },
-            get_output_distribution.request.cumulative,
-            m_core.get_current_blockchain_height());
-        if (!data)
-          throw rpc_error{ERROR_INTERNAL, "Failed to get output distribution"};
+        // One entry per bucket, exactly as the .bin variant returns. A ring has
+        // to be built from outputs of the same kind, so a caller selecting
+        // decoys for a privacy-token input needs the token bucket - and the
+        // output_indices that map a rank within it back to a real global index.
+        //
+        // m_core is called directly rather than through
+        // detail::get_output_distribution because that helper's cache does not
+        // key on the bucket type: a native hit would hand back an empty
+        // output_indices for the token bucket, which spins the caller forever.
+        for (auto [otype, ftype] : {std::pair{output_distribution_type::native, uint8_t{1}},
+                                    std::pair{output_distribution_type::token,  uint8_t{2}}})
+        {
+          std::vector<uint64_t> dist, indices;
+          uint64_t start_height = 0, base = 0;
+          if (!m_core.get_output_distribution(amount, get_output_distribution.request.from_height,
+                                              req_to_height, start_height, dist, base, otype, &indices))
+            throw rpc_error{ERROR_INTERNAL, "Failed to get output distribution"};
 
-        // Force binary & compression off if this is a JSON request because trying to pass binary
-        // data through JSON explodes it in terms of size (most values under 0x20 have to be encoded
-        // using 6 chars such as "\u0002").
-        GET_OUTPUT_DISTRIBUTION::distribution distributions = {std::move(*data), amount};
-        get_output_distribution.response["distributions"].push_back(distributions);
+          if (!get_output_distribution.request.cumulative && !dist.empty())
+          {
+            for (size_t n = dist.size() - 1; n > 0; --n)
+              dist[n] -= dist[n - 1];
+            dist[0] -= base;
+          }
+
+          rpc::output_distribution_data data{std::move(dist), start_height, base, std::move(indices)};
+          GET_OUTPUT_DISTRIBUTION::distribution entry{std::move(data), amount, ftype};
+          get_output_distribution.response["distributions"].push_back(entry);
+        }
       }
     }
     catch (const std::exception &e)

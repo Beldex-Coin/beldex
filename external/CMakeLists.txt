@@ -51,6 +51,39 @@ endif()
 
 if(NOT OXENMQ_FOUND)
   message(STATUS "Using in-tree oxenmq")
+  # loki-mq's bundled libzmq build configures zeromq (cmake_minimum_required 2.8.12) without a policy
+  # floor, which CMake >= 4.0 (Ubuntu 26.04) rejects.  Provide the same bundled build ourselves with
+  # one; loki-mq uses an existing libzmq target as-is.  Older CMake keeps using loki-mq's build.
+  if(NOT CMAKE_VERSION VERSION_LESS 4.0 AND NOT BUILD_SHARED_LIBS AND NOT TARGET libzmq)
+    include(ExternalProject)
+    include(GNUInstallDirs)
+    set(LIBZMQ_PREFIX ${CMAKE_BINARY_DIR}/libzmq)
+    set(ZeroMQ_VERSION 4.3.4)
+    set(LIBZMQ_URL https://github.com/zeromq/libzmq/releases/download/v${ZeroMQ_VERSION}/zeromq-${ZeroMQ_VERSION}.tar.gz)
+    if(LIBZMQ_TARBALL_URL)
+      set(LIBZMQ_URL ${LIBZMQ_TARBALL_URL})
+    endif()
+    file(MAKE_DIRECTORY ${LIBZMQ_PREFIX}/include)
+    ExternalProject_Add(libzmq_external
+      PREFIX ${LIBZMQ_PREFIX}
+      URL ${LIBZMQ_URL}
+      URL_HASH SHA512=e198ef9f82d392754caadd547537666d4fba0afd7d027749b3adae450516bcf284d241d4616cad3cb4ad9af8c10373d456de92dc6d115b037941659f141e7c0e
+      CMAKE_ARGS -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER} -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+      -DWITH_LIBSODIUM=ON -DZMQ_BUILD_TESTS=OFF -DWITH_PERF_TOOL=OFF -DENABLE_DRAFTS=OFF
+      -DBUILD_SHARED=OFF -DBUILD_STATIC=ON -DWITH_DOC=OFF -DCMAKE_INSTALL_PREFIX=${LIBZMQ_PREFIX}
+      BUILD_BYPRODUCTS ${LIBZMQ_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libzmq.a
+      )
+    add_library(libzmq STATIC IMPORTED GLOBAL)
+    add_dependencies(libzmq libzmq_external)
+    set_target_properties(libzmq PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES ${LIBZMQ_PREFIX}/include
+      IMPORTED_LOCATION ${LIBZMQ_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libzmq.a)
+    if(TARGET sodium)
+      target_link_libraries(libzmq INTERFACE sodium)
+    endif()
+    message(STATUS "Building bundled libzmq ${ZeroMQ_VERSION}")
+  endif()
   add_subdirectory(loki-mq)
 else()
   add_library(oxenmq INTERFACE)
@@ -130,6 +163,11 @@ add_library(cpr STATIC EXCLUDE_FROM_ALL ${cpr_sources})
 target_link_libraries(cpr PUBLIC CURL::libcurl)
 target_include_directories(cpr PUBLIC cpr/include)
 target_compile_definitions(cpr PUBLIC CPR_CURL_NOSIGNAL)
+# cpr/callback.h uses intptr_t without including <cstdint>, which GCC >= 15 (Ubuntu 26.04) no longer
+# pulls in transitively, so force it for cpr and everything that includes cpr headers.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(cpr PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-includecstdint>)
+endif()
 add_library(cpr::cpr ALIAS cpr)
 
 file(READ cpr/CMakeLists.txt cpr_cmake_head LIMIT 1000)

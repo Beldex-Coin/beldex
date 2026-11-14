@@ -536,7 +536,12 @@ namespace cryptonote::rpc {
         return data->jsonrpc_error_response(data->res, -32700, "Parse error", nullptr);
       }
 
-      data->jsonrpc_id = std::move(jsonrpc["id"]);
+      if (!jsonrpc.is_object())
+        return data->jsonrpc_error_response(data->res, -32600, "Invalid Request", nullptr);
+
+      if (auto it = jsonrpc.find("id"); it != jsonrpc.end())
+        data->jsonrpc_id = std::move(*it);
+
       const std::string* method;
       try {
         method = &jsonrpc["method"].get_ref<const std::string&>();

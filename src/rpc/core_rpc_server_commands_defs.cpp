@@ -173,7 +173,9 @@ void to_json(nlohmann::json& j, const GET_OUTPUT_DISTRIBUTION::distribution& y)
     {"amount", y.amount},
     {"distribution", y.data.distribution},
     {"start_height", y.data.start_height},
-    {"base", y.data.base}
+    {"base", y.data.base},
+    {"filter_type", y.filter_type},
+    {"output_indices", y.data.output_indices}
   };
 }
 

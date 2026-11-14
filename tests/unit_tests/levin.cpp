@@ -461,7 +461,7 @@ TEST_F(levin_notify, flood)
         auto context = contexts_.begin();
         EXPECT_TRUE(notifier.send_txs(txs, context->get_id(), false));
 
-        io_service_.reset();
+        io_service_.restart();
         ASSERT_LT(0u, io_service_.poll());
         EXPECT_EQ(0u, context->process_send_queue());
         for (++context; context != contexts_.end(); ++context)
@@ -482,7 +482,7 @@ TEST_F(levin_notify, flood)
         auto context = contexts_.begin();
         EXPECT_TRUE(notifier.send_txs(txs, context->get_id(), true));
 
-        io_service_.reset();
+        io_service_.restart();
         ASSERT_LT(0u, io_service_.poll());
         EXPECT_EQ(0u, context->process_send_queue());
         for (++context; context != contexts_.end(); ++context)
@@ -528,7 +528,7 @@ TEST_F(levin_notify, private_flood)
         auto context = contexts_.begin();
         EXPECT_TRUE(notifier.send_txs(txs, context->get_id(), false));
 
-        io_service_.reset();
+        io_service_.restart();
         ASSERT_LT(0u, io_service_.poll());
         EXPECT_EQ(0u, context->process_send_queue());
         for (++context; context != contexts_.end(); ++context)
@@ -551,7 +551,7 @@ TEST_F(levin_notify, private_flood)
         auto context = contexts_.begin();
         EXPECT_TRUE(notifier.send_txs(txs, context->get_id(), true));
 
-        io_service_.reset();
+        io_service_.restart();
         ASSERT_LT(0u, io_service_.poll());
         EXPECT_EQ(0u, context->process_send_queue());
         for (++context; context != contexts_.end(); ++context)
@@ -594,7 +594,7 @@ TEST_F(levin_notify, noise)
     }
 
     notifier.run_stems();
-    io_service_.reset();
+    io_service_.restart();
     ASSERT_LT(0u, io_service_.poll());
     {
         std::size_t sent = 0;
@@ -607,7 +607,7 @@ TEST_F(levin_notify, noise)
 
     EXPECT_TRUE(notifier.send_txs(txs, incoming_id, false));
     notifier.run_stems();
-    io_service_.reset();
+    io_service_.restart();
     ASSERT_LT(0u, io_service_.poll());
     {
         std::size_t sent = 0;
@@ -626,7 +626,7 @@ TEST_F(levin_notify, noise)
     txs[0].resize(3000, 'r');
     EXPECT_TRUE(notifier.send_txs(txs, incoming_id, true));
     notifier.run_stems();
-    io_service_.reset();
+    io_service_.restart();
     ASSERT_LT(0u, io_service_.poll());
     {
         std::size_t sent = 0;
@@ -638,7 +638,7 @@ TEST_F(levin_notify, noise)
     }
 
     notifier.run_stems();
-    io_service_.reset();
+    io_service_.restart();
     ASSERT_LT(0u, io_service_.poll());
     {
         std::size_t sent = 0;

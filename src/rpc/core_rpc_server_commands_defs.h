@@ -1776,6 +1776,12 @@ namespace cryptonote::rpc {
     {
       rpc::output_distribution_data data;
       uint64_t amount;
+      // 1 = native, 2 = privacy token. Mirrors the bucketing the .bin variant
+      // has always returned. A ring must be built from outputs of the same
+      // kind, so a caller picking decoys for a token input needs the token
+      // bucket and the output_indices that map a bucket rank back to a real
+      // global index.
+      uint8_t filter_type = 1;
     };
   };
   void to_json(nlohmann::json& j, const GET_OUTPUT_DISTRIBUTION::distribution& y);

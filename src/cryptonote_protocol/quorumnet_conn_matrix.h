@@ -81,7 +81,8 @@ public:
     }
 };
 
-template <int N> constexpr void requested_quorum_size_is_not_defined() { static_assert(N != N, "Requested quorum size is not implemented"); }
+template <int N> constexpr bool quorum_size_dependent_false = false;
+template <int N> constexpr void requested_quorum_size_is_not_defined() { static_assert(quorum_size_dependent_false<N>, "Requested quorum size is not implemented"); }
 
 /// Base implementation for quorum matrices; instantiating this is an error; all supported sizes are
 /// defined below.

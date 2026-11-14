@@ -32,7 +32,17 @@
 set(folder "tests")
 set(TEST_DATA_DIR "${CMAKE_CURRENT_LIST_DIR}/data")
 
+# The vendored googletest requires CMake 2.8.12, which CMake >= 4.0 (Ubuntu 26.04) refuses without a
+# policy floor; older CMake versions ignore this variable.
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+  set(_beldex_unset_policy_minimum ON)
+endif()
 add_subdirectory(../external/googletest gtest EXCLUDE_FROM_ALL)
+if(_beldex_unset_policy_minimum)
+  unset(CMAKE_POLICY_VERSION_MINIMUM)
+  unset(_beldex_unset_policy_minimum)
+endif()
 
 file(COPY
   data/wallet_testnet.keys
