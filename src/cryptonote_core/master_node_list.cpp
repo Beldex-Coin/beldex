@@ -2772,7 +2772,7 @@ namespace master_nodes
         cryptonote::db_wtxn_guard txn_guard{db};
         db.set_master_node_data(blob, long_term);
       }
-      MGINFO(fmt::format("Stored {} master node data: {} in {:.2f}s", what,
+      MCINFO("omq", fmt::format("Stored {} master node data: {} in {:.2f}s", what,
                          tools::get_human_readable_bytes(bytes),
                          std::chrono::duration<double>{std::chrono::steady_clock::now() - started}.count()));
       return true;
