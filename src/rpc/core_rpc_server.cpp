@@ -2414,7 +2414,7 @@ namespace cryptonote::rpc {
     for (auto& ci : m_p2p.get_payload_object().get_connections())
       peers[ci.connection_id] = json_connection_info(ci);
     const auto& block_queue = m_p2p.get_payload_object().get_block_queue();
-    auto spans = json::array();
+    auto& spans = sync.response["spans"] = json::array();
     block_queue.foreach([&spans, &block_queue](const auto& span) {
         uint32_t speed = (uint32_t)(100.0f * block_queue.get_speed(span.connection_id) + 0.5f);
         spans.push_back(json{

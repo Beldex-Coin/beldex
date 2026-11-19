@@ -1566,6 +1566,17 @@ namespace cryptonote
           }
 
           {
+            // Declared first so notification runs after batch cleanup.
+            BELDEX_DEFER
+            {
+              const uint64_t current_height = m_core.get_current_blockchain_height();
+              const uint64_t target_height = m_core.get_target_blockchain_height();
+              const uint32_t previous_stripe = tools::get_pruning_stripe(previous_height, target_height, PRUNING_LOG_STRIPES);
+              const uint32_t current_stripe = tools::get_pruning_stripe(current_height, target_height, PRUNING_LOG_STRIPES);
+              if (!m_stopping && current_height > previous_height && previous_stripe != current_stripe)
+                notify_new_stripe(context, current_stripe);
+            };
+
             bool remove_spans = false;
             BELDEX_DEFER
             {
@@ -1611,6 +1622,9 @@ namespace cryptonote
                     LOG_ERROR_CCONTEXT("span connection id not found");
 
                   remove_spans = true;
+                  // The caller may be processing a span downloaded by another peer.
+                  if (span_connection_id != context.m_connection_id)
+                    goto skip;
                   return 1;
                 }
               }
@@ -1629,8 +1643,17 @@ namespace cryptonote
 
                 if (!t_serializable_object_from_blob(checkpoint_allocated_on_stack_, block_entry.checkpoint))
                 {
-                  MERROR("Checkpoint blob available but failed to parse");
-                  return false;
+                  if (!m_p2p->for_connection(span_connection_id, [&](cryptonote_connection_context& context, nodetool::peerid_type peer_id) -> bool{
+                    LOG_ERROR_CCONTEXT("Checkpoint blob failed to parse, dropping connection");
+                    drop_connection(context, true, true);
+                    return true;
+                  }))
+                    LOG_ERROR_CCONTEXT("span connection id not found");
+
+                  remove_spans = true;
+                  if (span_connection_id != context.m_connection_id)
+                    goto skip;
+                  return 1;
                 }
 
                 checkpoint = &checkpoint_allocated_on_stack_;
@@ -1658,6 +1681,9 @@ namespace cryptonote
                   LOG_ERROR_CCONTEXT("span connection id not found");
 
                 remove_spans = true;
+                // The caller may be processing a span downloaded by another peer.
+                if (span_connection_id != context.m_connection_id)
+                  goto skip;
                 return 1;
               }
 
@@ -1709,8 +1735,6 @@ namespace cryptonote
               timing_message += std::string(": ") + m_block_queue.get_overview(current_blockchain_height);
             MGINFO_YELLOW("Synced " << current_blockchain_height << "/" << target_blockchain_height
                 << progress_message << timing_message);
-            if (previous_stripe != current_stripe)
-              notify_new_stripe(context, current_stripe);
           }
         }
       }
